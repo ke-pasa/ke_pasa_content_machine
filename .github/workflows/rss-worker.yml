@@ -1,0 +1,82 @@
+name: RSS Worker
+
+on:
+  schedule:
+    # Run every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+  push:
+    paths:
+      - 'workers/rss/**'
+      - '.github/workflows/rss-worker.yml'
+
+jobs:
+  rss-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxml2-dev libxslt-dev
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r workers/rss/requirements.txt
+        
+    - name: Verify installation
+      run: |
+        python -c "import feedparser; print('feedparser:', feedparser.__version__)"
+        python -c "import requests; print('requests:', requests.__version__)"
+        python -c "import bs4; print('beautifulsoup4:', bs4.__version__)"
+        # python -c "import openai; print('openai:', openai.__version__)"  # Not needed
+        
+    - name: Run RSS Worker
+      env:
+        # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Not needed - LLM filtering disabled
+        FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+        FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+        RSS_FEEDS_FILE: workers/rss/feeds.txt
+        RSS_LOCK_LEASE_SEC: 1800  # 30 minutes for GitHub Actions
+        RSS_MAX_ITEMS_PER_FEED: 10  # Limit for CI
+        RSS_PER_HOST_DELAY_MS: 1000  # Reduced delay for CI
+      run: |
+        cd workers/rss
+        python -m worker
+        
+    - name: Upload artifacts on failure
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: rss-worker-logs-${{ matrix.python-version }}
+        path: |
+          workers/rss/*.log
+          workers/rss/feeds_not_working.txt
+          workers/rss/feeds_outdated.txt
+        retention-days: 7
+        
+    - name: Upload processing results
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: rss-worker-results-${{ matrix.python-version }}
+        path: |
+          workers/rss/feeds_not_working.txt
+          workers/rss/feeds_outdated.txt
+        retention-days: 30

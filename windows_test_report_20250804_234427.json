@@ -1,0 +1,180 @@
+{
+  "status": "PASSED",
+  "tests": {
+    "File: rss_parser.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: content_generator.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: jobs_scheduler.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: publication_scheduler.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: firebase_client.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: news_clustering.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: prioritization_llm.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: article_exporter.py": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: feeds.txt": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File: requirements.txt": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "File Structure": {
+      "status": "PASSED",
+      "details": "Все основные файлы найдены"
+    },
+    "Import: rss_parser.RSSParser": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: content_generator.generate_article": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: jobs_scheduler.PublicationScheduler": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: publication_scheduler.PublicationScheduler": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: firebase_client.FirebaseClient": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: news_clustering.create_clustering_pipeline": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: prioritization_llm.NewsPrioritizer": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Import: article_exporter.ArticleExporter": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Module Imports": {
+      "status": "PASSED",
+      "details": "Все модули импортированы успешно"
+    },
+    "Env Var: OPENAI_API_KEY": {
+      "status": "WARNING",
+      "warning": "OpenAI API ключ не найден"
+    },
+    "Env Var: TELEGRAM_BOT_TOKEN": {
+      "status": "WARNING",
+      "warning": "Telegram токен бота не найден"
+    },
+    "Env Var: TELEGRAM_CHAT_ID": {
+      "status": "WARNING",
+      "warning": "Telegram ID чата не найден"
+    },
+    "Environment Variables": {
+      "status": "WARNING",
+      "warning": "Отсутствуют переменные: OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID"
+    },
+    "Firebase Key File": {
+      "status": "PASSED",
+      "details": "firebase_key.json найден"
+    },
+    "Firebase Connection": {
+      "status": "PASSED",
+      "details": "Подключение к Firebase успешно"
+    },
+    "RSS Parser Instance": {
+      "status": "PASSED",
+      "details": "Экземпляр создан"
+    },
+    "RSS Parser Feeds": {
+      "status": "PASSED",
+      "details": "Загружено 77 фидов"
+    },
+    "Clustering Pipeline": {
+      "status": "PASSED",
+      "details": "Пайплайн создан"
+    },
+    "Clustering Test": {
+      "status": "PASSED",
+      "details": "Создано 0 кластеров"
+    },
+    "Jobs Scheduler": {
+      "status": "PASSED",
+      "details": "Экземпляр создан"
+    },
+    "Publication Scheduler": {
+      "status": "PASSED",
+      "details": "Экземпляр создан"
+    },
+    "Content Generator": {
+      "status": "PASSED",
+      "details": "Функция generate_telegram_post доступна"
+    },
+    "Prioritization": {
+      "status": "PASSED",
+      "details": "Приоритизатор создан"
+    },
+    "Article Exporter": {
+      "status": "PASSED",
+      "details": "Директория найдена: spain-news-portal/src/content/news"
+    },
+    "Website Dir: spain-news-portal": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Website Dir: spain-news-portal/src": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Website Dir: spain-news-portal/src/pages": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Website Dir: spain-news-portal/src/components": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Website Dir: spain-news-portal/src/content": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Website Dir: spain-news-portal/public": {
+      "status": "PASSED",
+      "details": ""
+    },
+    "Website Structure": {
+      "status": "PASSED",
+      "details": "Все директории найдены"
+    },
+    "Integration Workflow": {
+      "status": "PASSED",
+      "details": "Обработано 2 статей, фиды загружены"
+    }
+  },
+  "errors": [],
+  "start_time": "2025-08-04T23:44:17.351462",
+  "end_time": "2025-08-04T23:44:27.052374"
+}

@@ -1,0 +1,41 @@
+# Пример файла с переменными окружения для Spain Que Pasa
+# Скопируйте этот файл в .env и заполните своими значениями
+
+# OpenAI API ключ для фильтрации новостей через LLM
+# Получите ключ на https://platform.openai.com/api-keys
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Настройки интервалов (в секундах)
+# RSS парсинг: каждые 2 часа (7200 секунд)
+RSS_POLL_INTERVAL_SEC=7200
+
+# Кластеризация: через 10 минут после RSS (600 секунд)
+CLUSTERING_INTERVAL_SEC=600
+
+# Генерация статей: через 15 минут после кластеризации (900 секунд)
+ARTICLE_GENERATION_INTERVAL_SEC=900
+
+# Планировщик публикаций: каждые 5 минут (300 секунд)
+SCHEDULER_INTERVAL_SEC=300
+
+# Приоритизация: каждые 24 часа (86400 секунд)
+PRIORITIZATION_INTERVAL_SEC=86400
+
+# Блокировка оркестратора: 10 минут (600 секунд)
+ORCHESTRATOR_LOCK_LEASE_SEC=600
+
+# Telegram настройки
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+
+# Firebase настройки
+FIREBASE_PROJECT_ID=your_firebase_project_id_here
+FIREBASE_PRIVATE_KEY_ID=your_firebase_private_key_id_here
+FIREBASE_PRIVATE_KEY=your_firebase_private_key_here
+FIREBASE_CLIENT_EMAIL=your_firebase_client_email_here
+FIREBASE_CLIENT_ID=your_firebase_client_id_here
+
+# Другие настройки (опционально)
+# LOG_LEVEL=INFO
+# MAX_ARTICLES=50
+# RSS_PER_HOST_DELAY_MS=1500 

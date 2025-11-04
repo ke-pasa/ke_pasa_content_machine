@@ -1,0 +1,3 @@
+# Тестовая RSS лента для проверки системы
+# La Vanguardia - экономика (другая лента для тестирования)
+https://www.lavanguardia.com/rss/economia.xml

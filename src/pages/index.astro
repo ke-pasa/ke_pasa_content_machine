@@ -1,0 +1,427 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { SITE_TITLE, SITE_DESCRIPTION, CATEGORIES } from '../consts';
+
+// Получаем последние статьи из разных разделов
+const latestNews = await getCollection('news');
+const latestArticles = await getCollection('articles');
+const latestGuides = await getCollection('guides');
+
+// Сортируем по дате и берем последние 3
+const sortedNews = latestNews.sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf()).slice(0, 3);
+const sortedArticles = latestArticles.sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf()).slice(0, 3);
+const sortedGuides = latestGuides.sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf()).slice(0, 3);
+
+// Собираем все уникальные теги из новостей
+const allNewsTags = [...new Set(latestNews.flatMap(article => article.data.tags))];
+
+// Получаем все статьи для подсчета по категориям
+const allNews = await getCollection('news');
+const allArticles = await getCollection('articles');
+const allGuides = await getCollection('guides');
+const allLegal = await getCollection('legal');
+const allCatalog = await getCollection('catalog');
+
+const allPosts = [...allNews, ...allArticles, ...allGuides, ...allLegal, ...allCatalog];
+
+// Подсчитываем количество статей по категориям
+const categoryCounts = Object.keys(CATEGORIES).reduce((acc, category) => {
+	acc[category] = allPosts.filter(post => post.data.category === category).length;
+	return acc;
+}, {} as Record<string, number>);
+---
+
+<BaseLayout title={SITE_TITLE} description={SITE_DESCRIPTION}>
+	<Header />
+	
+	<main>
+		<!-- Hero Section -->
+		<section class="hero">
+			<div class="container">
+				<div class="hero-content">
+					<h1 class="hero-title">
+						Добро пожаловать в <span class="highlight">Испанию</span>
+					</h1>
+					<p class="hero-description">
+						Информационный портал для русскоязычных мигрантов в Испании. 
+						Новости, статьи, гайды и полезная информация для жизни в этой прекрасной стране.
+					</p>
+					<div class="hero-actions">
+						<a href="/news" class="btn btn-primary">Читать новости</a>
+						<a href="/guides" class="btn btn-secondary">Полезные гайды</a>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<!-- Categories Section -->
+		<section class="section">
+			<div class="container">
+				<div class="section-header">
+					<h2 class="section-title">Категории</h2>
+					<p class="section-description">Выберите интересующую вас категорию для получения актуальной информации</p>
+				</div>
+				<div class="categories-grid">
+					{Object.entries(CATEGORIES).map(([key, category]) => (
+						<a href={`/category/${key}`} class="category-card">
+							<div class="category-icon">{category.icon}</div>
+							<div class="category-content">
+								<h3 class="category-name">{category.name}</h3>
+								<p class="category-description">{category.description}</p>
+								<div class="category-count">{categoryCounts[key]} статей</div>
+							</div>
+						</a>
+					))}
+				</div>
+			</div>
+		</section>
+
+		<!-- Popular Topics -->
+		<section class="section">
+			<div class="container">
+				<div class="section-header">
+					<h2 class="section-title">Популярные темы</h2>
+					<p class="section-description">Выберите интересующую вас тему для получения актуальной информации</p>
+				</div>
+				<div class="tags-container">
+					{allNewsTags.slice(0, 10).map((tag) => (
+						<a href={`/news/tag/${tag}`} class="tag-link">
+							{tag}
+						</a>
+					))}
+				</div>
+			</div>
+		</section>
+
+		<!-- Latest News -->
+		<section class="section">
+			<div class="container">
+				<div class="section-header">
+					<h2 class="section-title">Последние новости</h2>
+					<a href="/news" class="section-link">Все новости →</a>
+				</div>
+				<div class="grid grid-3">
+					{sortedNews.map((article) => (
+						<article class="card">
+							<a href={`/news/${article.slug || article.id}/`} class="card-link">
+								{article.data.image && (
+									<div class="card-image">
+										<img src={article.data.image.src} alt="" />
+									</div>
+								)}
+								<div class="card-content">
+									{article.data.category && (
+										<div class="category-badge" data-category={article.data.category}>
+											{CATEGORIES[article.data.category as keyof typeof CATEGORIES]?.icon} 
+											{CATEGORIES[article.data.category as keyof typeof CATEGORIES]?.name}
+										</div>
+									)}
+									<h3 class="card-title">{article.data.title}</h3>
+									<p class="card-description">{article.data.description}</p>
+									<div class="card-meta">
+										<span class="card-date">
+											{article.data.pubDate.toLocaleDateString('ru-RU')}
+										</span>
+										{article.data.author && (
+											<span class="card-author">{article.data.author}</span>
+										)}
+									</div>
+									<div class="card-tags">
+										{article.data.tags.slice(0, 3).map((tag) => (
+											<span class="tag">{tag}</span>
+										))}
+									</div>
+								</div>
+							</a>
+						</article>
+					))}
+				</div>
+			</div>
+		</section>
+
+		<!-- Latest Articles -->
+		<section class="section">
+			<div class="container">
+				<div class="section-header">
+					<h2 class="section-title">Последние статьи</h2>
+					<a href="/articles" class="section-link">Все статьи →</a>
+				</div>
+				<div class="grid grid-3">
+					{sortedArticles.map((article) => (
+						<article class="card">
+							<a href={`/articles/${article.slug || article.id}/`} class="card-link">
+								{article.data.image && (
+									<div class="card-image">
+										<img src={article.data.image.src} alt="" />
+									</div>
+								)}
+								<div class="card-content">
+									{article.data.category && (
+										<div class="category-badge" data-category={article.data.category}>
+											{CATEGORIES[article.data.category as keyof typeof CATEGORIES]?.icon} 
+											{CATEGORIES[article.data.category as keyof typeof CATEGORIES]?.name}
+										</div>
+									)}
+									<h3 class="card-title">{article.data.title}</h3>
+									<p class="card-description">{article.data.description}</p>
+									<div class="card-meta">
+										<span class="card-date">
+											{article.data.pubDate.toLocaleDateString('ru-RU')}
+										</span>
+										{article.data.author && (
+											<span class="card-author">{article.data.author}</span>
+										)}
+									</div>
+									<div class="card-tags">
+										{article.data.tags.slice(0, 3).map((tag) => (
+											<span class="tag">{tag}</span>
+										))}
+									</div>
+								</div>
+							</a>
+						</article>
+					))}
+				</div>
+			</div>
+		</section>
+
+		<!-- Latest Guides -->
+		<section class="section">
+			<div class="container">
+				<div class="section-header">
+					<h2 class="section-title">Полезные гайды</h2>
+					<a href="/guides" class="section-link">Все гайды →</a>
+				</div>
+				<div class="grid grid-3">
+					{sortedGuides.map((guide) => (
+						<article class="card">
+							<a href={`/guides/${guide.slug || guide.id}/`} class="card-link">
+								{guide.data.image && (
+									<div class="card-image">
+										<img src={guide.data.image.src} alt="" />
+									</div>
+								)}
+								<div class="card-content">
+									{guide.data.category && (
+										<div class="category-badge" data-category={guide.data.category}>
+											{CATEGORIES[guide.data.category as keyof typeof CATEGORIES]?.icon} 
+											{CATEGORIES[guide.data.category as keyof typeof CATEGORIES]?.name}
+										</div>
+									)}
+									<h3 class="card-title">{guide.data.title}</h3>
+									<p class="card-description">{guide.data.description}</p>
+									<div class="card-meta">
+										<span class="card-date">
+											{guide.data.pubDate.toLocaleDateString('ru-RU')}
+										</span>
+										{guide.data.author && (
+											<span class="card-author">{guide.data.author}</span>
+										)}
+									</div>
+									<div class="card-tags">
+										{guide.data.tags.slice(0, 3).map((tag) => (
+											<span class="tag">{tag}</span>
+										))}
+									</div>
+								</div>
+							</a>
+						</article>
+					))}
+				</div>
+			</div>
+		</section>
+	</main>
+
+	<Footer />
+
+	<style>
+		/* Hero Section */
+		.hero {
+			background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+			color: white;
+			padding: var(--space-20) 0;
+			text-align: center;
+		}
+
+		.hero-content {
+			max-width: 800px;
+			margin: 0 auto;
+		}
+
+		.hero-title {
+			font-size: var(--font-size-5xl);
+			font-weight: 700;
+			margin-bottom: var(--space-6);
+			line-height: 1.1;
+		}
+
+		.highlight {
+			color: var(--color-accent);
+		}
+
+		.hero-description {
+			font-size: var(--font-size-xl);
+			line-height: var(--line-height-relaxed);
+			margin-bottom: var(--space-8);
+			opacity: 0.9;
+		}
+
+		.hero-actions {
+			display: flex;
+			gap: var(--space-4);
+			justify-content: center;
+			flex-wrap: wrap;
+		}
+
+		/* Section Styles */
+		.section {
+			padding: var(--space-16) 0;
+		}
+
+		.section-header {
+			text-align: center;
+			margin-bottom: var(--space-12);
+		}
+
+		.section-title {
+			font-size: var(--font-size-3xl);
+			font-weight: 700;
+			margin-bottom: var(--space-4);
+			color: var(--color-gray-900);
+		}
+
+		.section-description {
+			font-size: var(--font-size-lg);
+			color: var(--color-gray-600);
+			max-width: 600px;
+			margin: 0 auto;
+		}
+
+		.section-link {
+			color: var(--color-primary);
+			font-weight: 600;
+			text-decoration: none;
+			transition: color var(--transition-fast);
+		}
+
+		.section-link:hover {
+			color: var(--color-primary-dark);
+		}
+
+		/* Categories Grid */
+		.categories-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+			gap: var(--space-6);
+			margin-bottom: var(--space-12);
+		}
+
+		.category-card {
+			display: flex;
+			align-items: center;
+			gap: var(--space-4);
+			padding: var(--space-6);
+			background: white;
+			border-radius: var(--radius-xl);
+			border: 1px solid var(--color-gray-200);
+			text-decoration: none;
+			color: inherit;
+			transition: all 0.2s ease;
+		}
+
+		.category-card:hover {
+			box-shadow: var(--shadow-md);
+			transform: translateY(-2px);
+			border-color: var(--color-primary);
+		}
+
+		.category-icon {
+			font-size: 2.5rem;
+			flex-shrink: 0;
+		}
+
+		.category-content {
+			flex: 1;
+		}
+
+		.category-name {
+			font-size: var(--font-size-lg);
+			font-weight: 700;
+			margin-bottom: var(--space-2);
+			color: var(--color-gray-900);
+		}
+
+		.category-description {
+			font-size: var(--font-size-sm);
+			color: var(--color-gray-600);
+			margin-bottom: var(--space-2);
+			line-height: var(--line-height-relaxed);
+		}
+
+		.category-count {
+			font-size: var(--font-size-xs);
+			color: var(--color-gray-500);
+			font-weight: 500;
+		}
+
+		/* Tags */
+		.tags-container {
+			display: flex;
+			flex-wrap: wrap;
+			gap: var(--space-3);
+			justify-content: center;
+		}
+
+		.tag-link {
+			display: inline-block;
+			padding: var(--space-2) var(--space-4);
+			background: var(--color-gray-100);
+			color: var(--color-gray-700);
+			border-radius: var(--radius-2xl);
+			text-decoration: none;
+			font-size: var(--font-size-sm);
+			font-weight: 500;
+			transition: all var(--transition-fast);
+		}
+
+		.tag-link:hover {
+			background: var(--color-primary);
+			color: white;
+			transform: translateY(-1px);
+		}
+
+		/* Card Styles */
+		.card-link {
+			text-decoration: none;
+			color: inherit;
+			display: block;
+			height: 100%;
+		}
+
+		.card-tags {
+			margin-top: var(--space-4);
+		}
+
+		@media (max-width: 768px) {
+			.hero-title {
+				font-size: var(--font-size-4xl);
+			}
+
+			.hero-description {
+				font-size: var(--font-size-lg);
+			}
+
+			.hero-actions {
+				flex-direction: column;
+				align-items: center;
+			}
+
+			.categories-grid {
+				grid-template-columns: 1fr;
+			}
+		}
+	</style>
+</BaseLayout> 

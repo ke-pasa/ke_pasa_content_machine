@@ -1,0 +1,58 @@
+# RSS ленты для удаления (устаревшие новости)
+# Создано: 2025-08-18 15:17:48
+# Причина: новости старше 30 дней или менее 30% свежих статей
+
+# less_than_30_percent_fresh_articles
+https://www.elespanol.com/rss/cultura
+
+# newest_article_older_than_90_days
+https://www.laopiniondemalaga.es/rss/section/16513
+
+# newest_article_older_than_30_days
+https://www.laopiniondemalaga.es/rss/section/16603
+
+# newest_article_older_than_30_days
+https://www.laopiniondemalaga.es/rss/section/16647
+
+# newest_article_older_than_30_days
+https://www.laopiniondemalaga.es/rss/section/16654
+
+# less_than_30_percent_fresh_articles
+https://madridmetropolitan.com/feed
+
+# newest_article_older_than_30_days
+https://revistaelobservador.com/?format=feed&type=atom
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/opinion/
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/event/
+
+# newest_article_older_than_90_days
+https://periodicoclm.publico.es/rss/sin-categoria/
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/politica/
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/economia/
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/cultura/
+
+# newest_article_older_than_90_days
+https://periodicoclm.publico.es/rss/sociedad/
+
+# newest_article_older_than_90_days
+https://periodicoclm.publico.es/rss/entrevistas/
+
+# newest_article_older_than_90_days
+https://periodicoclm.publico.es/rss/actualidad/
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/especial-turismo-castilla-mancha/
+
+# less_than_30_percent_fresh_articles
+https://periodicoclm.publico.es/rss/event/cultura/
+
