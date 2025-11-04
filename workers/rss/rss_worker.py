@@ -21,7 +21,7 @@ except ImportError:
     pass  # dotenv is optional, variables can be set by system
 
 # Project imports
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from .rss_parser import RSSParser
 from .config import RSSConfig
 

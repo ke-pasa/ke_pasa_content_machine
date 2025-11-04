@@ -1,1 +1,27 @@
-{"https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada": "W/\"7ffd-GVIl3dEHspdvoz7cQ+WvmOLSAXQ\"", "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/cultura/portada": "W/\"7458-+N57IhdIsordl+vxw5LIPLeFtLI\"", "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/sociedad/portada": "W/\"7923-+XSOoWTQdjHmLek78qximfLFP0Q\"", "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/opinion/portada": "W/\"597f-GpOdX2C7RjoJ85vC5R1AC2/j5WQ\"", "https://www.lavanguardia.com/rss/politica.xml": "W/\"19b8b36593cc4cc89d31d3b60e9bc64c\"", "https://www.lavanguardia.com/rss/economia.xml": "W/\"ab6697b22e7d03747dbe2ca00974fa1a\"", "https://www.lavanguardia.com/rss/vida.xml": "W/\"e42e816ca1642a7bdcb5b4d918dfe208\"", "https://www.lavanguardia.com/rss/cultura.xml": "W/\"ea34b27c6d70cc8485ba8826fb1a4156\"", "https://www.lavanguardia.com/rss/opinion.xml": "W/\"c18cd3c25ba3205525649749c47deb6b\"", "https://contrainformacion.es/feed/": "W/\"84a912218295834cff80f477d95a770d\"", "https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/": "W/\"54f8-w5jHfqfQTqj0nmdKHb7RX8GjPZY\"", "https://e-noticies.cat/es/rss/last-posts": "3bc8a6101ef11a49c561ba8bd878b616", "https://e-noticies.cat/es/rss/cat/consumo": "c7c58653459600871c4e85b62adb5e66", "https://e-noticies.cat/es/rss/cat/el-tiempo": "701bd89621828bc548a725408246367f", "https://e-noticies.cat/es/rss/tag/famosos": "6275e08f0e25a3884ab9dec8db39dd88", "https://e-noticies.cat/es/rss/tag/prevision-espana": "78c705ac01a10ac923de27e7b0f8850f", "https://www.theolivepress.es/feed/": "W/\"8fee63a11b295882d5cc45cbf95078f5\"", "https://valencian.es/feed": "W/\"8ecffe7db93d027d1cba3944042e1e64\"", "https://www.theseasidegazette.com/feed/": "\"1bf72eb4daf92b9590de33cf3ff30c60\"", "https://euroweeklynews.com/feed/": "\"3266-64225c9e544de\"", "https://www.tuexperto.com/feed/": "\"e613cfda7d67241de2306bdc2403ebc3-gzip\"", "https://www.muypymes.com/feed": "\"007a038dabe3697a3d72e1f9efbee746\"", "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada": "W/\"20565-sO/DgfCDZ+H3qXcVf5TA6r4QUt4\"", "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/ultimas-noticias/portada": "W/\"10147-88cOPAZ/rSbTeZlzgiUxql0y5wE\""}
+{
+  "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada": "W/\"7ffd-GVIl3dEHspdvoz7cQ+WvmOLSAXQ\"",
+  "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/cultura/portada": "W/\"7458-+N57IhdIsordl+vxw5LIPLeFtLI\"",
+  "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/sociedad/portada": "W/\"7923-+XSOoWTQdjHmLek78qximfLFP0Q\"",
+  "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/opinion/portada": "W/\"597f-GpOdX2C7RjoJ85vC5R1AC2/j5WQ\"",
+  "https://www.lavanguardia.com/rss/politica.xml": "W/\"19b8b36593cc4cc89d31d3b60e9bc64c\"",
+  "https://www.lavanguardia.com/rss/economia.xml": "W/\"ab6697b22e7d03747dbe2ca00974fa1a\"",
+  "https://www.lavanguardia.com/rss/vida.xml": "W/\"e42e816ca1642a7bdcb5b4d918dfe208\"",
+  "https://www.lavanguardia.com/rss/cultura.xml": "W/\"ea34b27c6d70cc8485ba8826fb1a4156\"",
+  "https://www.lavanguardia.com/rss/opinion.xml": "W/\"c18cd3c25ba3205525649749c47deb6b\"",
+  "https://contrainformacion.es/feed/": "W/\"84a912218295834cff80f477d95a770d\"",
+  "https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/": "W/\"54f8-w5jHfqfQTqj0nmdKHb7RX8GjPZY\"",
+  "https://e-noticies.cat/es/rss/last-posts": "3bc8a6101ef11a49c561ba8bd878b616",
+  "https://e-noticies.cat/es/rss/cat/consumo": "c7c58653459600871c4e85b62adb5e66",
+  "https://e-noticies.cat/es/rss/cat/el-tiempo": "701bd89621828bc548a725408246367f",
+  "https://e-noticies.cat/es/rss/tag/famosos": "6275e08f0e25a3884ab9dec8db39dd88",
+  "https://e-noticies.cat/es/rss/tag/prevision-espana": "78c705ac01a10ac923de27e7b0f8850f",
+  "https://www.theolivepress.es/feed/": "W/\"8fee63a11b295882d5cc45cbf95078f5\"",
+  "https://valencian.es/feed": "W/\"8ecffe7db93d027d1cba3944042e1e64\"",
+  "https://www.theseasidegazette.com/feed/": "\"1bf72eb4daf92b9590de33cf3ff30c60\"",
+  "https://euroweeklynews.com/feed/": "\"3266-64225c9e544de\"",
+  "https://www.tuexperto.com/feed/": "\"e613cfda7d67241de2306bdc2403ebc3-gzip\"",
+  "https://www.muypymes.com/feed": "\"007a038dabe3697a3d72e1f9efbee746\"",
+  "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada": "W/\"20565-sO/DgfCDZ+H3qXcVf5TA6r4QUt4\"",
+  "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/ultimas-noticias/portada": "W/\"10147-88cOPAZ/rSbTeZlzgiUxql0y5wE\"",
+  "https://www.20minutos.es/rss/": "W/\"f93bef60f5437951084e7bfaeb25f346\""
+}

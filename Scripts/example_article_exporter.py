@@ -5,7 +5,7 @@
 Демонстрирует различные способы экспорта статей из Firebase
 """
 
-from firebase_client import FirebaseClient
+from workers.tools.firebase_client import FirebaseClient
 from article_exporter import ArticleExporter
 
 

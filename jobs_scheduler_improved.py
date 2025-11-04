@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from firebase_client import get_firebase_client, FirebaseClient
+from workers.tools.firebase_client import get_firebase_client, FirebaseClient
 
 @dataclass
 class PublishingWindow:

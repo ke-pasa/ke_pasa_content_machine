@@ -49,7 +49,7 @@ def in_range(dt: Optional[datetime], start: datetime, end: datetime) -> bool:
 
 def main():
 	load_dotenv()
-	from firebase_client import get_firebase_client
+	from workers.tools.firebase_client import get_firebase_client
 	from firebase_admin import firestore  # noqa: F401
 
 	client = get_firebase_client()

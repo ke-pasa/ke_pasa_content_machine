@@ -12,7 +12,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from content_generator import generate_article
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def regenerate_articles_with_new_prompt():
 	"""Перегенерирует все статьи с улучшенным промптом"""

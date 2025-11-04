@@ -3,7 +3,7 @@
 """
 Проверка последних статей в базе
 """
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def check_recent_articles():
     """Проверяет последние статьи в базе"""

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 import pytz
-from firebase_client import FirebaseClient, COLLECTIONS
+from workers.tools.firebase_client import FirebaseClient, COLLECTIONS
 
 
 @dataclass

@@ -4,7 +4,7 @@ from typing import Optional
 import time
 from google.api_core.exceptions import ResourceExhausted, RetryError
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 
 def wipe_collection(name: str, limit: int = 25, sleep_sec: float = 2.0) -> int:

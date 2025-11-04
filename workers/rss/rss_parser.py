@@ -2,32 +2,29 @@
 # -*- coding: utf-8 -*-
 """
 RSS Parser - RSS feeds parser with support for multiple feed structures.
-Extracts title, link, summary, published, image, categories from RSS feeds.
-Performs LLM-based filtering for the project's target audience and extracts
-full text for interesting articles. This module previously used a separate
-content generation pipeline; that dependency has been removed and this parser
-saves base article records directly to Firebase.
+Extracts title, link, summary, published, image and categories from RSS feeds.
+Performs content extraction and basic filtering; LLM-based filtering is
+currently disabled in this parser. Full text is extracted for interesting
+articles. This module previously used a separate content generation pipeline;
+that dependency has been removed and this parser saves base article records
+directly to Firebase.
 """
 
 import feedparser
 import argparse
-import sys
 import os
 import re
 import json
 import time
-import hashlib
+import requests
 from datetime import datetime
 from dateutil import parser as date_parser
 from urllib.parse import urlparse
-import requests
 from typing import Dict, List, Optional, Any
-# from openai import OpenAI  # Currently not used - LLM filtering disabled
 from bs4 import BeautifulSoup
 from readability import Document
 from slugify import slugify
-from firebase_client import get_firebase_client
-from typing import Tuple
+# firebase_client import is deferred to avoid heavy initialization at module import time
 from dotenv import load_dotenv
 
 
@@ -47,13 +44,38 @@ def load_env_file():
         return False
 
 
+# Module-level small JSON cache helpers used by both parser classes.
+def load_json_cache(path: str) -> dict:
+    """Load a small JSON cache file and return its contents as a dict.
+
+    Returns empty dict on any error.
+    """
+    try:
+        if not os.path.exists(path):
+            return {}
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_json_cache(path: str, data: dict):
+    """Save a small JSON cache to disk atomically (best-effort)."""
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 class ImprovedFeedParser:
     """Improved feed parser with handling for problematic feeds."""
     
     def __init__(self):
         self.session = requests.Session()
-        # Increase timeouts for slow servers
-        self.session.timeout = (30, 60)  # (connect_timeout, read_timeout)
+        # Note: requests.Session does not support a persistent timeout; pass timeouts per request when needed
         
         # User-Agent for better compatibility
         self.session.headers.update({
@@ -74,7 +96,7 @@ class ImprovedFeedParser:
                 manual_feed = self._manual_xml_parse(feed_url)
                 if manual_feed and manual_feed.get('entries'):
                     return manual_feed
-                
+
                 # If still failing, try correcting the feed URL
                 if attempt == 0:
                     corrected_url = self._fix_feed_url(feed_url)
@@ -82,15 +104,15 @@ class ImprovedFeedParser:
                         feed = feedparser.parse(corrected_url)
                         if not feed.bozo and feed.entries:
                             return feed
-                
+
                 # Pause between attempts (exponential backoff)
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
-                
+
             except Exception as e:
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
-        
+
         return None
     
     def _manual_xml_parse(self, feed_url):
@@ -238,6 +260,21 @@ class ImprovedFeedParser:
             feed_info['entries'].append(article)
         
         return feed_info
+    
+
+    def _respect_per_host_delay(self, feed_url: str):
+        """Ensure we wait between requests to the same host to avoid throttling."""
+        try:
+            parsed = urlparse(feed_url)
+            host = parsed.netloc or feed_url
+            now = int(time.time() * 1000)
+            last = self._host_last_time.get(host, 0)
+            wait_ms = max(0, self._per_host_delay_ms - (now - last))
+            if wait_ms > 0:
+                time.sleep(wait_ms / 1000.0)
+            self._host_last_time[host] = int(time.time() * 1000)
+        except Exception:
+            pass
 
 
 def get_full_text(link: str) -> Optional[str]:
@@ -339,7 +376,7 @@ def get_full_text(link: str) -> Optional[str]:
 
 
 class RSSParser:
-    """RSS parser class with LLM-based filtering."""
+    """RSS parser class that extracts content and performs basic filtering."""
     
     def __init__(self):
         # Load environment variables from .env file
@@ -359,11 +396,11 @@ class RSSParser:
             self._per_host_delay_ms = 1500
         self._etag_cache_path = os.getenv('RSS_ETAG_CACHE', 'rss_etag_cache.json')
         self._lm_cache_path = os.getenv('RSS_LM_CACHE', 'rss_lastmod_cache.json')
-        self._etag_cache = self._load_json_cache(self._etag_cache_path)
-        self._lm_cache = self._load_json_cache(self._lm_cache_path)
-
-        # Initialize Firebase
+        self._etag_cache = load_json_cache(self._etag_cache_path)
+        self._lm_cache = load_json_cache(self._lm_cache_path)
+        # Initialize Firebase lazily (import inside __init__ to avoid network calls at module import)
         try:
+            from workers.tools.firebase_client import get_firebase_client
             self.db = get_firebase_client()
             print("✅ Firebase connected successfully")
         except Exception as e:
@@ -376,6 +413,27 @@ class RSSParser:
 
         # Always use direct requests (batch system removed)
         self.use_batch = False
+
+
+    def _respect_per_host_delay(self, feed_url: str):
+        """Respect per-host delay to avoid hammering the same host.
+
+        Uses self._per_host_delay_ms and self._host_last_time.
+        """
+        try:
+            p = urlparse(feed_url)
+            host = p.netloc
+            now_ms = int(time.time() * 1000)
+            last = self._host_last_time.get(host)
+            if last:
+                elapsed = now_ms - last
+                if elapsed < self._per_host_delay_ms:
+                    to_sleep = (self._per_host_delay_ms - elapsed) / 1000.0
+                    time.sleep(to_sleep)
+            self._host_last_time[host] = int(time.time() * 1000)
+        except Exception:
+            pass
+
     
     def _process_improved_feed(self, improved_feed, feed_url):
         """Process data returned by the improved feed parser."""
@@ -412,11 +470,6 @@ class RSSParser:
             feed_info['entries'].append(article)
         
         return feed_info
-
-    def _create_filter_system_prompt(self) -> str:
-        # Previously used to create an LLM system prompt. Kept for compatibility
-        # with older code but LLM filtering is disabled at parser level.
-        return """(LLM filtering disabled at parser level)"""
     
     def process_single_article(self, article: Dict[str, Any]) -> Optional[str]:
         """
@@ -460,42 +513,10 @@ class RSSParser:
         Returns:
             Created article ID or None on error
         """
-        try:
-            import hashlib
-            from datetime import datetime
-            
-            # Create article ID
-            article_id = hashlib.md5(f"{article['link']}{article['title']}".encode()).hexdigest()
-
-            # Prepare data for saving
-            article_data = {
-                'article_id': article_id,
-                'title': article['title'],
-                'summary': article.get('summary', ''),
-                'content': article.get('content', ''),
-                'link': article['link'],
-                'image': article.get('image', ''),
-                'categories': article.get('categories', []),
-                'published_date': article.get('published', ''),
-                'source': article.get('source', ''),
-                'created_at': datetime.now().isoformat(),
-                'published': False,
-                'processed': False,  # Flag that the article has not yet been processed by LLM filtering
-                'is_clustered': False,  # Flag for clustering (legacy)
-                'urgent': article.get('urgent', False),
-                'priority_score': 0
-            }
-            
-            # Save to Firebase
-            print(f"    💾 Saving article to Firebase with ID: {article_id}")
-            print(f"    📊 Article fields: {list(article_data.keys())}")
-
-            # Persistence removed from parser-level. Downstream worker should save.
-            print("    ⚠️  save_article_for_clustering called but saving is disabled.")
-            return None
-        except Exception as e:
-            print(f"❌ Error in placeholder save_article_for_clustering: {e}")
-            return None
+        # Deprecated stub: parser no longer performs persistence.
+        # Downstream workers are responsible for saving articles to Firebase or other stores.
+        print("⚠️  save_article_for_clustering is deprecated in RSSParser; persistence is handled downstream.")
+        return None
 
     
     def save_article_md(self, article: Dict[str, Any]) -> Optional[str]:
@@ -509,7 +530,7 @@ class RSSParser:
             Path to the saved markdown file or None on error
         """
         if not article.get('translated'):
-            print("⚠️  Article has not been processed by LLM (no translated content)")
+            print("⚠️  Article has not been processed (no translated content)")
             return None
         
         translated = article['translated']
@@ -570,7 +591,6 @@ category: "{category}"
 ---
 
 """
-
         # Build the full file content
         file_content = frontmatter + content
 
@@ -586,7 +606,6 @@ category: "{category}"
             print(f"❌ Error saving file: {e}")
             return None
     
-
     
     def parse_feed(self, feed_url: str) -> Dict[str, Any]:
         """
@@ -659,10 +678,10 @@ category: "{category}"
             lm = response.headers.get('Last-Modified')
             if et:
                 self._etag_cache[feed_url] = et
-                self._save_json_cache(self._etag_cache_path, self._etag_cache)
+                save_json_cache(self._etag_cache_path, self._etag_cache)
             if lm:
                 self._lm_cache[feed_url] = lm
-                self._save_json_cache(self._lm_cache_path, self._lm_cache)
+                save_json_cache(self._lm_cache_path, self._lm_cache)
             
             # Parse RSS with improved error handling
             try:
@@ -723,81 +742,18 @@ category: "{category}"
                 feed_info['link'] = feed.get('link', '')
                 entries = feed.get('entries', [])
             
-            # Process each entry
+            # Process each entry using a single parser helper to avoid duplication
             for entry in entries:
-                # Extract published date
-                published = None
-                if hasattr(entry, 'get'):
-                    # Standard feedparser entry
-                    if entry.get('published'):
-                        try:
-                            published = date_parser.parse(entry.published).strftime('%Y-%m-%d')
-                        except:
-                            published = entry.published
-                    elif entry.get('updated'):
-                        try:
-                            published = date_parser.parse(entry.updated).strftime('%Y-%m-%d')
-                        except:
-                            published = entry.updated
-                    
-                    # Extract image
-                    image = None
-                    if entry.get('media_content'):
-                        image = entry.media_content[0].get('url')
-                    elif entry.get('media_thumbnail'):
-                        image = entry.media_thumbnail[0].get('url')
-                    elif entry.get('enclosures'):
-                        for enclosure in entry.enclosures:
-                            if enclosure.get('type', '').startswith('image/'):
-                                image = enclosure.get('href')
-                                break
-                    elif entry.get('links'):
-                        for link in entry.links:
-                            if link.get('type', '').startswith('image/'):
-                                image = link.get('href')
-                                break
-                    
-                    # Extract categories/tags
-                    categories = []
-                    if entry.get('tags'):
-                        categories = [tag.term for tag in entry.tags]
-                    elif entry.get('category'):
-                        categories = [entry.category]
-                    
-                    # Create article record
-                    article = {
-                        'title': entry.get('title', ''),
-                        'link': entry.get('link', ''),
-                        'summary': entry.get('summary', entry.get('description', '')),
-                        'published': published,
-                        'image': image,
-                        'categories': categories,
-                        'category': 'news',  # Default category
-                        'feed_title': feed_info['title'],  # Add feed title
-                        'feed_url': feed_url  # Add feed URL
-                    }
-                else:
-                    # Improved parser entry (SimpleNamespace)
-                    if hasattr(entry, 'published') and entry.published:
-                        try:
-                            published = date_parser.parse(entry.published).strftime('%Y-%m-%d')
-                        except:
-                            published = entry.published
-                    
-                    # Create article record for improved parser
-                    article = {
-                        'title': getattr(entry, 'title', ''),
-                        'link': getattr(entry, 'link', ''),
-                        'summary': getattr(entry, 'description', ''),
-                        'published': published,
-                        'image': None,  # Improved parser does not extract images
-                        'categories': [],  # Improved parser does not extract categories
-                        'category': 'news',  # Default category
-                        'feed_title': feed_info['title'],  # Add feed title
-                        'feed_url': feed_url  # Add feed URL
-                    }
-                
-                feed_info['entries'].append(article)
+                parsed = self._parse_entry(entry)
+                if not parsed:
+                    continue
+
+                # Ensure some defaults and source info
+                parsed.setdefault('category', 'news')
+                parsed['feed_title'] = feed_info['title']
+                parsed['feed_url'] = feed_url
+
+                feed_info['entries'].append(parsed)
             
             return feed_info
             
@@ -816,10 +772,17 @@ category: "{category}"
             Dictionary with article data
         """
         try:
+            # Helper to get field from both dict-like entries and SimpleNamespace
+            def _entry_get(name, default=''):
+                try:
+                    return entry.get(name, default)
+                except Exception:
+                    return getattr(entry, name, default)
+
             # Extract main fields
             parsed_entry = {
-                'title': entry.get('title', ''),
-                'link': entry.get('link', ''),
+                'title': _entry_get('title', ''),
+                'link': _entry_get('link', ''),
                 'summary': self._get_summary(entry),
                 'published': self._get_published_date(entry),
                 'image': self._get_image(entry),
@@ -837,15 +800,29 @@ category: "{category}"
     
     def _get_summary(self, entry) -> Optional[str]:
         """Extract a short summary/description for an entry"""
-    # Try different fields for summary
-        summary = entry.get('summary', '')
+        # Try different fields for summary
+        try:
+            summary = entry.get('summary', '')
+        except Exception:
+            summary = getattr(entry, 'summary', '')
+
         if not summary:
-            summary = entry.get('description', '')
+            try:
+                summary = entry.get('description', '')
+            except Exception:
+                summary = getattr(entry, 'description', '')
+
         if not summary:
             # Try content
-            content = entry.get('content', [])
+            try:
+                content = entry.get('content', [])
+            except Exception:
+                content = getattr(entry, 'content', [])
             if content and len(content) > 0:
-                summary = content[0].get('value', '')
+                try:
+                    summary = content[0].get('value', '')
+                except Exception:
+                    summary = getattr(content[0], 'value', '') if hasattr(content[0], 'value') else ''
         
         return summary
     
@@ -854,7 +831,11 @@ category: "{category}"
         date_fields = ['published', 'pubDate', 'updated', 'date']
         
         for field in date_fields:
-            date_str = entry.get(field, '')
+            try:
+                date_str = entry.get(field, '')
+            except Exception:
+                date_str = getattr(entry, field, '')
+
             if date_str:
                 try:
                     # Parse date using dateutil
@@ -876,7 +857,10 @@ category: "{category}"
             Image URL or None if not found
         """
     # 1. Try media:content (most reliable)
-        media_content = entry.get('media_content', [])
+        try:
+            media_content = entry.get('media_content', [])
+        except Exception:
+            media_content = getattr(entry, 'media_content', []) or []
         for media in media_content:
             media_type = media.get('type', '')
             if media_type.startswith('image/'):
@@ -885,14 +869,20 @@ category: "{category}"
                     return url
         
     # 2. Try media:thumbnail
-        media_thumbnail = entry.get('media_thumbnail', [])
+        try:
+            media_thumbnail = entry.get('media_thumbnail', [])
+        except Exception:
+            media_thumbnail = getattr(entry, 'media_thumbnail', []) or []
         if media_thumbnail:
             url = media_thumbnail[0].get('url')
             if url and self._is_valid_image_url(url):
                 return url
         
     # 3. Try enclosures
-        enclosures = entry.get('enclosures', [])
+        try:
+            enclosures = entry.get('enclosures', [])
+        except Exception:
+            enclosures = getattr(entry, 'enclosures', []) or []
         for enclosure in enclosures:
             enclosure_type = enclosure.get('type', '')
             if enclosure_type.startswith('image/'):
@@ -901,7 +891,10 @@ category: "{category}"
                     return url
         
     # 4. Try links with image type
-        links = entry.get('links', [])
+        try:
+            links = entry.get('links', [])
+        except Exception:
+            links = getattr(entry, 'links', []) or []
         for link in links:
             link_type = link.get('type', '')
             if link_type.startswith('image/'):
@@ -910,14 +903,20 @@ category: "{category}"
                     return url
         
     # 5. Try extract from summary/description (look for img tags)
-        summary = entry.get('summary', '') or entry.get('description', '')
+        try:
+            summary = entry.get('summary', '') or entry.get('description', '')
+        except Exception:
+            summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
         if summary:
             img_url = self._extract_image_from_html(summary)
             if img_url:
                 return img_url
         
     # 6. Try content with HTML
-        content = entry.get('content', [])
+        try:
+            content = entry.get('content', [])
+        except Exception:
+            content = getattr(entry, 'content', []) or []
         if content and len(content) > 0:
             content_value = content[0].get('value', '')
             if content_value:
@@ -926,7 +925,10 @@ category: "{category}"
                     return img_url
         
     # 7. Try extract from title (if it contains HTML)
-        title = entry.get('title', '')
+        try:
+            title = entry.get('title', '')
+        except Exception:
+            title = getattr(entry, 'title', '')
         if title:
             img_url = self._extract_image_from_html(title)
             if img_url:
@@ -1005,13 +1007,25 @@ category: "{category}"
         categories = []
         
     # Try tags
-        tags = entry.get('tags', [])
+        try:
+            tags = entry.get('tags', [])
+        except Exception:
+            tags = getattr(entry, 'tags', []) or []
         for tag in tags:
-            if tag.get('term'):
-                categories.append(tag['term'])
+            try:
+                if tag.get('term'):
+                    categories.append(tag['term'])
+            except Exception:
+                # tag may be a SimpleNamespace
+                term = getattr(tag, 'term', None)
+                if term:
+                    categories.append(term)
         
     # Try category
-        category = entry.get('category', '')
+        try:
+            category = entry.get('category', '')
+        except Exception:
+            category = getattr(entry, 'category', '')
         if category:
             categories.append(category)
         
@@ -1020,7 +1034,7 @@ category: "{category}"
 
     def filter_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Filter articles through the LLM for Russian-speaking migrants in Spain
+        Filter articles for Russian-speaking migrants in Spain
         and save filtered announcements for subsequent clustering.
 
         Args:
@@ -1029,21 +1043,18 @@ category: "{category}"
         Returns:
             Filtered list of announcements (only summaries, no article generation)
         """
-        # LLM filtering removed at parser level: process candidates locally
-        
         # Limit number of articles only for tests (can be disabled)
         max_articles = None  # Set a number (e.g., 3) to limit in tests
         if max_articles and len(articles) > max_articles:
             articles = articles[:max_articles]
-            print(f"🔍 Filtering {len(articles)} articles through LLM (test-limited)...")
+            print(f"🔍 Filtering {len(articles)} articles (test-limited)...")
         else:
-            print(f"🔍 Filtering {len(articles)} articles through LLM...")
+            print(f"🔍 Filtering {len(articles)} articles...")
         
         filtered_articles = []
         saved_count = 0
         duplicate_count = 0
         
-    # Preliminary deduplication by normalized link
         def _norm_link(u: str) -> str:
             try:
                 pu = urlparse(u)
@@ -1080,13 +1091,13 @@ category: "{category}"
 
             # Check duplicate in Firebase by link (can be disabled with BYPASS_DB_CACHE=1)
             if self.db and (not self._bypass_db_cache) and self.db.is_duplicate_by_link(article_link):
-                print(f"    🔁 Already in DB by link, skipping without LLM")
+                print(f"    🔁 Already in DB by link, skipping")
                 duplicate_count += 1
                 continue
 
             # Check: recently skipped entries (can be disabled with BYPASS_DB_CACHE=1)
             if self.db and (not self._bypass_db_cache) and self.db.was_skipped_recently(article_link, article_title, article.get('summary', '')):
-                print(f"    🔁 Previously skipped (SKIPPED cache), skipping without LLM")
+                print(f"    🔁 Previously skipped (SKIPPED cache), skipping")
                 duplicate_count += 1
                 continue
 
@@ -1095,8 +1106,8 @@ category: "{category}"
                 duplicate_count += 1
                 continue
             
-            # LLM removed: attempt to extract full text for non-duplicate articles
-            print(f"    ⬇️ Extracting full text (LLM filtering disabled)...")
+            # Attempt to extract full text for non-duplicate articles
+            print(f"    ⬇️ Extracting full text...")
             if article.get('link'):
                 full_text = get_full_text(article['link'])
                 if full_text:
@@ -1258,17 +1269,17 @@ category: "{category}"
             except Exception as e:
                 print(f"   ❌ Error processing {feed_url}: {e}")
                 continue
-        
-            print("\n" + "=" * 60)
-            print(f"🎯 FINAL STATISTICS:")
-            print(f"   📋 Feeds processed: {len(feeds)}")
-            print(f"   📰 Articles found: {len(all_articles)}")
-            print(f"   🤖 Articles filtered by LLM: {total_processed}")
-            print(f"   💾 Articles saved for generation: {total_saved}")
-            print(f"   🔄 Unique processed articles: {len(self.processed_articles)}")
-            print(f"   ℹ️  Next step: generate articles from filtered announcements")
+        # After processing all feeds, show final statistics
+        print("\n" + "=" * 60)
+        print(f"🎯 FINAL STATISTICS:")
+        print(f"   📋 Feeds processed: {len(feeds)}")
+        print(f"   📰 Articles found: {len(all_articles)}")
+        print(f"   🤖 Articles filtered: {total_processed}")
+        print(f"   💾 Articles saved for generation: {total_saved}")
+        print(f"   🔄 Unique processed articles: {len(self.processed_articles)}")
+        print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
-            return all_articles
+        return all_articles
 
     def load_feeds_from_file(self, filename: str) -> List[str]:
         """
@@ -1369,7 +1380,7 @@ def main():
     parser = argparse.ArgumentParser(description='RSS Parser for Russian-speaking migrants in Spain')
     parser.add_argument('url', nargs='?', help='RSS feed URL to parse')
     parser.add_argument('--feeds', '-f', default='feeds.txt', help='File with list of RSS feed URLs (default: feeds.txt)')
-    parser.add_argument('--no-filter', action='store_true', help='Skip filtering via LLM')
+    parser.add_argument('--no-filter', action='store_true', help='Skip filtering')
     parser.add_argument('--display-all', action='store_true', help='Display all items, including not interesting ones')
     
     args = parser.parse_args()
@@ -1420,10 +1431,7 @@ def main():
                 print(f"\n{i}. {article.get('title', 'No title')}")
                 if article.get('content'):
                     print(f"   📝 Content ready")
-                if article.get('telegram_post'):
-                    print(f"   📱 Telegram post ready")
                 print(f"   🔗 {article.get('link', '')}")
-
 
 if __name__ == "__main__":
     main() 

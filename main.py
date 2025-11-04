@@ -111,7 +111,7 @@ def show_status():
     print("=" * 70)
     
     try:
-        from firebase_client import get_firebase_client
+    from workers.tools.firebase_client import get_firebase_client
         db = get_firebase_client().db
         
         workers = ['rss_worker', 'article_generator', 'publisher', 'categorization']

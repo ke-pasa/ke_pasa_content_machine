@@ -11,7 +11,7 @@
 import os
 import shutil
 from datetime import datetime
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def create_backup():
     """Создает резервную копию текущих статей"""

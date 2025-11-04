@@ -5,7 +5,7 @@
 Проверяет статьи без обязательных полей и предлагает решения
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from datetime import datetime
 import pytz
 

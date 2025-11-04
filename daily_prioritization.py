@@ -6,7 +6,7 @@
 
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 
 class DailyPrioritization:

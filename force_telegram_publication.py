@@ -5,7 +5,7 @@
 Запускает планировщик вручную для диагностики
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from jobs_scheduler import PublicationSchedulerImproved
 
 def force_telegram_publication():

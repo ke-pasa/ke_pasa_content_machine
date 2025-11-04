@@ -5,7 +5,7 @@
 Добавляет промежуточные окна для покрытия всего дня
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 import json
 
 def check_current_windows():

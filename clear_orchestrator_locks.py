@@ -5,7 +5,7 @@
 Удаляет старые блокировки, чтобы можно было перезапустить систему
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def clear_orchestrator_locks():
     """Очищает все блокировки оркестратора"""

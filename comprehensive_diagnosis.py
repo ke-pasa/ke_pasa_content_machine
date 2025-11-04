@@ -5,7 +5,7 @@
 Проверяет всю цепочку от планировщика до Telegram
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from jobs_scheduler import PublicationSchedulerImproved
 from datetime import datetime
 import pytz

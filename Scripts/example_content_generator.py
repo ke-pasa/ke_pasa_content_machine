@@ -6,7 +6,7 @@
 
 import logging
 from content_generator import generate_article, generate_telegram_post, generate_and_save_content
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 
 def create_sample_cluster():

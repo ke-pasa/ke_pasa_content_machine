@@ -31,7 +31,7 @@ while ($true) {
 
   # Clear Firestore lock
   try {
-    & $python -u -c "from firebase_client import get_firebase_client; db=get_firebase_client().db; db.collection('locks').document('orchestrator').delete()" | Out-Null
+  & $python -u -c "from workers.tools.firebase_client import get_firebase_client; db=get_firebase_client().db; db.collection('locks').document('orchestrator').delete()" | Out-Null
   } catch {}
 
   # Start orchestrator (append logs with UTF-8)

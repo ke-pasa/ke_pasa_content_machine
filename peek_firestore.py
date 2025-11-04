@@ -4,7 +4,7 @@ import sys
 from typing import Any, Dict, List
 
 try:
-    from firebase_client import get_firebase_client
+    from workers.tools.firebase_client import get_firebase_client
 except Exception as exc:  # pragma: no cover
     print(f"firebase import error: {exc}")
     sys.exit(1)

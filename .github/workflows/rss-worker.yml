@@ -17,7 +17,7 @@ jobs:
     
     strategy:
       matrix:
-        python-version: ['3.9', '3.10', '3.11']
+        python-version: ['3.11']
     
     steps:
     - name: Checkout code
@@ -45,10 +45,18 @@ jobs:
         python -c "import requests; print('requests:', requests.__version__)"
         python -c "import bs4; print('beautifulsoup4:', bs4.__version__)"
         # python -c "import openai; print('openai:', openai.__version__)"  # Not needed
-        
+    
+    - name: Write Firebase service account key
+      env:
+        FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      run: |
+        # Write the full JSON service account to firebase_key.json (preserve newlines)
+        printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > firebase_key.json
+        ls -l firebase_key.json || true
+
     - name: Run RSS Worker
       env:
-        # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Not needed - LLM filtering disabled
+        # If you still prefer to set individual fields, they are accepted too.
         FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
         FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}

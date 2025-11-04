@@ -14,7 +14,7 @@ from typing import List, Dict, Any
 # Добавляем текущую директорию в путь
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from publication_scheduler import create_publication_scheduler
 
 

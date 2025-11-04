@@ -4,7 +4,7 @@
 Проверка состояния статей в базе данных
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def check_articles():
     """Проверяет состояние статей в базе"""

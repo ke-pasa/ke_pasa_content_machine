@@ -6,7 +6,7 @@
 """
 
 import json
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def debug_token_limit():
     """Диагностирует проблему с токенами"""

@@ -15,7 +15,7 @@ sys.path.insert(0, str(root_dir))
 
 load_dotenv()
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from daily_prioritization import DailyPrioritization
 from .config import CategorizationConfig
 

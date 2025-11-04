@@ -19,7 +19,7 @@ import uuid
 from typing import List, Dict, Optional
 
 from openai import OpenAI
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from llm_batch_manager import LlmBatchManager
 from batch_worker import collect_queued_tasks, build_jsonl, submit_batch, mark_submitted
 from batch_results_processor import process_batch_results

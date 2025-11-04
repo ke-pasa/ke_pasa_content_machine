@@ -8,7 +8,7 @@
 3. Обеспечивает правильную работу системы генерации
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from datetime import datetime
 
 def fix_sources_collection():

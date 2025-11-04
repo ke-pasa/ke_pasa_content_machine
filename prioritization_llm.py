@@ -9,7 +9,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 import openai
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 
 class NewsPrioritizer:

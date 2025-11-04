@@ -4,7 +4,7 @@
 Поиск конкретной статьи с длинным контентом из логов
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def find_long_article():
     """Ищет статью с длинным контентом"""

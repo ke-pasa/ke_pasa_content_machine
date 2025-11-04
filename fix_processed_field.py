@@ -3,7 +3,7 @@
 """
 Массовое исправление поля processed для статей с content
 """
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 import os
 from dotenv import load_dotenv
 

@@ -5,7 +5,7 @@
 Показывает все коллекции и документы для поиска настроек Telegram
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def explore_firebase_structure():
     """Исследует структуру Firebase для поиска настроек"""

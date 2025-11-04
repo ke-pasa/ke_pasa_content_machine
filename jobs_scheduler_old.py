@@ -16,7 +16,7 @@ import pytz
 from telegram import Bot
 from telegram.error import TelegramError
 
-from firebase_client import FirebaseClient, get_firebase_client
+from workers.tools.firebase_client import FirebaseClient, get_firebase_client
 from article_ranker import rank_for_telegram
 from smart_post_selector import create_smart_post_selector
 from telegram_post_generator import create_telegram_post_generator

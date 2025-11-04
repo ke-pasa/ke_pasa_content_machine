@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime
 from content_generator import generate_article, generate_telegram_post
-from firebase_client import FirebaseClient
+from workers.tools.firebase_client import FirebaseClient
 
 
 def main():

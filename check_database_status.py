@@ -8,7 +8,7 @@
 3. Выявляет проблемы с датами и категориями
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from datetime import datetime, timedelta
 import re
 

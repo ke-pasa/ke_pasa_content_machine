@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timedelta
 import pytz
 from jobs_scheduler import PublicationScheduler, PublishingWindow
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 
 def create_sample_article(article_id: str, title: str, urgent: bool = False, priority_score: float = 0.8) -> dict:

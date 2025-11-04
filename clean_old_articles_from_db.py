@@ -6,7 +6,7 @@
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def clean_old_articles_from_db():
     """Очищает базу данных от старых новостей"""

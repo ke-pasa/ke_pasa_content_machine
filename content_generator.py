@@ -15,7 +15,7 @@ from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 from openai import OpenAI
 from slugify import slugify
-from firebase_client import FirebaseClient
+from workers.tools.firebase_client import FirebaseClient
 
 
 def _get_openai_client() -> Optional[OpenAI]:

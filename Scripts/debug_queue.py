@@ -11,7 +11,7 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 
 def load_env_file() -> None:

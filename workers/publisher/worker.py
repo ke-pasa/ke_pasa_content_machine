@@ -15,7 +15,7 @@ sys.path.insert(0, str(root_dir))
 
 load_dotenv()
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from jobs_scheduler_backup import PublicationScheduler
 from .config import PublisherConfig
 

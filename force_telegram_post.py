@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # Загружаем переменные окружения
 load_dotenv()
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from telegram_post_generator import create_telegram_post_generator
 
 def force_telegram_post():

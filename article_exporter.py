@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
-from firebase_client import FirebaseClient
+from workers.tools.firebase_client import FirebaseClient
 
 
 class ArticleExporter:

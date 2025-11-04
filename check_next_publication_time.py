@@ -5,7 +5,7 @@
 Показывает, когда будет следующая возможность публикации
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from jobs_scheduler import PublicationSchedulerImproved
 from datetime import datetime, timedelta
 import pytz

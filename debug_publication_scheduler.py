@@ -21,7 +21,7 @@ def debug_publication_scheduler():
     
     try:
         from jobs_scheduler import PublicationSchedulerImproved
-        from firebase_client import get_firebase_client
+    from workers.tools.firebase_client import get_firebase_client
         
         # Получаем клиент Firebase
         firebase_client = get_firebase_client()

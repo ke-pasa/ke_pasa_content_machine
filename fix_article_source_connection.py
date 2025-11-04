@@ -8,7 +8,7 @@
 3. Обеспечивает передачу полного текста в LLM
 """
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 from datetime import datetime
 
 def fix_article_source_connection():

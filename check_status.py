@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from firebase_client import get_firebase_client
+from workers.tools.firebase_client import get_firebase_client
 
 def check_status():
     try:
