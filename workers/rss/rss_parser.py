@@ -435,6 +435,25 @@ class RSSParser:
         self.processed_articles = set()
         self._seen_links_runtime = set()
 
+        # Prefetch recent article links (last 24 hours) to avoid re-downloading
+        # the same URLs during a single run. This accelerates filtering by
+        # checking an in-memory set before querying Firebase for duplicates.
+        self._recent_links_24h = set()
+        try:
+            if not self._bypass_db_cache:
+                from workers.tools.firebase_client import get_firebase_client
+                client = get_firebase_client()
+                try:
+                    self._recent_links_24h = client.get_recent_article_links(24) or set()
+                    if self._recent_links_24h:
+                        print(f"ℹ️  Prefetched {len(self._recent_links_24h)} recent links from Firebase")
+                except Exception as e:
+                    # Non-fatal: continue without recent-links optimization
+                    print(f"⚠️  Could not fetch recent links: {e}")
+        except Exception:
+            # If Firebase import or init fails, leave the set empty
+            self._recent_links_24h = set()
+
         # Always use direct requests (batch system removed)
         self.use_batch = False
 
@@ -1045,6 +1064,16 @@ class RSSParser:
                 duplicate_count += 1
                 continue
             self._seen_links_runtime.add(article_link)
+
+            # QUICK CHECK: if link was seen in the last 24 hours (prefetched from Firebase), skip
+            try:
+                if article_link and article_link in getattr(self, '_recent_links_24h', set()):
+                    print(f"    🔁 Recently processed within 24h, skipping")
+                    duplicate_count += 1
+                    continue
+            except Exception:
+                # Fail-safe: if something goes wrong with recent-links set, continue normally
+                pass
 
             # Check duplicate in Firebase by link (can be disabled with BYPASS_DB_CACHE=1)
             try:

@@ -10,7 +10,7 @@ news-generation pipeline.
 import os
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 # Require firebase_admin at import time: any Firebase import error should
 # stop module import so calling code sees configuration issues early.
@@ -486,6 +486,37 @@ class FirebaseClient:
             return len(docs)
         except Exception:
             return 0
+
+    def get_recent_article_links(self, hours: int = 24) -> set:
+        """
+        Retrieve a set of article links that were created within the last `hours` hours.
+
+        This is intended as a lightweight helper for callers that want to
+        prefetch recently-processed links (for example, to avoid re-downloading
+        the same URLs during a parsing run).
+
+        Returns:
+            A set of link strings (may be empty).
+        """
+        results = set()
+        if not self.db:
+            return results
+        try:
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            # Query articles with created_at >= cutoff
+            query = self.db.collection(COLLECTIONS['ARTICLES']).where('created_at', '>=', cutoff)
+            docs = query.stream()
+            for doc in docs:
+                try:
+                    data = doc.to_dict() or {}
+                    link = data.get('link')
+                    if link:
+                        results.add(link)
+                except Exception:
+                    continue
+        except Exception as e:
+            self._log_event(f"Error fetching recent article links: {e}", "error")
+        return results
 
 
 def compute_article_id(link: str, title: str) -> str:
