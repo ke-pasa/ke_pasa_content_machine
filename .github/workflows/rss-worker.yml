@@ -81,7 +81,7 @@ jobs:
         
     - name: Upload artifacts on failure
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: rss-worker-logs-${{ matrix.python-version }}
         path: |
@@ -92,7 +92,7 @@ jobs:
         
     - name: Upload processing results
       if: success()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: rss-worker-results-${{ matrix.python-version }}
         path: |
