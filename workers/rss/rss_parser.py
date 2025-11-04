@@ -1021,16 +1021,47 @@ class RSSParser:
             self._seen_links_runtime.add(article_link)
 
             # Check duplicate in Firebase by link (can be disabled with BYPASS_DB_CACHE=1)
-            if self.db and (not self._bypass_db_cache) and self.db.is_duplicate_by_link(article_link):
-                print(f"    🔁 Already in DB by link, skipping")
-                duplicate_count += 1
-                continue
+            try:
+                is_dup_by_link = False
+                if self.db and (not self._bypass_db_cache) and hasattr(self.db, 'is_duplicate_by_link'):
+                    is_dup_by_link = self.db.is_duplicate_by_link(article_link)
+                elif (not self._bypass_db_cache):
+                    # Try obtaining the canonical firebase client and check there
+                    try:
+                        from workers.tools.firebase_client import get_firebase_client
+                        client = get_firebase_client()
+                        if hasattr(client, 'is_duplicate_by_link'):
+                            is_dup_by_link = client.is_duplicate_by_link(article_link)
+                    except Exception:
+                        is_dup_by_link = False
+
+                if is_dup_by_link:
+                    print(f"    🔁 Already in DB by link, skipping")
+                    duplicate_count += 1
+                    continue
+            except Exception as e:
+                print(f"    ⚠️  Duplicate-by-link check error: {e}")
 
             # Check: recently skipped entries (can be disabled with BYPASS_DB_CACHE=1)
-            if self.db and (not self._bypass_db_cache) and self.db.was_skipped_recently(article_link, article_title, article.get('summary', '')):
-                print(f"    🔁 Previously skipped (SKIPPED cache), skipping")
-                duplicate_count += 1
-                continue
+            try:
+                was_skipped = False
+                if self.db and (not self._bypass_db_cache) and hasattr(self.db, 'was_skipped_recently'):
+                    was_skipped = self.db.was_skipped_recently(article_link, article_title, article.get('summary', ''))
+                elif (not self._bypass_db_cache):
+                    try:
+                        from workers.tools.firebase_client import get_firebase_client
+                        client = get_firebase_client()
+                        if hasattr(client, 'was_skipped_recently'):
+                            was_skipped = client.was_skipped_recently(article_link, article_title, article.get('summary', ''))
+                    except Exception:
+                        was_skipped = False
+
+                if was_skipped:
+                    print(f"    🔁 Previously skipped (SKIPPED cache), skipping")
+                    duplicate_count += 1
+                    continue
+            except Exception as e:
+                print(f"    ⚠️  SKIPPED check error: {e}")
 
             # Check duplicate in Firebase (combined), can be disabled with BYPASS_DB_CACHE=1
             if (not self._bypass_db_cache) and self.is_duplicate(article):
@@ -1261,23 +1292,33 @@ class RSSParser:
         Returns:
             True if the article already exists in the DB, False if new
         """
+        # If no db is configured, we can't check duplicates
         if not self.db:
             return False
-        
+
         try:
             article_link = article.get('link', '')
             article_title = article.get('title', '')
-            
-            # Check duplicate via the new Firebase client
-            is_duplicate = self.db.is_duplicate_article(article_link, article_title)
-            
+
+            # Prefer the FirebaseClient method if available
+            if hasattr(self.db, 'is_duplicate_article'):
+                is_duplicate = self.db.is_duplicate_article(article_link, article_title)
+            else:
+                # Fall back to canonical firebase client instance
+                try:
+                    from workers.tools.firebase_client import get_firebase_client
+                    client = get_firebase_client()
+                    is_duplicate = getattr(client, 'is_duplicate_article', lambda l, t: False)(article_link, article_title)
+                except Exception:
+                    is_duplicate = False
+
             if is_duplicate:
                 print(f"    🔁 Already published, skipping")
                 return True
             else:
                 print(f"    ✅ New article, saving")
                 return False
-                
+
         except Exception as e:
             print(f"    ⚠️  Duplicate check error: {e}")
             return False
