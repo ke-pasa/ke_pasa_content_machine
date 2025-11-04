@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Скрипт для обновления окон публикаций в Firebase
-Исправляет настройки согласно требованиям:
-- 09:00 - 11:00 (утреннее)
-- 12:00 - 14:00 (обеденное) 
-- 16:00 - 18:00 (вечернее)
-- 20:00 - 22:00 (ночное)
+Script to update publishing windows in Firebase.
+
+Adjusts settings to the required publishing windows:
+ - 09:00 - 11:00 (morning)
+ - 12:00 - 14:00 (midday)
+ - 16:00 - 18:00 (evening)
+ - 20:00 - 22:00 (night)
 """
 
 import sys
@@ -20,87 +21,87 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from firebase_client import get_firebase_client
 
 def update_publishing_windows():
-    """Обновляет окна публикаций в Firebase"""
+    """Update publishing windows in Firebase."""
     try:
-        print("🔄 Обновление окон публикаций в Firebase...")
-        
-        # Получаем клиент Firebase
+        print("🔄 Updating publishing windows in Firebase...")
+
+        # Get Firebase client
         client = get_firebase_client()
-        
-        # Получаем текущие настройки
+
+        # Load current settings
         current_settings = client.get_settings()
-        print(f"📋 Текущие настройки загружены")
-        
-        # Новые окна публикаций
+        print("📋 Current settings loaded")
+
+        # New publishing windows
         new_publishing_windows = [
-            {"start": "09:00", "end": "11:00"},    # Утреннее
-            {"start": "12:00", "end": "14:00"},    # Обеденное
-            {"start": "16:00", "end": "18:00"},    # Вечернее
-            {"start": "20:00", "end": "22:00"}     # Ночное
+            {"start": "09:00", "end": "11:00"},
+            {"start": "12:00", "end": "14:00"},
+            {"start": "16:00", "end": "18:00"},
+            {"start": "20:00", "end": "22:00"}
         ]
-        
-        # Обновляем настройки
+
+        # Update settings
         current_settings['publishing_windows'] = new_publishing_windows
-        
-        # Также обновляем tg_slots_local для соответствия новым окнам
+
+        # Also update tg_slots_local to match the new windows
         current_settings['tg_slots_local'] = [
-            "09:00", "10:00", "11:00",           # Утреннее окно
-            "12:00", "13:00", "14:00",           # Обеденное окно
-            "16:00", "17:00", "18:00",           # Вечернее окно
-            "20:00", "21:00", "22:00"            # Ночное окно
+            "09:00", "10:00", "11:00",
+            "12:00", "13:00", "14:00",
+            "16:00", "17:00", "18:00",
+            "20:00", "21:00", "22:00"
         ]
-        
-        # Сохраняем обновленные настройки
+
+        # Save updated settings
         success = client.save_settings(current_settings)
-        
+
         if success:
-            print("✅ Окна публикаций успешно обновлены!")
-            print("\n📅 Новые окна публикаций:")
+            print("✅ Publishing windows updated successfully!")
+            print("\n📅 New publishing windows:")
             for i, window in enumerate(new_publishing_windows, 1):
                 print(f"   {i}. {window['start']} - {window['end']}")
-            
-            print(f"\n⏰ Слоты для публикаций: {len(current_settings['tg_slots_local'])} часов")
-            print(f"📊 Покрытие дня: 8/13 часов = 61.5%")
-            
+
+            print(f"\n⏰ Publishing slots: {len(current_settings['tg_slots_local'])} hours")
+            print(f"📊 Day coverage: 8/13 hours = 61.5%")
+
             return True
         else:
-            print("❌ Ошибка сохранения настроек")
+            print("❌ Error saving settings")
             return False
-            
+
     except Exception as e:
-        print(f"❌ Ошибка обновления окон публикаций: {e}")
+        print(f"❌ Error updating publishing windows: {e}")
         return False
 
 def test_publishing_windows():
-    """Тестирует новые окна публикаций"""
+    """Run a quick test of the new publishing windows."""
     try:
-        print("\n🧪 Тестирование новых окон публикаций...")
+        print("\n🧪 Testing new publishing windows...")
         
         client = get_firebase_client()
         settings = client.get_settings()
         
-        # Проверяем окна
+        # Check windows
         windows = settings.get('publishing_windows', [])
-        print(f"📋 Загружено {len(windows)} окон публикаций:")
+        print(f"📋 Loaded {len(windows)} publishing windows:")
         
         for i, window in enumerate(windows, 1):
             print(f"   {i}. {window['start']} - {window['end']}")
         
-        # Проверяем слоты
+        # Check slots
         slots = settings.get('tg_slots_local', [])
-        print(f"\n⏰ Слоты для публикаций: {len(slots)} часов")
+        print(f"\n⏰ Publishing slots: {len(slots)} hours")
         print(f"   {', '.join(slots)}")
         
-        # Тестируем текущее время
+        # Test current time
         madrid_tz = pytz.timezone('Europe/Madrid')
         current_time = datetime.now(madrid_tz)
         current_hour = current_time.hour
         current_time_str = current_time.strftime("%H:%M")
         
-        print(f"\n🕐 Текущее время (Мадрид): {current_time_str}")
-        print(f"   Час: {current_hour}")
+        print(f"\n🕐 Current time (Madrid): {current_time_str}")
+        print(f"   Hour: {current_hour}")
         
-        # Проверяем, в каком окне мы находимся
+        # Check which window (if any) is active
         from jobs_scheduler import PublishingWindow
         
         active_window = None
@@ -114,11 +115,11 @@ def test_publishing_windows():
                 break
         
         if active_window:
-            print(f"✅ Текущее время входит в окно публикации: {active_window.start} - {active_window.end}")
+            print(f"✅ Current time falls into publishing window: {active_window.start} - {active_window.end}")
         else:
-            print(f"❌ Текущее время НЕ входит в окна публикации")
+            print(f"❌ Current time does NOT fall into any publishing window")
             
-            # Показываем ближайшее окно
+            # Show the next upcoming window
             for window_data in windows:
                 window = PublishingWindow(
                     start=window_data['start'],
@@ -126,41 +127,38 @@ def test_publishing_windows():
                 )
                 start_hour = int(window.start.split(':')[0])
                 if start_hour > current_hour:
-                    print(f"   Следующее окно: {window.start} - {window.end}")
+                    print(f"   Next window: {window.start} - {window.end}")
                     break
         
         return True
         
     except Exception as e:
-        print(f"❌ Ошибка тестирования: {e}")
+        print(f"❌ Error during testing: {e}")
         return False
 
 def main():
-    """Основная функция"""
-    print("🚀 ОБНОВЛЕНИЕ ОКОН ПУБЛИКАЦИЙ")
+    """Main entrypoint for the script."""
+    print("🚀 UPDATE PUBLISHING WINDOWS")
     print("=" * 50)
-    print("🎯 Цель: Исправить окна публикаций согласно требованиям")
-    print("📅 Новые окна:")
-    print("   • 09:00 - 11:00 (утреннее)")
-    print("   • 12:00 - 14:00 (обеденное)")
-    print("   • 16:00 - 18:00 (вечернее)")
-    print("   • 20:00 - 22:00 (ночное)")
+    print("🎯 Goal: Adjust publishing windows to the required schedule")
+    print("📅 New windows:")
+    print("   • 09:00 - 11:00 (morning)")
+    print("   • 12:00 - 14:00 (midday)")
+    print("   • 16:00 - 18:00 (evening)")
+    print("   • 20:00 - 22:00 (night)")
     print("=" * 50)
-    
-    # Обновляем настройки
+
+    # Update settings and run a quick test
     if update_publishing_windows():
-        # Тестируем
         test_publishing_windows()
-        
         print("\n" + "=" * 50)
-        print("🎉 ОБНОВЛЕНИЕ ЗАВЕРШЕНО!")
-        print("✅ Окна публикаций исправлены")
-        print("✅ 17:00 теперь входит в вечернее окно (16:00-18:00)")
-        print("✅ Покрытие дня: 8/13 часов = 61.5%")
-        
+        print("🎉 UPDATE COMPLETE!")
+        print("✅ Publishing windows updated")
+        print("✅ 17:00 now falls into evening window (16:00-18:00)")
+        print("✅ Day coverage: 8/13 hours = 61.5%")
     else:
-        print("\n❌ ОБНОВЛЕНИЕ НЕ УДАЛОСЬ")
-        print("Проверьте логи и попробуйте снова")
+        print("\n❌ UPDATE FAILED")
+        print("Check logs and try again")
 
 if __name__ == "__main__":
     main()
