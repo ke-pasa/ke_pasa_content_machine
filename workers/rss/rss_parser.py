@@ -509,7 +509,7 @@ class RSSParser:
         Returns:
             Created article ID or None on error
         """
-        # Ensure Firebase client is available (lazy init). If initialization
+    # Ensure Firebase client is available (lazy init). If initialization
         # fails we must fail fast and raise so callers (CI) notice.
         if not self.db:
             try:
@@ -555,10 +555,36 @@ class RSSParser:
         }
 
         # Use firebase client to save (client will use same md5 key internally)
+        # Verbose debug output (optional)
+        try:
+            verbose = os.getenv('RSS_VERBOSE', '0') == '1'
+        except Exception:
+            verbose = False
+
+        if verbose:
+            content_len = len(article_data.get('content') or '')
+            print(f"[RSS_VERBOSE] Preparing to save article id={article_id} link={link} title={title[:60]} content_len={content_len}")
+
         saved = self.db.save_article(article_data)
 
         if saved:
             print(f"✅ Article saved to Firebase: {article_id[:8]}...")
+            if verbose:
+                try:
+                    # show a short sample of the saved doc (keys only) to avoid big prints
+                    doc = None
+                    try:
+                        # attempt to use the canonical firebase client helper for inspection
+                        from workers.tools.firebase_client import get_firebase_client
+                        doc_client = get_firebase_client()
+                        sample = doc_client.get_article_doc(article_id)
+                        if sample:
+                            keys = ','.join(sorted(list(sample.keys())))[:200]
+                            print(f"[RSS_VERBOSE] Saved doc keys: {keys}")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             return article_id
         else:
             print("❌ Firebase reported failure when saving article")

@@ -51,6 +51,11 @@ class FirebaseClient:
             credentials_path: Path to the Firebase service account JSON file.
         """
         self.db = None
+        # Verbose mode for additional debug prints
+        try:
+            self._verbose = os.getenv('FIREBASE_VERBOSE', '0') == '1'
+        except Exception:
+            self._verbose = False
         self._init_firebase(credentials_path)
     
     def _init_firebase(self, credentials_path: str):
@@ -68,7 +73,32 @@ class FirebaseClient:
                 firebase_admin.initialize_app(cred)
 
             self.db = firestore.client()
-            self._log_event("Firebase client initialized successfully", "info")
+            # Try to determine project/credentials info for debugging
+            proj = None
+            try:
+                # Try reading project_id from the credentials JSON if present
+                if os.path.exists(credentials_path):
+                    try:
+                        with open(credentials_path, 'r', encoding='utf-8') as _f:
+                            _j = json.load(_f)
+                            proj = _j.get('project_id')
+                    except Exception:
+                        proj = None
+                # Fallback: try to get from firebase_admin app if available
+                try:
+                    app = firebase_admin.get_app()
+                    proj = getattr(app, 'project_id', proj)
+                except Exception:
+                    pass
+            except Exception:
+                proj = None
+
+            if proj:
+                self._log_event(f"Firebase client initialized (project: {proj})", "info")
+            else:
+                self._log_event("Firebase client initialized", "info")
+            if self._verbose:
+                print(f"[FIREBASE_VERBOSE] Initialized Firebase client; project={proj}")
             
         except Exception as e:
             self._log_event(f"Firebase initialization error: {e}", "error")
@@ -403,12 +433,59 @@ class FirebaseClient:
             article['created_at'] = firestore_types.SERVER_TIMESTAMP
             article['updated_at'] = firestore_types.SERVER_TIMESTAMP
             doc_ref = self.db.collection(COLLECTIONS['ARTICLES']).document(content_hash)
+
+            # Check if doc exists before saving (useful to diagnose overwrites)
+            try:
+                existing = doc_ref.get()
+                existed = getattr(existing, 'exists', False)
+            except Exception:
+                existed = False
+
             doc_ref.set(article, merge=True)
-            self._log_event(f"Article saved: {content_hash[:8]}...", "info")
+
+            if existed:
+                self._log_event(f"Article updated (was existing): {content_hash[:8]}...", "info")
+            else:
+                self._log_event(f"Article saved (new): {content_hash[:8]}...", "info")
+
+            if self._verbose:
+                try:
+                    # Print a compact summary of the article keys being saved
+                    sample = article.copy()
+                    keys = ','.join(sorted(list(sample.keys())))
+                    print(f"[FIREBASE_VERBOSE] save_article: id={content_hash} existed={existed} keys={keys}")
+                except Exception:
+                    pass
+
             return True
         except Exception as e:
             self._log_event(f"Error saving article: {e}", "error")
             return False
+
+    def get_article_doc(self, article_id: str) -> Optional[Dict[str, Any]]:
+        """Return the article document dict for a given article_id (or None)."""
+        if not self.db:
+            return None
+        try:
+            doc = self.db.collection(COLLECTIONS['ARTICLES']).document(article_id).get()
+            if getattr(doc, 'exists', False):
+                return doc.to_dict()
+            return None
+        except Exception:
+            return None
+
+    def count_articles(self) -> int:
+        """Return an approximate count of documents in the `articles` collection.
+
+        Note: this performs a simple stream() count and may be slow for large collections.
+        """
+        if not self.db:
+            return 0
+        try:
+            docs = list(self.db.collection(COLLECTIONS['ARTICLES']).stream())
+            return len(docs)
+        except Exception:
+            return 0
 
 
 def compute_article_id(link: str, title: str) -> str:
