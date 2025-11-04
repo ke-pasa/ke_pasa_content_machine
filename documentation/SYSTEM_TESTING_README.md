@@ -149,13 +149,6 @@ python run_system_tests.py --type all
 # OpenAI API
 OPENAI_API_KEY=your_openai_api_key
 
-# Firebase
-FIREBASE_PROJECT_ID=your_project_id
-FIREBASE_PRIVATE_KEY_ID=your_private_key_id
-FIREBASE_PRIVATE_KEY=your_private_key
-FIREBASE_CLIENT_EMAIL=your_client_email
-FIREBASE_CLIENT_ID=your_client_id
-
 # Telegram
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id

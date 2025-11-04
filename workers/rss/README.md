@@ -213,10 +213,10 @@ print(status)
 
 1. **Dependencies optimized** for GitHub Actions in `requirements.txt`
 2. **Workflow file**: `.github/workflows/rss-worker.yml`
-3. **Secrets**: add in GitHub Settings > Secrets and variables > Actions:
-   - `FIREBASE_PROJECT_ID` 
-   - `FIREBASE_PRIVATE_KEY`
-   - `FIREBASE_CLIENT_EMAIL`
+3. **Firebase Setup**: 
+   - Create a Firebase service account JSON key file
+   - Add the entire JSON content as a repository secret named `FIREBASE_SERVICE_ACCOUNT` in GitHub Settings > Secrets and variables > Actions
+   - The workflow will automatically write this to `firebase_key.json` and set `GOOGLE_APPLICATION_CREDENTIALS`
    <!-- - `OPENAI_API_KEY` (not needed - LLM filtering disabled) -->
 
 ### CI Features:
