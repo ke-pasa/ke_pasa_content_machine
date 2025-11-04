@@ -1,6 +1,6 @@
-# RSS feeds with current news
-# Created: 2025-08-18 15:17:48
-# Criteria: news no older than 30 days and at least 30% fresh articles
+# RSS feeds - Automatically cleaned
+# Updated: 2025-11-04 16:32:49
+#
 
 https://www.20minutos.es/rss/
 https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada
@@ -10,7 +10,6 @@ https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/opinion/portada
 https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada
 https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/ultimas-noticias/portada
 https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada
-
 https://www.lavanguardia.com/rss/politica.xml
 https://www.lavanguardia.com/rss/economia.xml
 https://www.lavanguardia.com/rss/vida.xml
@@ -32,13 +31,8 @@ https://www.laopiniondemalaga.es/rss/section/16610
 https://www.malagahoy.es/rss/
 https://www.eldiariodemadrid.es/rss/
 https://e-noticies.cat/es/rss/last-posts
-https://e-noticies.cat/es/rss/cat/consumo
-https://e-noticies.cat/es/rss/cat/el-tiempo
-https://e-noticies.cat/es/rss/tag/famosos
-https://e-noticies.cat/es/rss/tag/prevision-espana
 https://feeds.thelocal.com/rss/es
 https://www.theolivepress.es/feed/
-https://valencian.es/feed
 https://theleader.info/feed
 https://www.theseasidegazette.com/feed/
 https://www.surinenglish.com/rss/2.0/portada/
@@ -56,7 +50,6 @@ https://periodicoclm.publico.es/rss/region/
 https://periodicoclm.publico.es/rss/medio-ambiente/
 https://e-noticies.cat/es/rss/last-posts
 https://euroweeklynews.com/feed/
-https://www.eleconomista.es/rss/rss-economia.php
 https://www.bde.es/wbe/en/inicio/rss/rss-noticias/
 https://www.tuexperto.com/feed/
 https://www.muypymes.com/feed

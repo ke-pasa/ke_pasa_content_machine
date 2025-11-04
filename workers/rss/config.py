@@ -12,7 +12,7 @@ class RSSConfig:
     """Configuration for RSS worker"""
     
     # Path to feeds file
-    feeds_file: str = "feeds.txt"
+    feeds_file: str = os.path.join(os.path.dirname(__file__), "feeds.txt")
     
     # Lock lease time (seconds)
     lock_lease_sec: int = int(os.getenv('RSS_LOCK_LEASE_SEC', '300'))
@@ -33,7 +33,7 @@ class RSSConfig:
     def from_env(cls) -> 'RSSConfig':
         """Creates configuration from environment variables"""
         return cls(
-            feeds_file=os.getenv('RSS_FEEDS_FILE', 'feeds.txt'),
+            feeds_file=os.getenv('RSS_FEEDS_FILE', os.path.join(os.path.dirname(__file__), "feeds.txt")),
             lock_lease_sec=int(os.getenv('RSS_LOCK_LEASE_SEC', '300')),
             max_articles_per_run=int(os.getenv('RSS_MAX_ARTICLES', '0')) or None,
             request_timeout=int(os.getenv('RSS_REQUEST_TIMEOUT', '30')),
