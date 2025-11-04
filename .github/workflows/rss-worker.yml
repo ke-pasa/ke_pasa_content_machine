@@ -69,7 +69,7 @@ jobs:
         fi
 
     - name: Run RSS Worker (full)
-      if: ${{ github.event.inputs.run_full == 'true' || (secrets.FIREBASE_SERVICE_ACCOUNT != '') }}
+      if: github.event.inputs.run_full == 'true'
       env:
         FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         RSS_FEEDS_FILE: workers/rss/feeds.txt
