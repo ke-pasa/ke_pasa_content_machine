@@ -3,14 +3,12 @@
 """
 RSS Parser - RSS feeds parser with support for multiple feed structures.
 Extracts title, link, summary, published, image and categories from RSS feeds.
-Performs content extraction and basic filtering; LLM-based filtering is
-currently disabled in this parser. Full text is extracted for interesting
-articles. This module previously used a separate content generation pipeline;
-that dependency has been removed and this parser saves base article records
-directly to Firebase.
+Performs content extraction and basic filtering. Full text is extracted for
+interesting articles. This module previously used a separate content
+generation pipeline; that dependency has been removed and this parser saves
+base article records directly to Firebase.
 """
 
-import feedparser
 import argparse
 import os
 import re
@@ -22,10 +20,8 @@ from dateutil import parser as date_parser
 from urllib.parse import urlparse
 from typing import Dict, List, Optional, Any
 from bs4 import BeautifulSoup
-from readability import Document
-from slugify import slugify
-# firebase_client import is deferred to avoid heavy initialization at module import time
-from dotenv import load_dotenv
+# Heavy optional runtime dependencies (feedparser, readability, slugify, dotenv)
+# are imported lazily inside functions to keep this module import-safe in CI.
 
 
 def load_env_file():
@@ -34,7 +30,17 @@ def load_env_file():
     Not required when running in CI/CD where env vars are set directly.
     """
     try:
-        result = load_dotenv()
+        # Import dotenv lazily so missing package won't break imports
+        try:
+            from dotenv import load_dotenv as _load_dotenv
+        except Exception:
+            _load_dotenv = None
+
+        if not _load_dotenv:
+            print("ℹ️  python-dotenv not installed; using environment variables")
+            return False
+
+        result = _load_dotenv()
         if result:
             print("✅ Local .env file loaded")
         else:
@@ -87,8 +93,16 @@ class ImprovedFeedParser:
         """Parse an RSS feed with improved error handling and fallbacks."""
         for attempt in range(max_retries):
             try:
-                # Try the standard feedparser first
-                feed = feedparser.parse(feed_url)
+                # Try the standard feedparser first (import lazily)
+                try:
+                    import feedparser as _feedparser
+                except Exception:
+                    _feedparser = None
+
+                if _feedparser:
+                    feed = _feedparser.parse(feed_url)
+                else:
+                    feed = None
                 
                 if not feed.bozo and feed.entries:
                     return feed
@@ -102,7 +116,10 @@ class ImprovedFeedParser:
                 if attempt == 0:
                     corrected_url = self._fix_feed_url(feed_url)
                     if corrected_url != feed_url:
-                        feed = feedparser.parse(corrected_url)
+                        if _feedparser:
+                            feed = _feedparser.parse(corrected_url)
+                        else:
+                            feed = None
                         if not feed.bozo and feed.entries:
                             return feed
 
@@ -343,13 +360,22 @@ def get_full_text(link: str) -> Optional[str]:
                     content = largest_element
                     break
 
-        # If BeautifulSoup didn't find content, fall back to readability-lxml
+        # If BeautifulSoup didn't find content, fall back to readability-lxml (if available)
         if not content:
             try:
-                doc = Document(response.text)
-                content_html = doc.summary()
-                content_soup = BeautifulSoup(content_html, 'html.parser')
-                content = content_soup
+                try:
+                    from readability import Document as _Document
+                except Exception:
+                    _Document = None
+
+                if _Document:
+                    doc = _Document(response.text)
+                    content_html = doc.summary()
+                    content_soup = BeautifulSoup(content_html, 'html.parser')
+                    content = content_soup
+                else:
+                    # readability not available; skip this fallback
+                    print("ℹ️  readability-lxml not installed; skipping fallback content extraction")
             except Exception as e:
                 print(f"⚠️  readability-lxml failed to extract text: {e}")
                 return None
@@ -400,13 +426,10 @@ class RSSParser:
         self._etag_cache = load_json_cache(self._etag_cache_path)
         self._lm_cache = load_json_cache(self._lm_cache_path)
         # Initialize Firebase lazily (import inside __init__ to avoid network calls at module import)
-        try:
-            from workers.tools.firebase_client import get_firebase_client
-            self.db = get_firebase_client()
-            print("✅ Firebase connected successfully")
-        except Exception as e:
-            print(f"❌ Firebase initialization error: {e}")
-            self.db = None
+        # Do not initialize Firebase at import/construct time to keep this
+        # class import-safe in CI. Initialization will be attempted when a
+        # save is requested (fail-fast on save if initialization fails).
+        self.db = None
 
         # Set to track unique articles processed in this run
         self.processed_articles = set()
@@ -414,6 +437,9 @@ class RSSParser:
 
         # Always use direct requests (batch system removed)
         self.use_batch = False
+
+        # (LLM feature flag removed from this parser — LLM-related logic
+        # is not controlled here.)
 
 
     def _respect_per_host_delay(self, feed_url: str):
@@ -471,40 +497,9 @@ class RSSParser:
             feed_info['entries'].append(article)
         
         return feed_info
-    
-    def process_single_article(self, article: Dict[str, Any]) -> Optional[str]:
-        """
-        Process a single article: save base article record to Firebase.
-        This method now extracts full text for a single article and returns
-        the updated article dict (with 'content') or None on failure.
-        It does NOT save anything to Firebase — persistence is a downstream concern.
 
-        Args:
-            article: Dictionary with article data
-
-        Returns:
-            Article dict with 'content' or None on error
-        """
-        try:
-            # Extract full text and return article with content (no DB save here)
-            if article.get('link'):
-                full_text = get_full_text(article['link'])
-                if full_text:
-                    article['content'] = full_text
-                    print(f"    ✅ Article processed (content extracted)")
-                    return article
-                else:
-                    print(f"    ❌ Failed to extract full text for article")
-                    return None
-            else:
-                print(f"    ⚠️  No link to extract for single article")
-                return None
-                
-        except Exception as e:
-            print(f"    ❌ Error while processing article: {e}")
-            return None
     
-    def save_article_for_clustering(self, article: Dict[str, Any]) -> Optional[str]:
+    def save_article(self, article: Dict[str, Any]) -> Optional[str]:
         """
         Save a base article record to Firebase for later processing.
 
@@ -514,166 +509,89 @@ class RSSParser:
         Returns:
             Created article ID or None on error
         """
-        # Deprecated stub: parser no longer performs persistence.
-        # Downstream workers are responsible for saving articles to Firebase or other stores.
-        print("⚠️  save_article_for_clustering is deprecated in RSSParser; persistence is handled downstream.")
-        return None
-
-    
-    def save_article_md(self, article: Dict[str, Any]) -> Optional[str]:
-        """
-        Save article as a Markdown file (legacy method for compatibility).
-
-        Args:
-            article: Dictionary with article data
-
-        Returns:
-            Path to the saved markdown file or None on error
-        """
-        if not article.get('translated'):
-            print("⚠️  Article has not been processed (no translated content)")
-            return None
-        
-        translated = article['translated']
-        title = translated.get('title', '')
-        description = translated.get('description', '')
-        content = translated.get('content', '')
-        tags = translated.get('tags', [])
-        
-        if not title or not content:
-            print("⚠️  Not enough data to save (title/content missing)")
-            return None
-        
-    # Determine category and target directory
-        category = article.get('category', 'news')
-        if category == 'article':
-            save_dir = 'spain-news-portal/src/content/articles'
-        else:
-            save_dir = 'spain-news-portal/src/content/news'
-        
-    # Create directory if it doesn't exist
-        os.makedirs(save_dir, exist_ok=True)
-
-        # Generate slug from title
-        slug = slugify(title, max_length=50)
-
-        # Get publication date
-        pub_date = article.get('published', datetime.now().strftime('%Y-%m-%d'))
-        if isinstance(pub_date, str):
-            try:
-                # Parse date if it's string
-                parsed_date = date_parser.parse(pub_date)
-                pub_date = parsed_date.strftime('%Y-%m-%d')
-            except:
-                pub_date = datetime.now().strftime('%Y-%m-%d')
-
-        # Build filename
-        filename = f"{pub_date}-{slug}.md"
-        filepath = os.path.join(save_dir, filename)
-
-        # Check file doesn't already exist
-        if os.path.exists(filepath):
-            print(f"⚠️  File already exists: {filepath}")
-            return None
-
-        # Get image
-        image_url = article.get('image', '')
-
-        # Build frontmatter
-        frontmatter = f"""---
-title: "{title}"
-description: "{description}"
-pubDate: {pub_date}
-tags: {tags}
-slug: "{slug}"
-image: "{image_url}"
-author: "AI-translation"
-category: "{category}"
----
-
-"""
-        # Build the full file content
-        file_content = frontmatter + content
-
         try:
-            # Save file
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(file_content)
+            if not self.db:
+                # Try to initialize Firebase client lazily when we attempt to save.
+                try:
+                    from workers.tools.firebase_client import get_firebase_client
+                    self.db = get_firebase_client()
+                    print("✅ Firebase connected successfully (lazy init)")
+                except Exception as e:
+                    # Fail fast: require Firebase to be initialized when persisting here
+                    raise RuntimeError(f"Firebase client is not initialized; cannot persist article: {e}")
 
-            print(f"✅ Saved: {filepath}")
-            return filepath
+            # Create deterministic ID from link+title using centralized helper
+            link = article.get('link', '')
+            title = article.get('title', '')
+            try:
+                # import lazily to avoid heavy firebase admin initialization at module import
+                from workers.tools.firebase_client import compute_article_id
+                article_id = compute_article_id(link, title)
+            except Exception:
+                # Fallback: local md5 if helper cannot be imported
+                import hashlib
+                article_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
+
+            # Prepare data for saving (minimal base record)
+            article_data = {
+                'article_id': article_id,
+                'title': title,
+                'summary': article.get('summary', ''),
+                'content': article.get('content', ''),
+                'link': link,
+                'image': article.get('image', ''),
+                'categories': article.get('categories', []),
+                'published_date': article.get('published', ''),
+                'source_feed': article.get('feed_title', ''),
+                'source_link': link,
+                'created_at': datetime.now().isoformat(),
+                # lifecycle/status field: NEW when first saved by RSS parser
+                'status': article.get('status', 'NEW'),
+                'published': False,
+                'processed': False,
+                'is_clustered': False,
+                'urgent': article.get('urgent', False),
+                'priority_score': 0
+            }
+
+            # Use firebase client to save (client will use same md5 key internally)
+            saved = False
+            try:
+                saved = self.db.save_article(article_data)
+            except Exception as e:
+                print(f"❌ Error while saving article to Firebase: {e}")
+
+            if saved:
+                print(f"✅ Article saved to Firebase: {article_id[:8]}...")
+                return article_id
+            else:
+                print("❌ Firebase reported failure when saving article")
+                return None
 
         except Exception as e:
-            print(f"❌ Error saving file: {e}")
+            print(f"❌ Unexpected error in save_article: {e}")
             return None
-    
-    
-    def parse_feed(self, feed_url: str) -> Dict[str, Any]:
-        """
-        Parses RSS feed by URL
 
-        Args:
-            feed_url: RSS feed URL
+    
+    def parse_feed(self, feed_url: str):
+        """Parse a single RSS feed URL and return normalized feed info.
 
-        Returns:
-            Dictionary with RSS feed data
+        Returns a dict with 'title', 'description', 'link', 'entries' or None on failure.
         """
         try:
-            print(f"   🔍 Starting RSS feed parsing...")
-            
-            # Anti-block: per-host delay + Conditional GET
+            # Respect per-host politeness
             self._respect_per_host_delay(feed_url)
+
+            # Conditional GET headers
             headers = {}
             if feed_url in self._etag_cache:
                 headers['If-None-Match'] = self._etag_cache[feed_url]
             if feed_url in self._lm_cache:
                 headers['If-Modified-Since'] = self._lm_cache[feed_url]
-            
-            print(f"   📡 Sending HTTP request...")
-            
-            # Backoff loop
-            attempt = 0
-            final_url = feed_url
-            while True:
-                attempt += 1
-                try:
-                    response = self.session.get(feed_url, headers=headers, timeout=30, allow_redirects=True)
-                    final_url = response.url  # Save final URL after redirects
-                    print(f"   ✅ HTTP request successful: {response.status_code}")
-                except Exception as e:
-                    print(f"   ❌ HTTP request failed (attempt {attempt}): {e}")
-                    if attempt <= 3:
-                        time.sleep(min(10, 2 ** attempt))
-                        continue
-                    raise e
-                if response.status_code in (429, 503):
-                    print(f"   ⚠️  HTTP {response.status_code}, retrying...")
-                    if attempt <= 3:
-                        time.sleep(min(20, 2 ** attempt))
-                        continue
-                break
-            
-            # If a redirect happened, show information
-            if final_url != feed_url:
-                print(f"   📍 Redirect: {feed_url} → {final_url}")
-            if response.status_code == 304:
-                # Not modified - try improved parser
-                print(f"   ⚠️  HTTP 304 (Not Modified), trying improved parser...")
-                try:
-                    improved_parser = ImprovedFeedParser()
-                    improved_feed = improved_parser.parse_feed(feed_url)
-                    
-                    if improved_feed and improved_feed.get('entries'):
-                        print(f"   ✅ Improved parser succeeded: {len(improved_feed['entries'])} entries")
-                        return self._process_improved_feed(improved_feed, feed_url)
-                    else:
-                        print(f"   ❌ Improved parser did not succeed")
-                        return {'title': '', 'description': '', 'link': feed_url, 'entries': []}
-                        
-                except Exception as fallback_error:
-                    print(f"   ❌ Fallback parser failed: {fallback_error}")
-                    return {'title': '', 'description': '', 'link': feed_url, 'entries': []}
+
+            response = self.session.get(feed_url, headers=headers, timeout=30)
             response.raise_for_status()
+
             # Save ETag/Last-Modified
             et = response.headers.get('ETag')
             lm = response.headers.get('Last-Modified')
@@ -683,44 +601,52 @@ category: "{category}"
             if lm:
                 self._lm_cache[feed_url] = lm
                 save_json_cache(self._lm_cache_path, self._lm_cache)
-            
+
             # Parse RSS with improved error handling
             try:
-                feed = feedparser.parse(response.content)
-                
-                # If standard parsing failed, try improved parser
-                if feed.bozo or len(feed.entries) == 0:
-                    print(f"⚠️  Standard parsing failed, trying improved parser...")
+                # Use feedparser if available (lazy import)
+                try:
+                    import feedparser as _feedparser
+                except Exception:
+                    _feedparser = None
+
+                feed = None
+                if _feedparser:
+                    feed = _feedparser.parse(response.content)
+
+                # If standard parsing failed or feedparser missing, try improved parser
+                if (not feed) or getattr(feed, 'bozo', False) or len(getattr(feed, 'entries', [])) == 0:
+                    print(f"⚠️  Standard parsing failed or feedparser missing, trying improved parser...")
                     improved_parser = ImprovedFeedParser()
                     improved_feed = improved_parser.parse_feed(feed_url)
-                    
+
                     if improved_feed and improved_feed.get('entries'):
                         print(f"✅ Improved parser succeeded: {len(improved_feed['entries'])} entries")
                         feed = improved_feed
                     else:
                         print(f"❌ Improved parser also failed")
                         return None
-                
+
             except Exception as parse_error:
                 print(f"❌ RSS parsing error {feed_url}: {parse_error}")
-                
+
                 # Try improved parser as a fallback
                 print(f"🔄 Trying improved parser as a fallback...")
                 try:
                     improved_parser = ImprovedFeedParser()
                     improved_feed = improved_parser.parse_feed(feed_url)
-                    
+
                     if improved_feed and improved_feed.get('entries'):
                         print(f"✅ Improved parser succeeded: {len(improved_feed['entries'])} entries")
                         feed = improved_feed
                     else:
                         print(f"❌ Improved parser did not succeed")
                         return None
-                        
+
                 except Exception as fallback_error:
                     print(f"❌ Fallback parser also failed: {fallback_error}")
                     return None
-            
+
             # Extract feed metadata
             feed_info = {
                 'title': '',
@@ -728,7 +654,7 @@ category: "{category}"
                 'link': '',
                 'entries': []
             }
-            
+
             # Determine feed type (standard feedparser or improved parser)
             if hasattr(feed, 'feed'):
                 # Standard feedparser
@@ -742,7 +668,7 @@ category: "{category}"
                 feed_info['description'] = feed.get('description', 'No description')
                 feed_info['link'] = feed.get('link', '')
                 entries = feed.get('entries', [])
-            
+
             # Process each entry using a single parser helper to avoid duplication
             for entry in entries:
                 parsed = self._parse_entry(entry)
@@ -755,9 +681,9 @@ category: "{category}"
                 parsed['feed_url'] = feed_url
 
                 feed_info['entries'].append(parsed)
-            
+
             return feed_info
-            
+
         except Exception as e:
             print(f"❌ Error parsing RSS feed {feed_url}: {e}")
             return None
@@ -1127,10 +1053,22 @@ category: "{category}"
                     article['content'] = full_text
                     print(f"    📄 Full text extracted ({len(full_text)} characters)")
                     stats['text_extracted'] += 1
-                    # Do not save to Firebase here — saving is handled by a downstream worker
-                    stats['saved'] += 1
-                    saved_count += 1
-                    # Mark as processed in this run
+                    # Persist article to Firebase if available; otherwise mark as ready for downstream processing
+                    article_id = None
+                    if self.db:
+                        article_id = self.save_article(article)
+                        if article_id:
+                            article['article_id'] = article_id
+                            stats['saved'] += 1
+                            saved_count += 1
+                        else:
+                            print(f"    ⚠️  Failed to persist article to Firebase: {article.get('title','')[:40]}")
+                    else:
+                        print("    ⚠️  Firebase not initialized; marking article ready for downstream processing")
+                        stats['saved'] += 1
+                        saved_count += 1
+
+                    # Mark as processed in this run and append to results
                     self.processed_articles.add(article_key)
                     filtered_articles.append(article)
                 else:
@@ -1347,51 +1285,6 @@ category: "{category}"
                 
         except Exception as e:
             print(f"    ⚠️  Duplicate check error: {e}")
-            return False
-
-    def save_to_firebase(self, article: Dict[str, Any], translated: Dict[str, Any]) -> bool:
-        """
-        Save an article to Firebase.
-
-        Args:
-            article: Dictionary with original article data
-            translated: Dictionary with translated article data
-
-        Returns:
-            True on success, False otherwise
-        """
-        if not self.db:
-            print("⚠️  Firebase not initialized, cannot save article.")
-            return False
-        
-        try:
-            # Prepare data for saving
-            data_to_save = {
-                'title': translated['title'],
-                'description': translated['description'],
-                'content': translated['content'],
-                'tags': translated['tags'],
-                'link': article['link'],
-                'published': article['published'],
-                'image': article['image'],
-                'category': article['category'],
-                'source_feed': article['feed_title'], # Add feed title
-                'source_link': article['link'], # Add original article link
-                'created_at': datetime.now().isoformat()
-            }
-            
-            # Save using the new Firebase client
-            success = self.db.save_article(data_to_save)
-            
-            if success:
-                print(f"✅ Article saved to Firebase")
-                return True
-            else:
-                print(f"❌ Error saving article to Firebase")
-                return False
-            
-        except Exception as e:
-            print(f"❌ Error saving article to Firebase: {e}")
             return False
 
 
