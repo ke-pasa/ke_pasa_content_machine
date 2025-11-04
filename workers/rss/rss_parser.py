@@ -31,16 +31,17 @@ from dotenv import load_dotenv
 def load_env_file():
     """
     Load environment variables from a .env file (if present).
+    Not required when running in CI/CD where env vars are set directly.
     """
     try:
         result = load_dotenv()
         if result:
-            print("✅ .env loaded via python-dotenv")
+            print("✅ Local .env file loaded")
         else:
-            print("⚠️  .env not loaded (file missing or parse error)")
+            print("ℹ️  No .env file found - using environment variables")
         return result
     except Exception as e:
-        print(f"⚠️  Error loading .env file: {e}")
+        print(f"ℹ️  Environment will be used from system variables: {e}")
         return False
 
 
