@@ -1032,24 +1032,34 @@ category: "{category}"
         return list(set(categories))  # Remove duplicates
 
 
-    def filter_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def filter_articles(self, articles: List[Dict[str, Any]], feed_url: str = None) -> List[Dict[str, Any]]:
         """
         Filter articles for Russian-speaking migrants in Spain
         and save filtered announcements for subsequent clustering.
 
         Args:
             articles: List of news items to filter
+            feed_url: Optional URL of the feed being processed (for logging)
 
         Returns:
             Filtered list of announcements (only summaries, no article generation)
         """
+        feed_info = f"[{feed_url}] " if feed_url else ""
+        stats = {
+            'total': len(articles),
+            'valid': 0,
+            'duplicates': 0,
+            'text_extracted': 0,
+            'saved': 0
+        }
+
         # Limit number of articles only for tests (can be disabled)
         max_articles = None  # Set a number (e.g., 3) to limit in tests
         if max_articles and len(articles) > max_articles:
             articles = articles[:max_articles]
-            print(f"🔍 Filtering {len(articles)} articles (test-limited)...")
+            print(f"{feed_info}🔍 Filtering {len(articles)} articles (test-limited)...")
         else:
-            print(f"🔍 Filtering {len(articles)} articles...")
+            print(f"{feed_info}🔍 Processing {len(articles)} articles...")
         
         filtered_articles = []
         saved_count = 0
@@ -1076,9 +1086,11 @@ category: "{category}"
             article_link = article.get('link', '')
             article_title = article.get('title', '')
             article_key = (article_link, article_title)
+            stats['valid'] += 1
             
             if article_key in self.processed_articles:
                 print(f"    ⚠️  Duplicate: {article_title[:30]}...")
+                stats['duplicates'] += 1
                 duplicate_count += 1
                 continue
             
@@ -1113,7 +1125,9 @@ category: "{category}"
                 if full_text:
                     article['content'] = full_text
                     print(f"    📄 Full text extracted ({len(full_text)} characters)")
+                    stats['text_extracted'] += 1
                     # Do not save to Firebase here — saving is handled by a downstream worker
+                    stats['saved'] += 1
                     saved_count += 1
                     # Mark as processed in this run
                     self.processed_articles.add(article_key)
@@ -1123,9 +1137,13 @@ category: "{category}"
             else:
                 print(f"    ⚠️  No link to extract text from")
         
-        print(f"📊 Filtering result: {len(filtered_articles)} of {len(articles)} articles")
-        print(f"💾 Saved for processing: {saved_count} articles")
-        print(f"🔄 Skipped duplicates: {duplicate_count}")
+        feed_stats = f"{feed_info} " if feed_info else ""
+        print(f"\n{feed_stats}📊 PROCESSING STATISTICS:")
+        print(f"   📋 Total articles found: {stats['total']}")
+        print(f"   ✔️  Valid articles: {stats['valid']}")
+        print(f"   🔄 Duplicates skipped: {stats['duplicates']}")
+        print(f"   📄 Full text extracted: {stats['text_extracted']}")
+        print(f"   💾 Articles saved: {stats['saved']}")
         print(f"ℹ️  Next step: generate articles from filtered announcements")
         return filtered_articles
     
@@ -1253,7 +1271,7 @@ category: "{category}"
                 print(f"   ✅ Found {len(articles)} articles")
                 
                 # Filter and process articles
-                filtered_articles = self.filter_articles(articles)
+                filtered_articles = self.filter_articles(articles, feed_url=feed_url)
                 
                 # Calculate statistics for this feed
                 processed_in_feed = len(filtered_articles)

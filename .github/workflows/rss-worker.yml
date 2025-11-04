@@ -69,7 +69,8 @@ jobs:
         fi
 
     - name: Run RSS Worker (full)
-      if: github.event.inputs.run_full == 'true'
+      # Run if either manually triggered with run_full=true or if we have Firebase credentials
+      if: github.event.inputs.run_full == 'true' || env.GOOGLE_APPLICATION_CREDENTIALS != ''
       env:
         FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         RSS_FEEDS_FILE: workers/rss/feeds.txt
