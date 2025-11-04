@@ -509,67 +509,59 @@ class RSSParser:
         Returns:
             Created article ID or None on error
         """
-        try:
-            if not self.db:
-                # Try to initialize Firebase client lazily when we attempt to save.
-                try:
-                    from workers.tools.firebase_client import get_firebase_client
-                    self.db = get_firebase_client()
-                    print("✅ Firebase connected successfully (lazy init)")
-                except Exception as e:
-                    # Fail fast: require Firebase to be initialized when persisting here
-                    raise RuntimeError(f"Firebase client is not initialized; cannot persist article: {e}")
-
-            # Create deterministic ID from link+title using centralized helper
-            link = article.get('link', '')
-            title = article.get('title', '')
+        # Ensure Firebase client is available (lazy init). If initialization
+        # fails we must fail fast and raise so callers (CI) notice.
+        if not self.db:
             try:
-                # import lazily to avoid heavy firebase admin initialization at module import
-                from workers.tools.firebase_client import compute_article_id
-                article_id = compute_article_id(link, title)
-            except Exception:
-                # Fallback: local md5 if helper cannot be imported
-                import hashlib
-                article_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
-
-            # Prepare data for saving (minimal base record)
-            article_data = {
-                'article_id': article_id,
-                'title': title,
-                'summary': article.get('summary', ''),
-                'content': article.get('content', ''),
-                'link': link,
-                'image': article.get('image', ''),
-                'categories': article.get('categories', []),
-                'published_date': article.get('published', ''),
-                'source_feed': article.get('feed_title', ''),
-                'source_link': link,
-                'created_at': datetime.now().isoformat(),
-                # lifecycle/status field: NEW when first saved by RSS parser
-                'status': article.get('status', 'NEW'),
-                'published': False,
-                'processed': False,
-                'is_clustered': False,
-                'urgent': article.get('urgent', False),
-                'priority_score': 0
-            }
-
-            # Use firebase client to save (client will use same md5 key internally)
-            saved = False
-            try:
-                saved = self.db.save_article(article_data)
+                from workers.tools.firebase_client import get_firebase_client
+                self.db = get_firebase_client()
+                print("✅ Firebase connected successfully (lazy init)")
             except Exception as e:
-                print(f"❌ Error while saving article to Firebase: {e}")
+                # Fail fast: require Firebase to be initialized when persisting here
+                raise RuntimeError(f"Firebase client is not initialized; cannot persist article: {e}")
 
-            if saved:
-                print(f"✅ Article saved to Firebase: {article_id[:8]}...")
-                return article_id
-            else:
-                print("❌ Firebase reported failure when saving article")
-                return None
+        # Create deterministic ID from link+title using centralized helper
+        link = article.get('link', '')
+        title = article.get('title', '')
+        try:
+            # import lazily to avoid heavy firebase admin initialization at module import
+            from workers.tools.firebase_client import compute_article_id
+            article_id = compute_article_id(link, title)
+        except Exception:
+            # Fallback: local md5 if helper cannot be imported
+            import hashlib
+            article_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
 
-        except Exception as e:
-            print(f"❌ Unexpected error in save_article: {e}")
+        # Prepare data for saving (minimal base record)
+        article_data = {
+            'article_id': article_id,
+            'title': title,
+            'summary': article.get('summary', ''),
+            'content': article.get('content', ''),
+            'link': link,
+            'image': article.get('image', ''),
+            'categories': article.get('categories', []),
+            'published_date': article.get('published', ''),
+            'source_feed': article.get('feed_title', ''),
+            'source_link': link,
+            'created_at': datetime.now().isoformat(),
+            # lifecycle/status field: NEW when first saved by RSS parser
+            'status': article.get('status', 'NEW'),
+            'published': False,
+            'processed': False,
+            'is_clustered': False,
+            'urgent': article.get('urgent', False),
+            'priority_score': 0
+        }
+
+        # Use firebase client to save (client will use same md5 key internally)
+        saved = self.db.save_article(article_data)
+
+        if saved:
+            print(f"✅ Article saved to Firebase: {article_id[:8]}...")
+            return article_id
+        else:
+            print("❌ Firebase reported failure when saving article")
             return None
 
     
@@ -1053,9 +1045,9 @@ class RSSParser:
                     article['content'] = full_text
                     print(f"    📄 Full text extracted ({len(full_text)} characters)")
                     stats['text_extracted'] += 1
-                    # Persist article to Firebase if available; otherwise mark as ready for downstream processing
-                    article_id = None
-                    if self.db:
+                    # Persist article to Firebase. Attempt to save unconditionally so
+                    # lazy initialization occurs and we fail-fast if Firebase is not available.
+                    try:
                         article_id = self.save_article(article)
                         if article_id:
                             article['article_id'] = article_id
@@ -1063,10 +1055,13 @@ class RSSParser:
                             saved_count += 1
                         else:
                             print(f"    ⚠️  Failed to persist article to Firebase: {article.get('title','')[:40]}")
-                    else:
-                        print("    ⚠️  Firebase not initialized; marking article ready for downstream processing")
-                        stats['saved'] += 1
-                        saved_count += 1
+                    except RuntimeError:
+                        # Critical: Firebase initialization failed — re-raise to fail-fast
+                        raise
+                    except Exception as e:
+                        # Non-initialization errors when saving should be logged but
+                        # not crash the entire run.
+                        print(f"    ⚠️  Exception while saving article: {e}")
 
                     # Mark as processed in this run and append to results
                     self.processed_articles.add(article_key)

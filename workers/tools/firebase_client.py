@@ -10,12 +10,15 @@ import json
 import hashlib
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-# Lazy import firebase_admin and related symbols inside initialization to
-# keep this module import-safe when firebase_admin is not installed.
-firebase_admin = None
-credentials = None
-firestore = None
-firestore_types = None
+# Require firebase_admin at import time: any Firebase import error should
+# stop module import so calling code sees configuration issues early.
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    from firebase_admin import firestore as firestore_types
+except Exception as e:
+    # Fail import early with a helpful message
+    raise ImportError(f"firebase_admin is required by workers.tools.firebase_client but failed to import: {e}")
 
 # Константы для названий коллекций
 COLLECTIONS = {
@@ -53,29 +56,12 @@ class FirebaseClient:
         try:
             if not os.path.exists(credentials_path):
                 raise FileNotFoundError(f"Файл {credentials_path} не найден")
-            # Import firebase_admin lazily so environments without it can still import
-            try:
-                import firebase_admin as _firebase_admin
-                from firebase_admin import credentials as _credentials
-                from firebase_admin import firestore as _firestore
-                from firebase_admin import firestore as _firestore_types
-            except Exception as e:
-                # Log and re-raise to allow callers to decide fallback behavior
-                self._log_event(f"Ошибка импорта firebase_admin: {e}", "error")
-                raise
-
-            # Expose imported symbols at module level for other methods
-            globals()['firebase_admin'] = _firebase_admin
-            globals()['credentials'] = _credentials
-            globals()['firestore'] = _firestore
-            globals()['firestore_types'] = _firestore_types
-
             # Проверяем, не инициализирован ли уже Firebase
-            if not _firebase_admin._apps:
-                cred = _credentials.Certificate(credentials_path)
-                _firebase_admin.initialize_app(cred)
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(credentials_path)
+                firebase_admin.initialize_app(cred)
 
-            self.db = _firestore.client()
+            self.db = firestore.client()
             self._log_event("Firebase клиент инициализирован успешно", "info")
             
         except Exception as e:
