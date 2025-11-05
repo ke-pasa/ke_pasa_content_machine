@@ -1,2 +1,0 @@
-# Тестовая RSS лента
-https://www.madridmetropolitan.com/feed/ 

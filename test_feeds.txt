@@ -1,8 +1,0 @@
-https://www.20minutos.es/rss/
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/cultura/portada
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/sociedad/portada
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/opinion/portada
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/ultimas-noticias/portada
-https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada
