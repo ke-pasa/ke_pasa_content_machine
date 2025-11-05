@@ -30,7 +30,6 @@ https://www.laopiniondemalaga.es/rss/section/16506
 https://www.laopiniondemalaga.es/rss/section/16610
 https://www.malagahoy.es/rss/
 https://www.eldiariodemadrid.es/rss/
-https://e-noticies.cat/es/rss/last-posts
 https://feeds.thelocal.com/rss/es
 https://www.theolivepress.es/feed/
 https://theleader.info/feed
@@ -48,7 +47,6 @@ https://okdiario.com/espana/feed
 https://periodicoclm.publico.es/rss/
 https://periodicoclm.publico.es/rss/region/
 https://periodicoclm.publico.es/rss/medio-ambiente/
-https://e-noticies.cat/es/rss/last-posts
 https://euroweeklynews.com/feed/
 https://www.bde.es/wbe/en/inicio/rss/rss-noticias/
 https://www.tuexperto.com/feed/

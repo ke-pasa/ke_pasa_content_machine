@@ -407,7 +407,7 @@ def get_full_text(link: str) -> Optional[str]:
 class RSSParser:
     """RSS parser class that extracts content and performs basic filtering."""
     
-    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_lock: threading.Lock = None):
+    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_lock: threading.Lock = None, shared_recent_links: set = None):
         # Load environment variables from .env file
         load_env_file()
         self.session = requests.Session()
@@ -435,23 +435,24 @@ class RSSParser:
         self.processed_articles = shared_processed_articles if shared_processed_articles is not None else set()
         self._seen_links_runtime = shared_seen_links_runtime if shared_seen_links_runtime is not None else set()
 
-        self._recent_links_24h = set()
-        try:
-            if not self._bypass_db_cache:
-                from workers.tools.firebase_client import get_firebase_client, normalize_link
-                client = get_firebase_client()
-                try:
-                    recent = client.get_recent_article_links(24) or set()
-                    # Normalize recent links as well to match parser-side normalization
-                    self._recent_links_24h = set(normalize_link(l) for l in recent if l)
-                    if self._recent_links_24h:
-                        print(f"ℹ️  Prefetched {len(self._recent_links_24h)} recent links from Firebase")
-                except Exception as e:
-                    # Non-fatal: continue without recent-links optimization
-                    print(f"⚠️  Could not fetch recent links: {e}")
-        except Exception:
-            # If Firebase import or init fails, leave the set empty
-            self._recent_links_24h = set()
+        self._recent_links_24h = shared_recent_links if shared_recent_links is not None else set()
+        if not self._recent_links_24h:
+            try:
+                if not self._bypass_db_cache:
+                    from workers.tools.firebase_client import get_firebase_client, normalize_link
+                    client = get_firebase_client()
+                    try:
+                        recent = client.get_recent_article_links(24) or set()
+                        # Normalize recent links as well to match parser-side normalization
+                        self._recent_links_24h = set(normalize_link(l) for l in recent if l)
+                        if self._recent_links_24h:
+                            print(f"ℹ️  Prefetched {len(self._recent_links_24h)} recent links from Firebase")
+                    except Exception as e:
+                        # Non-fatal: continue without recent-links optimization
+                        print(f"⚠️  Could not fetch recent links: {e}")
+            except Exception:
+                # If Firebase import or init fails, leave the set empty
+                self._recent_links_24h = set()
 
         # Always use direct requests (batch system removed)
         self.use_batch = False
@@ -1315,7 +1316,21 @@ class RSSParser:
         print(f"📋 Found {len(feeds)} RSS feeds to process")
         print("=" * 60)
 
-        # Prepare shared runtime state for parallel processing
+        shared_recent_links = set()
+        try:
+            if not os.getenv('BYPASS_DB_CACHE', '0') == '1':
+                try:
+                    from workers.tools.firebase_client import get_firebase_client, normalize_link
+                    client = get_firebase_client()
+                    recent = client.get_recent_article_links(24) or set()
+                    shared_recent_links = set(normalize_link(l) for l in recent if l)
+                    if shared_recent_links:
+                        print(f"ℹ️  Prefetched {len(shared_recent_links)} recent links from Firebase")
+                except Exception as e:
+                    print(f"⚠️  Could not prefetch recent links: {e}")
+        except Exception:
+            shared_recent_links = set()
+
         shared_host_last_time = {}
         shared_processed_articles = set()
         shared_seen_links_runtime = set()
@@ -1338,7 +1353,8 @@ class RSSParser:
                 parser = RSSParser(shared_host_last_time=shared_host_last_time,
                                    shared_processed_articles=shared_processed_articles,
                                    shared_seen_links_runtime=shared_seen_links_runtime,
-                                   shared_lock=shared_lock)
+                                   shared_lock=shared_lock,
+                                   shared_recent_links=shared_recent_links)
 
                 feed_data = parser.parse_feed(feed_url)
                 if not feed_data or not feed_data.get('entries'):
@@ -1384,7 +1400,7 @@ class RSSParser:
         print(f"   📰 Articles found: {len(all_articles)}")
         print(f"   🤖 Articles filtered: {total_processed}")
         print(f"   💾 Articles saved for generation: {total_saved}")
-        print(f"   🔄 Unique processed articles: {len(self.processed_articles)}")
+        print(f"   🔄 Unique processed articles: {len(shared_processed_articles)}")
         print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
         return all_articles
