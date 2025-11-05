@@ -15,6 +15,8 @@ import re
 import json
 import time
 import requests
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from dateutil import parser as date_parser
 from urllib.parse import urlparse
@@ -405,16 +407,18 @@ def get_full_text(link: str) -> Optional[str]:
 class RSSParser:
     """RSS parser class that extracts content and performs basic filtering."""
     
-    def __init__(self):
+    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_lock: threading.Lock = None):
         # Load environment variables from .env file
         load_env_file()
-
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': os.getenv('RSS_USER_AGENT', 'Mozilla/5.0 (compatible; SpainQuePasaBot/1.0)')
         })
         # Anti-block: per-host delay, ETag/Last-Modified caches
-        self._host_last_time = {}
+        # Allow sharing host timing between parser instances for correct per-host delay
+        self._host_last_time = shared_host_last_time if shared_host_last_time is not None else {}
+        # Shared lock to protect host timing and runtime sets when used concurrently
+        self._lock = shared_lock or threading.Lock()
         # Flag to bypass Firebase cache (duplicates/skips) for a single run
         self._bypass_db_cache = os.getenv('BYPASS_DB_CACHE', '0') == '1'
         try:
@@ -432,8 +436,9 @@ class RSSParser:
         self.db = None
 
         # Set to track unique articles processed in this run
-        self.processed_articles = set()
-        self._seen_links_runtime = set()
+    # Sets that track processed articles and links in this run. Can be shared between parser instances.
+    self.processed_articles = shared_processed_articles if shared_processed_articles is not None else set()
+    self._seen_links_runtime = shared_seen_links_runtime if shared_seen_links_runtime is not None else set()
 
         # Prefetch recent article links (last 24 hours) to avoid re-downloading
         # the same URLs during a single run. This accelerates filtering by
@@ -472,13 +477,34 @@ class RSSParser:
             p = urlparse(feed_url)
             host = p.netloc
             now_ms = int(time.time() * 1000)
-            last = self._host_last_time.get(host)
-            if last:
-                elapsed = now_ms - last
-                if elapsed < self._per_host_delay_ms:
-                    to_sleep = (self._per_host_delay_ms - elapsed) / 1000.0
-                    time.sleep(to_sleep)
-            self._host_last_time[host] = int(time.time() * 1000)
+            # Protect reads/writes to the shared host timing map
+            try:
+                # Compute required wait time while holding the lock, then sleep without the lock.
+                wait_ms = 0
+                with self._lock:
+                    last = self._host_last_time.get(host)
+                    if last:
+                        elapsed = now_ms - last
+                        if elapsed < self._per_host_delay_ms:
+                            wait_ms = self._per_host_delay_ms - elapsed
+                    else:
+                        # No previous access -> no wait
+                        wait_ms = 0
+
+                if wait_ms > 0:
+                    time.sleep(wait_ms / 1000.0)
+
+                # After sleeping (or immediately if no wait), update last access time under lock
+                with self._lock:
+                    self._host_last_time[host] = int(time.time() * 1000)
+            except Exception:
+                # Fallback: best-effort non-locked wait/update
+                last = self._host_last_time.get(host)
+                if last:
+                    elapsed = now_ms - last
+                    if elapsed < self._per_host_delay_ms:
+                        time.sleep((self._per_host_delay_ms - elapsed) / 1000.0)
+                self._host_last_time[host] = int(time.time() * 1000)
         except Exception:
             pass
 
@@ -1054,11 +1080,20 @@ class RSSParser:
             article_key = (article_link, article_title)
             stats['valid'] += 1
             
-            if article_key in self.processed_articles:
-                print(f"    ⚠️  Duplicate: {article_title[:30]}...")
-                stats['duplicates'] += 1
-                duplicate_count += 1
-                continue
+            # Check processed_articles with lock when shared between threads
+            try:
+                with self._lock:
+                    if article_key in self.processed_articles:
+                        print(f"    ⚠️  Duplicate: {article_title[:30]}...")
+                        stats['duplicates'] += 1
+                        duplicate_count += 1
+                        continue
+            except Exception:
+                if article_key in self.processed_articles:
+                    print(f"    ⚠️  Duplicate: {article_title[:30]}...")
+                    stats['duplicates'] += 1
+                    duplicate_count += 1
+                    continue
             
             # Normalize link for runtime checks (if available)
             try:
@@ -1068,11 +1103,21 @@ class RSSParser:
                 article_link_norm = article_link
 
             # Local duplicate in current run (use normalized link)
-            if article_link_norm and article_link_norm in self._seen_links_runtime:
-                print(f"    ⚠️  Duplicate link in current run, skipping")
-                duplicate_count += 1
-                continue
-            self._seen_links_runtime.add(article_link_norm)
+            try:
+                with self._lock:
+                    if article_link_norm and article_link_norm in self._seen_links_runtime:
+                        print(f"    ⚠️  Duplicate link in current run, skipping")
+                        duplicate_count += 1
+                        continue
+                    if article_link_norm:
+                        self._seen_links_runtime.add(article_link_norm)
+            except Exception:
+                if article_link_norm and article_link_norm in self._seen_links_runtime:
+                    print(f"    ⚠️  Duplicate link in current run, skipping")
+                    duplicate_count += 1
+                    continue
+                if article_link_norm:
+                    self._seen_links_runtime.add(article_link_norm)
 
             # QUICK CHECK: if link was seen in the last 24 hours (prefetched from Firebase), skip
             try:
@@ -1136,7 +1181,7 @@ class RSSParser:
             print(f"    ⬇️ Extracting full text...")
             if article.get('link'):
                 full_text = get_full_text(article['link'])
-                if full_text:
+                    if full_text:
                     article['content'] = full_text
                     print(f"    📄 Full text extracted ({len(full_text)} characters)")
                     stats['text_extracted'] += 1
@@ -1158,9 +1203,14 @@ class RSSParser:
                         # not crash the entire run.
                         print(f"    ⚠️  Exception while saving article: {e}")
 
-                    # Mark as processed in this run and append to results
-                    self.processed_articles.add(article_key)
-                    filtered_articles.append(article)
+                    # Mark as processed in this run and append to results (protected by lock)
+                    try:
+                        with self._lock:
+                            self.processed_articles.add(article_key)
+                            filtered_articles.append(article)
+                    except Exception:
+                        self.processed_articles.add(article_key)
+                        filtered_articles.append(article)
                 else:
                     print(f"    ⚠️  Failed to extract full text")
             else:
@@ -1272,23 +1322,38 @@ class RSSParser:
         
         print(f"📋 Found {len(feeds)} RSS feeds to process")
         print("=" * 60)
-        
+
+        # Prepare shared runtime state for parallel processing
+        shared_host_last_time = {}
+        shared_processed_articles = set()
+        shared_seen_links_runtime = set()
+        shared_lock = threading.Lock()
+
+        # Number of parallel feed workers (configurable)
+        try:
+            max_workers = int(os.getenv('RSS_PARALLEL_FEEDS', '4'))
+        except Exception:
+            max_workers = 4
+
         all_articles = []
         total_processed = 0
         total_saved = 0
-        
-        for i, feed_url in enumerate(feeds, 1):
-            print(f"\n🔄 [{i}/{len(feeds)}] Loading RSS: {feed_url}")
-            
+
+        # Worker that processes a single feed using its own parser but shared runtime state
+        def _process_feed(feed_url: str):
             try:
-                # Parse RSS feed
-                feed_data = self.parse_feed(feed_url)
+                print(f"\n🔄 Processing (worker) feed: {feed_url}")
+                parser = RSSParser(shared_host_last_time=shared_host_last_time,
+                                   shared_processed_articles=shared_processed_articles,
+                                   shared_seen_links_runtime=shared_seen_links_runtime,
+                                   shared_lock=shared_lock)
+
+                feed_data = parser.parse_feed(feed_url)
                 if not feed_data or not feed_data.get('entries'):
-                    print(f"   ⚠️  Failed to load RSS feed")
-                    continue
-                
+                    print(f"   ⚠️  Failed to load RSS feed: {feed_url}")
+                    return []
+
                 articles = feed_data['entries']
-                # Limit number of items per feed so orchestrator isn't blocked for too long
                 try:
                     max_per_feed = int(os.getenv('RSS_MAX_ITEMS_PER_FEED', '0') or '0')
                 except Exception:
@@ -1297,25 +1362,29 @@ class RSSParser:
                 if max_per_feed and total_in_feed > max_per_feed:
                     print(f"   ⚖️ Limiting {total_in_feed} → {max_per_feed} items for this feed (RSS_MAX_ITEMS_PER_FEED)")
                     articles = articles[:max_per_feed]
-                print(f"   ✅ Found {len(articles)} articles")
-                
-                # Filter and process articles
-                filtered_articles = self.filter_articles(articles, feed_url=feed_url)
-                
-                # Calculate statistics for this feed
-                processed_in_feed = len(filtered_articles)
-                saved_in_feed = len([a for a in filtered_articles if a.get('content')])
-                
-                total_processed += processed_in_feed
-                total_saved += saved_in_feed
-                
-                all_articles.extend(filtered_articles)
-                
-                print(f"   📊 Processed: {processed_in_feed}, Saved: {saved_in_feed}")
-                
+
+                filtered = parser.filter_articles(articles, feed_url=feed_url)
+                print(f"   📊 Worker processed {len(filtered)} filtered articles for feed {feed_url}")
+                return filtered
             except Exception as e:
                 print(f"   ❌ Error processing {feed_url}: {e}")
-                continue
+                return []
+
+        # Run feed processing in parallel
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for feed_url in feeds:
+                futures.append(ex.submit(_process_feed, feed_url))
+
+            for f in as_completed(futures):
+                try:
+                    filtered_articles = f.result()
+                    if filtered_articles:
+                        all_articles.extend(filtered_articles)
+                        total_processed += len(filtered_articles)
+                        total_saved += len([a for a in filtered_articles if a.get('content')])
+                except Exception as e:
+                    print(f"   ❌ Worker future error: {e}")
         # After processing all feeds, show final statistics
         print("\n" + "=" * 60)
         print(f"🎯 FINAL STATISTICS:")

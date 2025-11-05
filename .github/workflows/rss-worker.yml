@@ -76,6 +76,7 @@ jobs:
         RSS_FEEDS_FILE: workers/rss/feeds.txt
         RSS_LOCK_LEASE_SEC: 1800
         RSS_MAX_ITEMS_PER_FEED: 50
+        RSS_PARALLEL_FEEDS: 4
       run: |
         echo "Starting full RSS Worker"
         python -m workers.rss.worker
