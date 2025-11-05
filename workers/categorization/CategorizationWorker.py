@@ -277,11 +277,13 @@ class CategorizationWorker:
                         self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
                         results['processed'] += 1
                         save_status = 'ok'
-                        print(f"[categorization] ✅ Article {doc_id} categorized (score={interest_result.get('total_score')})")
+                        result_line = f"[categorization] ✅ Article {doc_id} categorized (score={interest_result.get('total_score')})"
+                        print(result_line)
                     except Exception as e:
                         err = f"Firebase save error for {doc_id}: {e}"
                         save_status = {'error': str(e)}
-                        print(f"[categorization] ❌ {err}")
+                        result_line = f"[categorization] ❌ {err}"
+                        print(result_line)
                         results['errors'].append(err)
 
                     # Append verbose JSONL log (input, interest, save result, processing time)
@@ -306,6 +308,14 @@ class CategorizationWorker:
                         }
                         with log_file.open('a', encoding='utf-8') as f:
                             f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+                        # Also append a human-readable result line to a plain text log
+                        try:
+                            result_log = log_dir / 'categorization_results.log'
+                            with result_log.open('a', encoding='utf-8') as rf:
+                                rf.write(result_line + '\n')
+                        except Exception:
+                            # non-fatal if result log write fails
+                            pass
                     except Exception as e:
                         print(f"[categorization] ⚠️ Failed to write log for {doc_id}: {e}")
 
