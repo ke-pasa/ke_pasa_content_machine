@@ -441,10 +441,12 @@ class RSSParser:
         self._recent_links_24h = set()
         try:
             if not self._bypass_db_cache:
-                from workers.tools.firebase_client import get_firebase_client
+                from workers.tools.firebase_client import get_firebase_client, normalize_link
                 client = get_firebase_client()
                 try:
-                    self._recent_links_24h = client.get_recent_article_links(24) or set()
+                    recent = client.get_recent_article_links(24) or set()
+                    # Normalize recent links as well to match parser-side normalization
+                    self._recent_links_24h = set(normalize_link(l) for l in recent if l)
                     if self._recent_links_24h:
                         print(f"ℹ️  Prefetched {len(self._recent_links_24h)} recent links from Firebase")
                 except Exception as e:
@@ -1058,16 +1060,23 @@ class RSSParser:
                 duplicate_count += 1
                 continue
             
-            # Local duplicate in current run
-            if article_link and article_link in self._seen_links_runtime:
+            # Normalize link for runtime checks (if available)
+            try:
+                from workers.tools.firebase_client import normalize_link
+                article_link_norm = normalize_link(article_link) if article_link else article_link
+            except Exception:
+                article_link_norm = article_link
+
+            # Local duplicate in current run (use normalized link)
+            if article_link_norm and article_link_norm in self._seen_links_runtime:
                 print(f"    ⚠️  Duplicate link in current run, skipping")
                 duplicate_count += 1
                 continue
-            self._seen_links_runtime.add(article_link)
+            self._seen_links_runtime.add(article_link_norm)
 
             # QUICK CHECK: if link was seen in the last 24 hours (prefetched from Firebase), skip
             try:
-                if article_link and article_link in getattr(self, '_recent_links_24h', set()):
+                if article_link_norm and article_link_norm in getattr(self, '_recent_links_24h', set()):
                     print(f"    🔁 Recently processed within 24h, skipping")
                     duplicate_count += 1
                     continue

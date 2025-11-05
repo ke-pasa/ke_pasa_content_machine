@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-КОМПЛЕКСНАЯ ПРОВЕРКА ИНТЕГРАЦИИ GPT-5-MINI
+КОМПЛЕКСНАЯ ПРОВЕРКА ИНТЕГРАЦИИ gpt-4o-mini
 Проверяет всю систему на предмет успешного внедрения новой модели
 """
 
@@ -11,9 +11,9 @@ from pathlib import Path
 import importlib.util
 
 def check_system_integration():
-    """Проверяет интеграцию GPT-5-mini во всей системе"""
+    """Проверяет интеграцию gpt-4o-mini во всей системе"""
     
-    print("🔍 КОМПЛЕКСНАЯ ПРОВЕРКА ИНТЕГРАЦИИ GPT-5-MINI")
+    print("🔍 КОМПЛЕКСНАЯ ПРОВЕРКА ИНТЕГРАЦИИ gpt-4o-mini")
     print("=" * 70)
     
     # Файлы для проверки
@@ -57,7 +57,7 @@ def check_system_integration():
     generate_final_report(model_replacement_status, parameter_status, syntax_status, api_status)
 
 def check_model_replacements(files):
-    """Проверяет замену моделей на GPT-5-mini"""
+    """Проверяет замену моделей на gpt-4o-mini"""
     
     print("🔍 Проверяю замену моделей...")
     
@@ -81,18 +81,18 @@ def check_model_replacements(files):
             
             status['checked_files'] += 1
             
-            # Проверяем наличие GPT-5-mini
-            if 'gpt-5-mini' in content:
-                status['gpt5_mini_found'] += 1
-                print(f"   ✅ {filename} - содержит gpt-5-mini")
-            else:
-                print(f"   ⚠️  {filename} - НЕ содержит gpt-5-mini")
-                status['issues'].append(f"⚠️  {filename} - НЕ содержит gpt-5-mini")
-            
-            # Проверяем остатки GPT-4o-mini
+            # Проверяем наличие gpt-4o-mini
             if 'gpt-4o-mini' in content:
+                status['gpt5_mini_found'] += 1
+                print(f"   ✅ {filename} - содержит gpt-4o-mini")
+            else:
+                print(f"   ⚠️  {filename} - НЕ содержит gpt-4o-mini")
+                status['issues'].append(f"⚠️  {filename} - НЕ содержит gpt-4o-mini")
+            
+            # Проверяем остатки gpt-5-mini (если остались старые ссылки)
+            if 'gpt-5-mini' in content:
                 status['gpt4o_mini_remaining'] += 1
-                print(f"      ⚠️  {filename} - содержит gpt-4o-mini (возможно, fallback)")
+                print(f"      ⚠️  {filename} - содержит gpt-5-mini (возможно, старые упоминания)")
             
         except Exception as e:
             status['issues'].append(f"❌ {filename} - ошибка чтения: {e}")
@@ -106,7 +106,7 @@ def check_model_replacements(files):
     return status
 
 def check_parameters(files):
-    """Проверяет правильность параметров для GPT-5-mini"""
+    """Проверяет правильность параметров для gpt-4o-mini"""
     
     print("🔍 Проверяю параметры...")
     
@@ -127,7 +127,7 @@ def check_parameters(files):
                 content = f.read()
             
             # Проверяем max_tokens (должно быть max_completion_tokens)
-            if 'max_tokens' in content and 'gpt-5-mini' in content:
+            if 'max_tokens' in content and 'gpt-4o-mini' in content:
                 status['max_tokens_issues'] += 1
                 status['issues'].append(f"❌ {filename} - содержит max_tokens вместо max_completion_tokens")
                 print(f"   ❌ {filename} - max_tokens вместо max_completion_tokens")
@@ -138,7 +138,7 @@ def check_parameters(files):
             temp_pattern = r'temperature\s*=\s*([^,\s]+)'
             temp_matches = re.findall(temp_pattern, content)
             for match in temp_matches:
-                if match != '1' and 'gpt-5-mini' in content:
+                if match != '1' and 'gpt-4o-mini' in content:
                     status['temperature_issues'] += 1
                     status['issues'].append(f"❌ {filename} - temperature={match} вместо 1")
                     print(f"   ❌ {filename} - temperature={match} вместо 1")
@@ -146,7 +146,7 @@ def check_parameters(files):
             # Проверяем неподдерживаемые параметры
             unsupported_params = ['top_p', 'frequency_penalty', 'presence_penalty']
             for param in unsupported_params:
-                if param in content and 'gpt-5-mini' in content:
+                if param in content and 'gpt-4o-mini' in content:
                     status['unsupported_params'] += 1
                     status['issues'].append(f"⚠️  {filename} - содержит неподдерживаемый параметр {param}")
                     print(f"   ⚠️  {filename} - содержит {param}")
@@ -209,7 +209,7 @@ def check_syntax(files):
     return status
 
 def test_api_integration():
-    """Тестирует интеграцию с OpenAI API"""
+    """Тестирует интеграцию с OpenAI API (gpt-4o-mini primary)"""
     
     print("🔍 Тестирую интеграцию с OpenAI API...")
     
@@ -234,10 +234,31 @@ def test_api_integration():
         
         status['api_available'] = True
         print("   ✅ OpenAI API доступен")
-        
-        # Тестируем GPT-5-mini
+
+        # Тестируем gpt-4o-mini (primary)
         client = openai.OpenAI(api_key=api_key)
-        
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Ты помощник для тестирования."},
+                    {"role": "user", "content": "Ответь 'OK' на русском языке."}
+                ],
+                max_completion_tokens=10,
+                temperature=1
+            )
+
+            result = response.choices[0].message.content
+            status['gpt5_mini_working'] = True
+            status['test_results'].append(f"✅ gpt-4o-mini работает, ответ: {result}")
+            print(f"   ✅ gpt-4o-mini работает, ответ: {result}")
+
+        except Exception as e:
+            status['issues'].append(f"❌ gpt-4o-mini не работает: {e}")
+            print(f"   ❌ gpt-4o-mini не работает: {e}")
+
+        # Тестируем fallback на GPT-5-mini (если нужен)
         try:
             response = client.chat.completions.create(
                 model="gpt-5-mini",
@@ -246,37 +267,16 @@ def test_api_integration():
                     {"role": "user", "content": "Ответь 'OK' на русском языке."}
                 ],
                 max_completion_tokens=10,
-                temperature=1
+                temperature=0.7
             )
-            
+
             result = response.choices[0].message.content
-            status['gpt5_mini_working'] = True
-            status['test_results'].append(f"✅ GPT-5-mini работает, ответ: {result}")
-            print(f"   ✅ GPT-5-mini работает, ответ: {result}")
-            
+            status['test_results'].append(f"✅ GPT-5-mini работает (fallback), ответ: {result}")
+            print(f"   ✅ GPT-5-mini работает (fallback), ответ: {result}")
+
         except Exception as e:
             status['issues'].append(f"❌ GPT-5-mini не работает: {e}")
             print(f"   ❌ GPT-5-mini не работает: {e}")
-        
-        # Тестируем fallback на GPT-4o-mini
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Ты помощник для тестирования."},
-                    {"role": "user", "content": "Ответь 'OK' на русском языке."}
-                ],
-                max_tokens=10,
-                temperature=0.7
-            )
-            
-            result = response.choices[0].message.content
-            status['test_results'].append(f"✅ GPT-4o-mini работает (fallback), ответ: {result}")
-            print(f"   ✅ GPT-4o-mini работает (fallback), ответ: {result}")
-            
-        except Exception as e:
-            status['issues'].append(f"❌ GPT-4o-mini не работает: {e}")
-            print(f"   ❌ GPT-4o-mini не работает: {e}")
         
     except ImportError as e:
         status['issues'].append(f"❌ Не удалось импортировать openai: {e}")
@@ -290,7 +290,7 @@ def test_api_integration():
 def generate_final_report(model_status, param_status, syntax_status, api_status):
     """Генерирует итоговый отчет по проверке"""
     
-    print("📊 ИТОГОВАЯ ОЦЕНКА ИНТЕГРАЦИИ GPT-5-MINI")
+    print("📊 ИТОГОВАЯ ОЦЕНКА ИНТЕГРАЦИИ gpt-4o-mini")
     print("=" * 70)
     
     # Подсчитываем общую оценку
@@ -319,13 +319,13 @@ def generate_final_report(model_status, param_status, syntax_status, api_status)
     
     print(f"\n📊 СТАТИСТИКА:")
     print(f"   Всего проблем: {total_issues}")
-    print(f"   Файлов с GPT-5-mini: {model_status['gpt5_mini_found']}/{model_status['checked_files']}")
+    print(f"   Файлов с gpt-4o-mini: {model_status['gpt5_mini_found']}/{model_status['checked_files']}")
     print(f"   Файлов с корректным синтаксисом: {syntax_status['syntax_ok']}/{syntax_status['total_files']}")
     print(f"   GPT-5-mini работает: {'✅ Да' if api_status['gpt5_mini_working'] else '❌ Нет'}")
     
     if total_issues == 0:
         print(f"\n🎉 ИНТЕГРАЦИЯ ПРОШЛА ИДЕАЛЬНО!")
-        print("   Система полностью готова к использованию GPT-5-mini")
+        print("   Система полностью готова к использованию gpt-4o-mini")
     elif overall_score >= 80:
         print(f"\n✅ ИНТЕГРАЦИЯ ПРОШЛА УСПЕШНО!")
         print("   Система готова к использованию с небольшими замечаниями")
@@ -340,7 +340,7 @@ def generate_final_report(model_status, param_status, syntax_status, api_status)
     print(f"\n💡 РЕКОМЕНДАЦИИ:")
     
     if model_status['gpt4o_mini_remaining'] > 0:
-        print(f"   • Проверить {model_status['gpt4o_mini_remaining']} файлов с GPT-4o-mini")
+        print(f"   • Проверить {model_status['gpt4o_mini_remaining']} файлов с GPT-5-mini (старые упоминания)")
     
     if param_status['max_tokens_issues'] > 0:
         print(f"   • Заменить max_tokens на max_completion_tokens в {param_status['max_tokens_issues']} файлах")
@@ -349,7 +349,7 @@ def generate_final_report(model_status, param_status, syntax_status, api_status)
         print(f"   • Установить temperature=1 в {param_status['temperature_issues']} файлах")
     
     if not api_status['gpt5_mini_working']:
-        print(f"   • Проверить доступность GPT-5-mini в OpenAI API")
+        print(f"   • Проверить доступность gpt-4o-mini в OpenAI API")
     
     # Создаем отчет
     create_integration_report(model_status, param_status, syntax_status, api_status, overall_score)
@@ -357,7 +357,7 @@ def generate_final_report(model_status, param_status, syntax_status, api_status)
 def create_integration_report(model_status, param_status, syntax_status, api_status, overall_score):
     """Создает детальный отчет по интеграции"""
     
-    report_content = f"""# 🔍 ОТЧЕТ ПО ПРОВЕРКЕ ИНТЕГРАЦИИ GPT-5-MINI
+    report_content = f"""# 🔍 ОТЧЕТ ПО ПРОВЕРКЕ ИНТЕГРАЦИИ gpt-4o-mini
 
 ## 📊 ОБЩАЯ ОЦЕНКА
 **Дата проверки:** Январь 2025  
@@ -409,7 +409,7 @@ def create_integration_report(model_status, param_status, syntax_status, api_sta
     
     # Добавляем рекомендации
     if model_status['gpt4o_mini_remaining'] > 0:
-        report_content += f"• Проверить {model_status['gpt4o_mini_remaining']} файлов с GPT-4o-mini\n"
+        report_content += f"• Проверить {model_status['gpt4o_mini_remaining']} файлов с GPT-5-mini (старые упоминания)\n"
     
     if param_status['max_tokens_issues'] > 0:
         report_content += f"• Заменить max_tokens на max_completion_tokens в {param_status['max_tokens_issues']} файлах\n"
@@ -418,7 +418,7 @@ def create_integration_report(model_status, param_status, syntax_status, api_sta
         report_content += f"• Установить temperature=1 в {param_status['temperature_issues']} файлах\n"
     
     if not api_status['gpt5_mini_working']:
-        report_content += "• Проверить доступность GPT-5-mini в OpenAI API\n"
+        report_content += "• Проверить доступность gpt-4o-mini в OpenAI API\n"
     
     report_content += f"""
 ## 🎉 ЗАКЛЮЧЕНИЕ
@@ -426,7 +426,7 @@ def create_integration_report(model_status, param_status, syntax_status, api_sta
 """
     
     if overall_score >= 80:
-        report_content += "Интеграция GPT-5-mini прошла успешно. Система готова к использованию новой модели."
+        report_content += "Интеграция gpt-4o-mini прошла успешно. Система готова к использованию новой модели."
     elif overall_score >= 60:
         report_content += "Интеграция требует доработки. Есть проблемы, которые нужно исправить перед использованием."
     else:

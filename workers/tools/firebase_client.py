@@ -11,6 +11,8 @@ import os
 import json
 import hashlib
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, urlunparse, unquote
+import re
 from typing import Dict, List, Any, Optional
 # Require firebase_admin at import time: any Firebase import error should
 # stop module import so calling code sees configuration issues early.
@@ -186,7 +188,7 @@ class FirebaseClient:
         
         try:
             clusters_ref = self.db.collection(COLLECTIONS['CLUSTERS'])
-            query = clusters_ref.where('published', '==', False).order_by('created_at', direction=firestore_types.Query.DESCENDING).limit(limit)
+            query = clusters_ref.where(field_path='published', op_string='==', value=False).order_by('created_at', direction=firestore_types.Query.DESCENDING).limit(limit)
             
             docs = query.stream()
             clusters = []
@@ -233,7 +235,7 @@ class FirebaseClient:
             return False
         try:
             sources_ref = self.db.collection(COLLECTIONS['SOURCES'])
-            query = sources_ref.where('link', '==', link).limit(1)
+            query = sources_ref.where(field_path='link', op_string='==', value=link).limit(1)
             docs = list(query.stream())
             return len(docs) > 0
         except Exception as e:
@@ -246,7 +248,7 @@ class FirebaseClient:
             return False
         try:
             sources_ref = self.db.collection(COLLECTIONS['SOURCES'])
-            query = sources_ref.where('hash', '==', hash_value).limit(1)
+            query = sources_ref.where(field_path='hash', op_string='==', value=hash_value).limit(1)
             docs = list(query.stream())
             return len(docs) > 0
         except Exception as e:
@@ -271,7 +273,7 @@ class FirebaseClient:
         if not self.db:
             return False
         try:
-            docs = list(self.db.collection(COLLECTIONS['ARTICLES']).where('link', '==', link).limit(1).stream())
+            docs = list(self.db.collection(COLLECTIONS['ARTICLES']).where(field_path='link', op_string='==', value=link).limit(1).stream())
             return len(docs) > 0
         except Exception as e:
             self._log_event(f"Error checking duplicate by link: {e}", "error")
@@ -527,6 +529,47 @@ def compute_article_id(link: str, title: str) -> str:
     """
     content = f"{link}{title}"
     return hashlib.md5(content.encode()).hexdigest()
+
+
+def normalize_link(link: str) -> str:
+    """
+    Normalize a URL for comparison purposes.
+
+    Rules applied:
+    - If link is empty or not a string, return as-is.
+    - Lowercase scheme and host.
+    - Remove query and fragment.
+    - Remove default ports (80 for http, 443 for https).
+    - Remove trailing slash from path (except when path is '/')
+    - Percent-decode path components for normalization.
+
+    This is intentionally conservative: it does not attempt to resolve
+    redirects or fetch network resources.
+    """
+    try:
+        if not link or not isinstance(link, str):
+            return link
+        parsed = urlparse(link)
+        if not parsed.scheme or not parsed.netloc:
+            # If the URL is relative or missing scheme/netloc, return as-is
+            return link
+
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc.lower()
+        # Remove default ports
+        netloc = re.sub(r":(80)$", "", netloc) if scheme == 'http' else netloc
+        netloc = re.sub(r":(443)$", "", netloc) if scheme == 'https' else netloc
+
+        # Decode percent-encoded path and collapse duplicate slashes
+        path = unquote(parsed.path or '')
+        path = re.sub(r'/{2,}', '/', path)
+        if path.endswith('/') and path != '/':
+            path = path[:-1]
+
+        normalized = urlunparse((scheme, netloc, path, '', '', ''))
+        return normalized
+    except Exception:
+        return link
 
 _firebase_client = None
 

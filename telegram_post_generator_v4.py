@@ -56,7 +56,7 @@ class TelegramPostGeneratorV4:
     
     def _create_system_prompt(self) -> str:
         """Создает системный промпт (кэшируется)"""
-        # Используем упрощенный, но четкий промпт для GPT-5-mini
+        # Используем упрощенный, но четкий промпт для gpt-4o-mini
         return """Ты пишешь посты для Telegram канала русскоязычных мигрантов в Испании.
 
 КРИТИЧЕСКИ ВАЖНО: ВСЕГДА ПИШИ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ!
@@ -80,12 +80,12 @@ class TelegramPostGeneratorV4:
             # Создаем промпты
             system_prompt = self._system_prompt
             
-            # Используем упрощенный промпт для GPT-5-mini
+            # Используем упрощенный промпт для gpt-4o-mini
             user_prompt = self._create_simple_prompt(article, article_url)
             
             # Отправляем запрос в OpenAI
             response = self.openai_client.chat.completions.create(
-                model="gpt-5-mini",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -104,7 +104,7 @@ class TelegramPostGeneratorV4:
                 
                 try:
                     fallback_response = self.openai_client.chat.completions.create(
-                        model="gpt-5-mini",
+                        model="gpt-4o-mini",
                         messages=[
                             {"role": "system", "content": "Ты пишешь посты для Telegram. ВСЕГДА на русском языке!"},
                             {"role": "user", "content": fallback_prompt}
@@ -156,7 +156,7 @@ class TelegramPostGeneratorV4:
             return None
     
     def _create_simple_prompt(self, article: Dict[str, Any], article_url: str) -> str:
-        """Создает простой промпт для GPT-5-mini"""
+        """Создает простой промпт для gpt-4o-mini"""
         # Получаем информацию о посте
         post_info = self.get_post_info(article)
         emoji = post_info['emoji']
