@@ -429,20 +429,12 @@ class RSSParser:
         self._lm_cache_path = os.getenv('RSS_LM_CACHE', 'rss_lastmod_cache.json')
         self._etag_cache = load_json_cache(self._etag_cache_path)
         self._lm_cache = load_json_cache(self._lm_cache_path)
-        # Initialize Firebase lazily (import inside __init__ to avoid network calls at module import)
-        # Do not initialize Firebase at import/construct time to keep this
-        # class import-safe in CI. Initialization will be attempted when a
-        # save is requested (fail-fast on save if initialization fails).
+
         self.db = None
 
-        # Set to track unique articles processed in this run
-    # Sets that track processed articles and links in this run. Can be shared between parser instances.
-    self.processed_articles = shared_processed_articles if shared_processed_articles is not None else set()
-    self._seen_links_runtime = shared_seen_links_runtime if shared_seen_links_runtime is not None else set()
+        self.processed_articles = shared_processed_articles if shared_processed_articles is not None else set()
+        self._seen_links_runtime = shared_seen_links_runtime if shared_seen_links_runtime is not None else set()
 
-        # Prefetch recent article links (last 24 hours) to avoid re-downloading
-        # the same URLs during a single run. This accelerates filtering by
-        # checking an in-memory set before querying Firebase for duplicates.
         self._recent_links_24h = set()
         try:
             if not self._bypass_db_cache:
@@ -1181,7 +1173,7 @@ class RSSParser:
             print(f"    ⬇️ Extracting full text...")
             if article.get('link'):
                 full_text = get_full_text(article['link'])
-                    if full_text:
+                if full_text:
                     article['content'] = full_text
                     print(f"    📄 Full text extracted ({len(full_text)} characters)")
                     stats['text_extracted'] += 1
