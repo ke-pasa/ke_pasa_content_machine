@@ -4,6 +4,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .news_filter_prompt import get_news_filter_prompt, validate_news_interest
 from workers.tools.openai_client import parse_json_from_text
@@ -110,8 +112,17 @@ class CategorizationWorker:
 
                 model = 'gpt-4o-mini'
                 client = _get_openai_client()
+                # Process docs in parallel within this chunk
+                try:
+                    max_workers = int(getattr(self.config, 'parallelism', None) or 0) or int(__import__('os').environ.get('CATEGORIZATION_PARALLELISM', '4'))
+                except Exception:
+                    max_workers = 4
 
-                for doc in docs:
+                # Thread-safe accumulator for this chunk
+                chunk_results = {'processed': 0, 'errors': []}
+                lock = threading.Lock()
+
+                def _process_doc(doc):
                     try:
                         doc_id = doc.id
                         data = doc.to_dict() or {}
@@ -204,15 +215,16 @@ class CategorizationWorker:
 
                         try:
                             self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
-                            results['processed'] += 1
-                            processed_total += 1
                             save_status = 'ok'
                             result_line = f"[categorization] ✅ Article {doc_id} categorized"
+                            with lock:
+                                chunk_results['processed'] += 1
                         except Exception as e:
                             err = f"Firebase save error for {doc_id}: {e}"
                             save_status = {'error': str(e)}
                             result_line = f"[categorization] ❌ {err}"
-                            results['errors'].append(err)
+                            with lock:
+                                chunk_results['errors'].append(err)
 
                         # logging
                         try:
@@ -247,7 +259,29 @@ class CategorizationWorker:
 
                     except Exception as e:
                         err = f"Processing error for doc {getattr(doc, 'id', '?')}: {e}"
-                        results['errors'].append(err)
+                        with lock:
+                            chunk_results['errors'].append(err)
+
+                # execute in thread pool
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = [ex.submit(_process_doc, d) for d in docs]
+                    for f in as_completed(futures):
+                        try:
+                            f.result()
+                        except Exception as e:
+                            # Shouldn't occur because _process_doc captures exceptions, but just in case
+                            chunk_results['errors'].append(str(e))
+
+                # aggregate chunk results
+                results['processed'] += chunk_results['processed']
+                results['errors'].extend(chunk_results['errors'])
+                processed_total += chunk_results['processed']
+
+                # If we've processed enough, break early
+                if processed_total >= requested_total:
+                    break
+                
+                
 
                 try:
                     last_snapshot = docs[-1]

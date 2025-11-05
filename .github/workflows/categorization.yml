@@ -46,7 +46,7 @@ jobs:
           export GOOGLE_APPLICATION_CREDENTIALS=$PWD/firebase_key.json
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-
+          CATEGORIZATION_PARALLELISM: 4
 
 
       - name: Run categorization CLI (manual dispatch)
