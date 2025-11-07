@@ -1,6 +1,7 @@
 import uuid
 import json
 from datetime import datetime, timezone
+import time
 import math
 from pathlib import Path
 import logging
@@ -130,6 +131,10 @@ class ArticleGenerator:
 
                 def _process_doc(doc):
                     try:
+                        proc_start = time.perf_counter()
+                        logger = logging.getLogger('workers.article_generator')
+                        logger.info('start processing doc %s', getattr(doc, 'id', '?'))
+
                         doc_id = doc.id
                         data = doc.to_dict() or {}
                         title = data.get('title', '') or ''
@@ -192,7 +197,11 @@ class ArticleGenerator:
                             'total_score': total_score,
                         }
 
+                        # call translator and measure time
+                        trans_start = time.perf_counter()
                         translation_result = self.translator.translate(title, description, content, metadata=article_metadata)
+                        trans_duration = time.perf_counter() - trans_start
+                        logger.debug('translator finished for %s in %.3fs', doc_id, trans_duration)
 
                         if not translation_result:
                             update_payload = {
@@ -268,20 +277,46 @@ class ArticleGenerator:
                                 chunk_results['errors'].append(err)
 
                         try:
+                            proc_duration = time.perf_counter() - proc_start
                             log_dir = Path(__file__).parent.parent.parent / 'logs'
                             log_dir.mkdir(parents=True, exist_ok=True)
                             log_file = log_dir / 'article_generation.jsonl'
-                            log_entry = {
+
+                            # build rich log entry
+                            entry = {
                                 'doc_id': doc_id,
+                                'source_url': article_metadata.get('url'),
+                                'source_name': article_metadata.get('source_name') or article_metadata.get('source'),
                                 'total_score': total_score,
-                                'translation': translation_result,
                                 'model': getattr(self.translator, 'model', None) or 'gpt-5-mini',
+                                'translation_result_summary': {
+                                    'has_translation': bool(translation_result.get('translation_ru')) if isinstance(translation_result, dict) else False,
+                                    'title_ru_len': len((translation_result.get('title_ru') or '') if isinstance(translation_result, dict) else ''),
+                                    'content_ru_len': len((translation_result.get('content_ru') or translation_result.get('translation_ru') or '') if isinstance(translation_result, dict) else ''),
+                                    'flags': translation_result.get('flags') if isinstance(translation_result, dict) else [],
+                                    'publish_md_len': len((translation_result.get('publish_md') or '') if isinstance(translation_result, dict) else ''),
+                                    'tg_preview_len': len((translation_result.get('tg_preview') or '') if isinstance(translation_result, dict) else ''),
+                                },
+                                'timings': {
+                                    'translator_seconds': round(trans_duration, 3),
+                                    'processing_seconds': round(proc_duration, 3),
+                                },
+                                'worker_instance': self.instance_id,
                                 'timestamp': datetime.now(timezone.utc).isoformat(),
                             }
+
+                            # include full translation_result for deeper debugging
+                            try:
+                                entry['translation_full'] = translation_result
+                            except Exception:
+                                entry['translation_full'] = str(translation_result)
+
                             with log_file.open('a', encoding='utf-8') as f:
-                                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+                                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+                            logger.info('finished processing doc %s: trans=%.3fs total=%.3fs', doc_id, trans_duration, proc_duration)
                         except Exception:
-                            pass
+                            logger.exception('failed to write log for %s', doc_id)
 
                     except Exception as proc_err:
                         err = f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}"
