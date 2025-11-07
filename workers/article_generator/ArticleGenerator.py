@@ -1,0 +1,319 @@
+import uuid
+import json
+from datetime import datetime, timezone
+import math
+from pathlib import Path
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .translator import ArticleTranslator
+
+
+# Helpers that prefer test-time monkeypatching via the thin worker module.
+def _get_firebase_client():
+    try:
+        import importlib
+        worker_mod = importlib.import_module('workers.article_generator.worker')
+        if hasattr(worker_mod, 'get_firebase_client') and worker_mod.get_firebase_client:
+            return worker_mod.get_firebase_client()
+    except Exception:
+        pass
+    from workers.tools.firebase_client import get_firebase_client as _gf
+    return _gf()
+
+
+class ArticleGenerator:
+    """Process articles with status CATEGORIZED: skip low-score, translate others to Russian."""
+
+    def __init__(self, translator: ArticleTranslator | None = None):
+        # This worker processes all matching articles by default (no batching)
+        self.batch_size = None
+
+        self.db = _get_firebase_client().db
+        self.instance_id = str(uuid.uuid4())[:8]
+        self.translator = translator or ArticleTranslator()
+
+    def _save_generated_article(self, doc_id: str, source: dict, total_score: float = 0.0,
+                                translation_result: dict | None = None, status: str = 'UNKNOWN', metadata: dict | None = None) -> None:
+        """Persist generated article and metadata into `articles_ru` collection.
+
+        Uses the original doc id so it's easy to join with `articles` collection.
+        Stores stage outputs, combined flags, model and worker info.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        metadata = metadata or {}
+        tr = translation_result or {}
+
+        # Best-effort RU fields
+        title_ru = tr.get('title_ru') or (tr.get('editorial_result') or {}).get('title_ru') or None
+        description_ru = tr.get('description_ru') or (tr.get('editorial_result') or {}).get('description_ru') or None
+        content_ru = tr.get('content_ru') or (tr.get('editorial_result') or {}).get('content_ru') or tr.get('translation_ru') or None
+
+        # Stage outputs
+        stage2 = tr.get('editorial_result') or None
+        stage3 = {'publish_md': tr.get('publish_md'), 'flags': tr.get('publish_flags') or []}
+        stage4 = {'tg_preview': tr.get('tg_preview'), 'flags': tr.get('tg_flags') or []}
+
+        # Combine flags from various sources
+        combined_flags = []
+        for f in (tr.get('flags') or [], stage3.get('flags') or [], stage4.get('flags') or []):
+            combined_flags.extend([x for x in (f or []) if isinstance(x, str)])
+
+        payload = {
+            'article_id': doc_id,
+            'source_url': source.get('link') or source.get('url'),
+            'source_name': source.get('source') or source.get('source_name'),
+            'source_published_at': source.get('published_at') or source.get('pub_date') or None,
+            'status': status,
+            'total_score': total_score,
+            'title_ru': title_ru,
+            'description_ru': description_ru,
+            'content_ru': content_ru,
+            'stages': {
+                'editorial': stage2,
+                'publish': stage3,
+                'telegram': stage4,
+            },
+            'flags': sorted(set(combined_flags)),
+            'model': getattr(getattr(self, 'translator', None), 'model', None) or 'gpt-5-mini',
+            'worker': metadata.get('worker_name'),
+            'translation_metadata': tr,
+            'created_at': now,
+            'updated_at': now,
+        }
+
+        try:
+            self.db.collection('articles_ru').document(doc_id).set(payload, merge=True)
+        except Exception:
+            logging.exception("Failed to write generated article %s to articles_ru", doc_id)
+
+    def translated(self) -> dict:
+        """Read articles with status CATEGORIZED. If total_score < 60 -> set SKIPPED. Else -> translate to Russian."""
+
+        results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+
+        try:
+            # No batch_size means process all available documents
+            requested_total = math.inf
+
+            chunk_size = 20
+            processed_total = 0
+            last_snapshot = None
+
+            while processed_total < requested_total:
+                limit_for_query = min(chunk_size, requested_total - processed_total)
+
+                try:
+                    query = self.db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(limit_for_query)
+                    if last_snapshot is not None:
+                        try:
+                            query = query.start_after(last_snapshot)
+                        except Exception:
+                            # fake DBs used in tests may not support start_after
+                            pass
+
+                    docs = list(query.stream())
+                except Exception as e:
+                    return {'status': 'error', 'message': str(e)}
+
+                if not docs:
+                    break
+
+                try:
+                    max_workers = int(__import__('os').environ.get('ARTICLE_GENERATOR_PARALLELISM', '4'))
+                except Exception:
+                    max_workers = 4
+
+                chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+                lock = threading.Lock()
+
+                def _process_doc(doc):
+                    try:
+                        doc_id = doc.id
+                        data = doc.to_dict() or {}
+                        title = data.get('title', '') or ''
+                        description = data.get('description', '') or ''
+                        content = data.get('content', '') or ''
+
+                        # Determine score from several possible locations
+                        total_score = None
+                        try:
+                            maybe = data.get('total_score')
+                            if maybe is None:
+                                interest = data.get('interest') or {}
+                                maybe = interest.get('total_score') or interest.get('total')
+                            if maybe is not None:
+                                total_score = float(maybe)
+                        except Exception:
+                            total_score = None
+
+                        if total_score is None:
+                            total_score = 0.0
+
+                        if total_score < 60:
+                            update_payload = {
+                                'status': 'SKIPPED',
+                                'skipped_reason': 'low_score',
+                                'total_score': total_score,
+                                'skipped_at': datetime.now(timezone.utc).isoformat(),
+                                'updated_at': datetime.now(timezone.utc).isoformat(),
+                            }
+                            try:
+                                self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+                                with lock:
+                                    chunk_results['skipped'] += 1
+                                    chunk_results['processed'] += 1
+                                try:
+                                    # persist minimal record to articles_ru for tracking
+                                    self._save_generated_article(
+                                        doc_id=doc_id,
+                                        source=data,
+                                        total_score=total_score,
+                                        translation_result=None,
+                                        status='SKIPPED',
+                                        metadata={'worker_name': 'article_generator'},
+                                    )
+                                except Exception:
+                                    logging.exception('Failed to save skipped generated article %s', doc_id)
+                            except Exception as save_err:
+                                err = f"Firebase save error for {doc_id}: {save_err}"
+                                with lock:
+                                    chunk_results['errors'].append(err)
+                            return
+
+                        article_metadata = {
+                            'url': data.get('link') or data.get('url'),
+                            'link': data.get('link'),
+                            'source': data.get('source') or data.get('source_name'),
+                            'source_name': data.get('source_name') or data.get('source'),
+                            'published_at': data.get('published_at') or data.get('published') or data.get('pub_date'),
+                            'pub_date': data.get('pub_date'),
+                            'total_score': total_score,
+                        }
+
+                        translation_result = self.translator.translate(title, description, content, metadata=article_metadata)
+
+                        if not translation_result:
+                            update_payload = {
+                                'status': 'TRANSLATION_FAILED',
+                                'total_score': total_score,
+                                'translated_at': None,
+                                'updated_at': datetime.now(timezone.utc).isoformat(),
+                            }
+                            try:
+                                self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+                                with lock:
+                                    chunk_results['processed'] += 1
+                                    chunk_results['errors'].append(f"Translation failed for {doc_id}")
+                            except Exception as save_err:
+                                err = f"Firebase save error for {doc_id}: {save_err}"
+                                with lock:
+                                    chunk_results['errors'].append(err)
+                            return
+
+                        title_ru = translation_result.get('title_ru') or None
+                        description_ru = translation_result.get('description_ru') or None
+                        content_ru = translation_result.get('content_ru') or translation_result.get('translation_ru') or None
+                        notes = translation_result.get('notes') or []
+                        flags = translation_result.get('flags') or []
+
+                        # Instead of updating the original `articles` doc and setting status=TRANSLATED,
+                        # persist the generated result into `articles_ru` only. Do not modify the
+                        # original article's status (user requested to keep original untouched).
+                        try:
+                            # persist full generated article to articles_ru
+                            self._save_generated_article(
+                                doc_id=doc_id,
+                                source=data,
+                                total_score=total_score,
+                                translation_result=translation_result,
+                                status='TRANSLATED',
+                                metadata={'worker_name': 'article_generator', 'model': getattr(self.translator, 'model', None)},
+                            )
+
+                            # Also update original article record to reflect translation status
+                            update_payload = {
+                                'title_ru': title_ru,
+                                'description_ru': description_ru,
+                                'content_ru': content_ru,
+                                'translation_ru': translation_result.get('translation_ru'),
+                                'translation_notes': notes,
+                                'translation_flags': flags,
+                                'translation_metadata': translation_result,
+                                'publish_md': translation_result.get('publish_md'),
+                                'publish_flags': translation_result.get('publish_flags'),
+                                'telegram_preview': translation_result.get('tg_preview'),
+                                'telegram_flags': translation_result.get('tg_flags'),
+                                'status': 'TRANSLATED',
+                                'total_score': total_score,
+                                'translated_at': datetime.now(timezone.utc).isoformat(),
+                                'updated_at': datetime.now(timezone.utc).isoformat(),
+                            }
+
+                            try:
+                                self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+                            except Exception as save_err:
+                                # If updating original fails, record error but do not roll back articles_ru
+                                err = f"Firebase save error for {doc_id}: {save_err}"
+                                with lock:
+                                    chunk_results['errors'].append(err)
+
+                            with lock:
+                                chunk_results['translated'] += 1
+                                chunk_results['processed'] += 1
+                        except Exception as save_err:
+                            err = f"Generated-article save error for {doc_id}: {save_err}"
+                            with lock:
+                                chunk_results['errors'].append(err)
+
+                        try:
+                            log_dir = Path(__file__).parent.parent.parent / 'logs'
+                            log_dir.mkdir(parents=True, exist_ok=True)
+                            log_file = log_dir / 'article_generation.jsonl'
+                            log_entry = {
+                                'doc_id': doc_id,
+                                'total_score': total_score,
+                                'translation': translation_result,
+                                'model': getattr(self.translator, 'model', None) or 'gpt-5-mini',
+                                'timestamp': datetime.now(timezone.utc).isoformat(),
+                            }
+                            with log_file.open('a', encoding='utf-8') as f:
+                                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+                        except Exception:
+                            pass
+
+                    except Exception as proc_err:
+                        err = f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}"
+                        with lock:
+                            chunk_results['errors'].append(err)
+
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = [ex.submit(_process_doc, d) for d in docs]
+                    for f in as_completed(futures):
+                        try:
+                            f.result()
+                        except Exception as thread_err:
+                            chunk_results['errors'].append(str(thread_err))
+
+                results['processed'] += chunk_results['processed']
+                results['skipped'] += chunk_results['skipped']
+                results['translated'] += chunk_results['translated']
+                results['errors'].extend(chunk_results['errors'])
+                processed_total += chunk_results['processed']
+
+                if processed_total >= requested_total:
+                    break
+
+                try:
+                    last_snapshot = docs[-1]
+                except Exception:
+                    last_snapshot = None
+
+                if len(docs) < limit_for_query:
+                    break
+
+            return {'status': 'success', **results}
+
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}

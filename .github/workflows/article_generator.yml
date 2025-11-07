@@ -1,0 +1,60 @@
+name: Article Generator
+
+on:
+  workflow_dispatch:
+
+
+jobs:
+  run:
+    name: Run Article Generator
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: '1'
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Write Firebase service account key
+        if: env.FIREBASE_SERVICE_ACCOUNT != ''
+        run: |
+          echo "${FIREBASE_SERVICE_ACCOUNT}" > ${GITHUB_WORKSPACE}/firebase_key.json
+
+      - name: Run article generator
+        run: |
+          if [ -n "${{ github.event.inputs.batch_size }}" ]; then
+            python -m workers.article_generator.worker --batch-size ${{ github.event.inputs.batch_size }}
+          else
+            # no batch_size provided -> process all articles with expected status
+            python -m workers.article_generator.worker
+          fi
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_key.json
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: article-generator-logs
+          path: logs/article_generation.jsonl

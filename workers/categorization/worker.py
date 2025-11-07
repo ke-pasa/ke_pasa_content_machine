@@ -19,10 +19,6 @@ sys.path.insert(0, str(root_dir))
 
 load_dotenv()
 
-# Expose helpers used by tests and the implementation class
-from workers.tools.firebase_client import get_firebase_client
-from workers.tools.openai_client import get_openai_client, chat_completion, parse_json_from_text
-
 # Re-export CategorizationWorker implementation (implementation lives in CategorizationWorker.py)
 from .CategorizationWorker import CategorizationWorker
 
@@ -38,9 +34,6 @@ def main() -> None:
 
     if args.action == 'categorize':
         result = worker.categorize_new_articles()
-        print(result)
-    elif args.action == 'prioritize':
-        result = worker.update_priorities()
         print(result)
     elif args.action == 'stats':
         result = worker.get_statistics()
