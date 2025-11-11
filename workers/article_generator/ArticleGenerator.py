@@ -102,6 +102,49 @@ class ArticleGenerator:
             # Respect configured batch_size when provided, otherwise process all available documents
             requested_total = float(self.batch_size) if (self.batch_size is not None) else math.inf
 
+            # First pass: mark all currently CATEGORIZED articles with total_score < 60 as SKIPPED
+            try:
+                low_score_count = 0
+                for d in self.db.collection('articles').where('status', '==', 'CATEGORIZED').stream():
+                    try:
+                        data = d.to_dict() or {}
+                        maybe = data.get('total_score')
+                        if maybe is None:
+                            interest = data.get('interest') or {}
+                            maybe = interest.get('total_score') or interest.get('total')
+                        total_score = None
+                        if maybe is not None:
+                            try:
+                                total_score = float(maybe)
+                            except Exception:
+                                total_score = None
+
+                        if total_score is None:
+                            total_score = 0.0
+
+                        if total_score < 60:
+                            try:
+                                self.db.collection('articles').document(d.id).set({
+                                    'status': 'SKIPPED',
+                                    'skipped_reason': 'low_score',
+                                    'total_score': total_score,
+                                    'skipped_at': datetime.now(timezone.utc).isoformat(),
+                                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                                }, merge=True)
+                                low_score_count += 1
+                            except Exception:
+                                logging.exception('Failed to mark low-score article %s as SKIPPED', d.id)
+                    except Exception:
+                        # protect the sweep from single-doc failures
+                        logging.exception('Error while evaluating score for document %s', getattr(d, 'id', '?'))
+
+                if low_score_count:
+                    results['skipped'] += low_score_count
+                    results['processed'] += low_score_count
+            except Exception:
+                # If pre-pass fails, continue to translation pass without blocking
+                logging.exception('Pre-scan for low-score articles failed')
+
             chunk_size = 20
             processed_total = 0
             last_snapshot = None
@@ -173,18 +216,6 @@ class ArticleGenerator:
                                 with lock:
                                     chunk_results['skipped'] += 1
                                     chunk_results['processed'] += 1
-                                try:
-                                    # persist minimal record to articles_ru for tracking
-                                    self._save_generated_article(
-                                        doc_id=doc_id,
-                                        source=data,
-                                        total_score=total_score,
-                                        translation_result=None,
-                                        status='SKIPPED',
-                                        metadata={'worker_name': 'article_generator'},
-                                    )
-                                except Exception:
-                                    logging.exception('Failed to save skipped generated article %s', doc_id)
                             except Exception as save_err:
                                 err = f"Firebase save error for {doc_id}: {save_err}"
                                 with lock:
