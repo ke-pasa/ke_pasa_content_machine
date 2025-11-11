@@ -109,14 +109,26 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         pass
 
     max_attempts = 3
+    # Models that do not accept a non-default temperature parameter.
+    # Add model names here if you encounter similar 400 errors for other models.
+    UNSUPPORTED_TEMPERATURE_MODELS = {'gpt-5-mini'}
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_completion_tokens=max_tokens,
-                temperature=temperature
-            )
+            # Build kwargs conditionally to avoid sending parameters unsupported by some models
+            req_kwargs = {
+                'model': model,
+                'messages': messages,
+                'max_completion_tokens': max_tokens,
+            }
+            # Only include temperature when the model is known to accept it and a value was provided
+            try:
+                if temperature is not None and model not in UNSUPPORTED_TEMPERATURE_MODELS:
+                    req_kwargs['temperature'] = temperature
+            except Exception:
+                # If anything goes wrong determining support, omit the temperature to be safe
+                pass
+
+            resp = client.chat.completions.create(**req_kwargs)
             # Support both newer structured responses and older text fields
             try:
                 return resp.choices[0].message.content.strip()
@@ -194,11 +206,12 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                         logger.warning('Detected unsupported temperature for model=%s; retrying request without temperature', model)
                         try:
                             # retry once without temperature
-                            resp2 = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                max_completion_tokens=max_tokens,
-                            )
+                            resp2_kwargs = {
+                                'model': model,
+                                'messages': messages,
+                                'max_completion_tokens': max_tokens,
+                            }
+                            resp2 = client.chat.completions.create(**resp2_kwargs)
                             try:
                                 return resp2.choices[0].message.content.strip()
                             except Exception:
