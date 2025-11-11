@@ -107,7 +107,25 @@ class ArticleGenerator:
         }
 
         try:
-            self.db.collection('articles_ru').document(doc_id).set(payload, merge=True)
+            doc_ref = self.db.collection('articles_ru').document(doc_id)
+            doc_ref.set(payload, merge=True)
+            # verify write by reading back a small snapshot
+            try:
+                read_back = doc_ref.get()
+                if getattr(read_back, 'exists', False):
+                    try:
+                        rb = read_back.to_dict() or {}
+                        # log a concise confirmation with key fields
+                        self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)',
+                                         doc_id,
+                                         len((rb.get('title_ru') or '') if isinstance(rb.get('title_ru', ''), str) else str(rb.get('title_ru'))),
+                                         len((rb.get('content_ru') or '') if isinstance(rb.get('content_ru', ''), str) else str(rb.get('content_ru'))))
+                    except Exception:
+                        self.logger.info('Saved articles_ru %s (read-back succeeded)', doc_id)
+                else:
+                    self.logger.warning('Write appeared to succeed but articles_ru doc %s does not exist after write', doc_id)
+            except Exception:
+                self.logger.exception('Failed to verify write for articles_ru %s', doc_id)
         except Exception:
             logging.exception("Failed to write generated article %s to articles_ru", doc_id)
 
