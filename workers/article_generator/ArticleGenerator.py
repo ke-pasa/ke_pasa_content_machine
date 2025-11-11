@@ -25,11 +25,15 @@ def _get_firebase_client():
 
 
 class ArticleGenerator:
-    """Process articles with status CATEGORIZED: skip low-score, translate others to Russian."""
 
-    def __init__(self, translator: ArticleTranslator | None = None):
+    def __init__(self, translator: ArticleTranslator | None = None, batch_size: int | None = None):
         # This worker processes all matching articles by default (no batching)
-        self.batch_size = None
+        try:
+            self.batch_size = int(batch_size) if batch_size is not None else None
+            if self.batch_size is not None and self.batch_size < 0:
+                self.batch_size = None
+        except Exception:
+            self.batch_size = None
 
         self.db = _get_firebase_client().db
         self.instance_id = str(uuid.uuid4())[:8]
@@ -95,8 +99,8 @@ class ArticleGenerator:
         results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
 
         try:
-            # No batch_size means process all available documents
-            requested_total = math.inf
+            # Respect configured batch_size when provided, otherwise process all available documents
+            requested_total = float(self.batch_size) if (self.batch_size is not None) else math.inf
 
             chunk_size = 20
             processed_total = 0

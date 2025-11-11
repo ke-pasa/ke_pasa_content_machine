@@ -2,6 +2,11 @@ name: Article Generator
 
 on:
   workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Batch size to process (optional)'
+        required: false
+        default: '5'
 
 
 jobs:
