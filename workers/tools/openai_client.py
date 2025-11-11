@@ -87,6 +87,12 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     pass
 
             logger.exception('OpenAI chat completion failed: %s; details=%s', str(e), details)
+            # Also emit the raw exception repr and attributes for full debugging visibility
+            try:
+                logger.error('OpenAI exception (raw): %s', repr(e))
+                logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
+            except Exception:
+                pass
         except Exception:
             # Ensure we never raise while trying to log an error
             logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
