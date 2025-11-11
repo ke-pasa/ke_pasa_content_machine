@@ -66,7 +66,7 @@ class ArticleTranslator:
     def __init__(
         self,
         client=None,
-        model: str = 'gpt-5-mini',
+        model: str = 'gpt-4o-mini',  # Changed from gpt-5-mini due to reasoning token issue
         stage1_max_tokens: int = 1600,
         stage2_max_tokens: int = 1600,
         stage3_max_tokens: int = 1600,
@@ -89,11 +89,11 @@ class ArticleTranslator:
 
         metadata = metadata or {}
 
-        stage1 = self._stage1_translate(title, description, content)
+        stage1 = self._stage1_translate(title, description, content, metadata)
         if not stage1 or not isinstance(stage1, dict):
             return stage1 if isinstance(stage1, dict) else None
 
-        stage2 = self._stage2_edit(stage1)
+        stage2 = self._stage2_edit(stage1, metadata)
         if not stage2 or not isinstance(stage2, dict):
             return stage1
 
@@ -156,7 +156,8 @@ class ArticleTranslator:
 
         return final
 
-    def _stage1_translate(self, title: str, description: str, content: str) -> Optional[Dict]:
+    def _stage1_translate(self, title: str, description: str, content: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
+        metadata = metadata or {}
         article_parts = []
         if title:
             article_parts.append(f"Заголовок: {title}")
@@ -203,6 +204,10 @@ class ArticleTranslator:
 
         try:
             parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
+                # Save raw response for debugging when parse fails
+                doc_id = (metadata or {}).get('doc_id', 'unknown')
+                _save_raw_response(doc_id, 'stage1', text or '')
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
@@ -259,11 +264,15 @@ class ArticleTranslator:
 
         try:
             parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
+                doc_id = metadata.get('doc_id', 'unknown')
+                _save_raw_response(doc_id, 'stage4', text or '')
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
 
-    def _stage2_edit(self, stage1_result: Dict) -> Optional[Dict]:
+    def _stage2_edit(self, stage1_result: Dict, metadata: Optional[Dict] = None) -> Optional[Dict]:
+        metadata = metadata or {}
         draft_json = json.dumps(stage1_result, ensure_ascii=False)
 
         messages = stage2_messages(draft_json)
@@ -300,6 +309,9 @@ class ArticleTranslator:
 
         try:
             parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
+                doc_id = metadata.get('doc_id', 'unknown')
+                _save_raw_response(doc_id, 'stage2', text or '')
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
@@ -370,6 +382,9 @@ class ArticleTranslator:
 
         try:
             parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
+                doc_id = metadata.get('doc_id', 'unknown')
+                _save_raw_response(doc_id, 'stage3', text or '')
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None

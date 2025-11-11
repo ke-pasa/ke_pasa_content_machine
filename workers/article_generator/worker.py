@@ -33,10 +33,10 @@ def main() -> None:
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         root_logger.addHandler(handler)
 
-    # pre-scan will always run (no skip flag)
+    # Two-phase processing: pre-scan (mark low-quality as SKIPPED) then translation
 
     worker = ArticleGenerator(batch_size=args.batch_size)
-    result = worker.translated()
+    result = worker.process_articles()
 
     # Persist machine-readable result so CI can assert on it reliably
     try:

@@ -111,6 +111,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     max_attempts = 3
     # Models that do not accept a non-default temperature parameter.
     # Add model names here if you encounter similar 400 errors for other models.
+    # Note: gpt-5-mini has reasoning token issue (uses all tokens for internal reasoning, returns empty content)
     UNSUPPORTED_TEMPERATURE_MODELS = {'gpt-5-mini'}
     for attempt in range(1, max_attempts + 1):
         try:
@@ -129,10 +130,29 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 pass
 
             resp = client.chat.completions.create(**req_kwargs)
+            # Log full response for debugging when content extraction fails
+            try:
+                logger.debug('OpenAI response received: choices=%d finish_reason=%s', 
+                           len(resp.choices) if hasattr(resp, 'choices') else 0,
+                           resp.choices[0].finish_reason if (hasattr(resp, 'choices') and resp.choices) else 'N/A')
+                if hasattr(resp, 'choices') and resp.choices:
+                    choice = resp.choices[0]
+                    logger.debug('Choice 0: message=%s content_type=%s content_len=%s',
+                               type(choice.message) if hasattr(choice, 'message') else 'N/A',
+                               type(choice.message.content) if (hasattr(choice, 'message') and hasattr(choice.message, 'content')) else 'N/A',
+                               len(choice.message.content) if (hasattr(choice, 'message') and hasattr(choice.message, 'content') and choice.message.content) else 0)
+            except Exception:
+                pass
+            
             # Support both newer structured responses and older text fields
             try:
-                return resp.choices[0].message.content.strip()
-            except Exception:
+                content = resp.choices[0].message.content
+                if content is None:
+                    logger.warning('OpenAI response content is None; response may be refusal or filtered')
+                    return None
+                return content.strip()
+            except Exception as e:
+                logger.warning('Failed to extract content from response: %s', e)
                 return getattr(resp.choices[0], 'text', '').strip()
 
         except Exception as e:

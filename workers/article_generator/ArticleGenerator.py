@@ -37,7 +37,11 @@ class ArticleGenerator:
 
         self.db = _get_firebase_client().db
         self.instance_id = str(uuid.uuid4())[:8]
-        self.translator = translator or ArticleTranslator()
+        self.translator = translator or ArticleTranslator(
+            stage1_max_tokens=2000,
+            stage2_max_tokens=2000,
+            stage3_max_tokens=2000
+        )
         self.logger = logging.getLogger('workers.article_generator')
 
     def _get_total_score(self, data: dict) -> float:
@@ -129,8 +133,14 @@ class ArticleGenerator:
         except Exception:
             logging.exception("Failed to write generated article %s to articles_ru", doc_id)
 
-    def translated(self) -> dict:
-        """Read articles with status CATEGORIZED. If total_score < 60 -> set SKIPPED. Else -> translate to Russian."""
+    def process_articles(self) -> dict:
+        """
+        Two-phase article processing pipeline:
+        1. Pre-scan: Mark low-quality articles (total_score < 60) as SKIPPED
+        2. Translation: Translate high-quality articles to Russian and save to articles_ru
+        
+        Returns dict with counts: processed, skipped, translated, errors
+        """
 
         results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
 
@@ -142,7 +152,9 @@ class ArticleGenerator:
             requested_total = float(self.batch_size) if (self.batch_size is not None) else math.inf
             self.logger.info('Requested total to process: %s', requested_total)
 
-            # First pass: mark all currently CATEGORIZED articles with total_score < 60 as SKIPPED
+            # ===== PHASE 1: PRE-SCAN =====
+            # Mark all currently CATEGORIZED articles with total_score < 60 as SKIPPED
+            # This filtering step runs BEFORE translation to avoid wasting resources on low-quality content
             try:
                 # Page through CATEGORIZED docs in chunks to avoid long-running Firestore queries
                 low_score_count = 0
@@ -239,9 +251,11 @@ class ArticleGenerator:
                 except Exception:
                     pass
             except Exception:
-                # If pre-pass fails, continue to translation pass without blocking
+                # If pre-scan fails, continue to translation pass without blocking
                 logging.exception('Pre-scan for low-score articles failed')
 
+            # ===== PHASE 2: TRANSLATION =====
+            # Fetch high-quality CATEGORIZED articles in batches and translate them to Russian
             chunk_size = 20
             processed_total = 0
             last_snapshot = None
