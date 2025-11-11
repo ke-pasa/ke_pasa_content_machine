@@ -38,9 +38,23 @@ def main() -> None:
     worker = ArticleGenerator(batch_size=args.batch_size)
     result = worker.translated()
 
+    # Persist machine-readable result so CI can assert on it reliably
+    try:
+        log_dir = Path(__file__).parent.parent.parent / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        result_file = log_dir / 'article_generator_result.json'
+        with result_file.open('w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False)
+    except Exception:
+        # best-effort write; continue to print the result
+        pass
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
-    exit_code = 0 if result.get('status') == 'success' else 1
+    # Treat any non-success status or any collected errors as a failure for CI
+    has_errors = bool(result.get('errors'))
+    success_status = result.get('status') == 'success'
+    exit_code = 0 if (success_status and not has_errors) else 1
     sys.exit(exit_code)
 
 
