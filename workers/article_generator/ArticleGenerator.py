@@ -172,6 +172,8 @@ class ArticleGenerator:
                                         'skipped_at': datetime.now(timezone.utc).isoformat(),
                                         'updated_at': datetime.now(timezone.utc).isoformat(),
                                     }, merge=True)
+                                    # Log the skip so CI shows the action
+                                    self.logger.info('pre-scan: marked %s SKIPPED (low_score=%.1f)', d.id, float(total_score))
                                     low_score_count += 1
                                 except Exception:
                                     self.logger.exception('Failed to mark low-score article %s as SKIPPED', d.id)
@@ -249,6 +251,7 @@ class ArticleGenerator:
                             }
                             try:
                                 self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+                                self.logger.info('translation-pass: marked %s SKIPPED (low_score=%.1f)', doc_id, float(total_score))
                                 with lock:
                                     chunk_results['skipped'] += 1
                                     chunk_results['processed'] += 1

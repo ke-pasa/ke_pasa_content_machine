@@ -12,6 +12,7 @@ import os
 import json
 import re
 import logging
+import time
 
 _client = None
 
@@ -52,6 +53,90 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     logger = logging.getLogger('workers.tools.openai_client')
     logger.debug('OpenAI request: model=%s messages=%d max_tokens=%s', model, len(messages) if messages is not None else 0, max_tokens)
 
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                # Support both newer structured responses and older text fields
+                try:
+                    return resp.choices[0].message.content.strip()
+                except Exception:
+                    return getattr(resp.choices[0], 'text', '').strip()
+
+            except Exception as e:
+                # Determine if this is a transient (5xx) error; if so, retry a few times with backoff.
+                status = None
+                try:
+                    if hasattr(e, 'response') and getattr(e.response, 'status_code', None) is not None:
+                        status = int(getattr(e.response, 'status_code'))
+                    elif hasattr(e, 'status_code'):
+                        status = int(getattr(e, 'status_code'))
+                    elif hasattr(e, 'http_status'):
+                        status = int(getattr(e, 'http_status'))
+                    elif hasattr(e, 'code'):
+                        # some libs put code strings here; ignore for numeric check
+                        try:
+                            status = int(getattr(e, 'code'))
+                        except Exception:
+                            status = None
+                except Exception:
+                    status = None
+
+                # If status is a 4xx, do not retry — it's a client error
+                if status is not None and 400 <= status < 500:
+                    logger.warning('OpenAI request failed with client error status=%s; not retrying (attempt %d/%d)', status, attempt, max_attempts)
+                    try:
+                        details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
+                        if hasattr(e, 'response'):
+                            try:
+                                text = getattr(e.response, 'text', None)
+                                if text:
+                                    details['response_text_snippet'] = (text[:400] + '...') if len(text) > 400 else text
+                            except Exception:
+                                pass
+                        logger.exception('OpenAI chat completion failed: %s; details=%s', str(e), details)
+                    except Exception:
+                        logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
+                    try:
+                        logger.error('OpenAI exception (raw): %s', repr(e))
+                        logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
+                    except Exception:
+                        pass
+                    return None
+
+                # For 5xx or unknown status, retry up to max_attempts
+                if attempt < max_attempts:
+                    backoff = 0.5 * attempt
+                    logger.warning('OpenAI request failed (attempt %d/%d) status=%s; retrying in %.1fs', attempt, max_attempts, status, backoff)
+                    time.sleep(backoff)
+                    continue
+
+                # final attempt failed — log full details and return None
+                try:
+                    details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
+                    if hasattr(e, 'response'):
+                        try:
+                            text = getattr(e.response, 'text', None)
+                            if text:
+                                details['response_text_snippet'] = (text[:400] + '...') if len(text) > 400 else text
+                        except Exception:
+                            pass
+                    logger.exception('OpenAI chat completion failed after retries: %s; details=%s', str(e), details)
+                except Exception:
+                    logger.exception('OpenAI chat completion final failure and logging failed: %s', e)
+
+                try:
+                    logger.error('OpenAI exception (raw): %s', repr(e))
+                    logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
+                except Exception:
+                    pass
+
+                return None
     try:
         resp = client.chat.completions.create(
             model=model,
