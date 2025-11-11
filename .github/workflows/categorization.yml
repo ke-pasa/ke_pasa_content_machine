@@ -1,6 +1,9 @@
 name: Categorization Worker
 
 on:
+  schedule:
+    # Run every 8 hours
+    - cron: '0 */8 * * *'
   workflow_dispatch:
     inputs:
       batch_size:
@@ -53,4 +56,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           python -m workers.categorization.worker --action categorize --batch-size ${{ github.event.inputs.batch_size || '10' }}
+
+      - name: Run categorization CLI (scheduled)
+        if: github.event_name == 'schedule'
+        run: |
+          # Scheduled runs should process a large batch
+          python -m workers.categorization.worker --action categorize --batch-size 2000
 

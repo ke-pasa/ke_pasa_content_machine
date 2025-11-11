@@ -1,15 +1,9 @@
 name: RSS Worker
 
 on:
-  #schedule:
-    # Run every 2 hours
-    # - cron: '0 */2 * * *'
+  schedule:
+    - cron: '0 */8 * * *'
   workflow_dispatch:
-    inputs:
-      run_full:
-        description: 'Set to true to run the full RSS worker (requires Firebase secret or other credentials)'
-        required: false
-        default: 'false'
   push:
     paths:
       - 'workers/rss/**'
@@ -69,8 +63,7 @@ jobs:
         fi
 
     - name: Run RSS Worker (full)
-      # Run if either manually triggered with run_full=true or if we have Firebase credentials
-      if: github.event.inputs.run_full == 'true' || env.GOOGLE_APPLICATION_CREDENTIALS != ''
+      # Always run the RSS Worker when this job is executed
       env:
         FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         RSS_FEEDS_FILE: workers/rss/feeds.txt
