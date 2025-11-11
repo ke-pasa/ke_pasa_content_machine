@@ -38,6 +38,24 @@ class ArticleGenerator:
         self.db = _get_firebase_client().db
         self.instance_id = str(uuid.uuid4())[:8]
         self.translator = translator or ArticleTranslator()
+        self.logger = logging.getLogger('workers.article_generator')
+
+    def _get_total_score(self, data: dict) -> float:
+        """Extract a float total_score from article data.
+
+        Tries top-level 'total_score', then nested interest.total_score or interest.total.
+        Returns 0.0 on missing/unparseable values.
+        """
+        try:
+            maybe = data.get('total_score')
+            if maybe is None:
+                interest = data.get('interest') or {}
+                maybe = interest.get('total_score') or interest.get('total')
+            if maybe is None:
+                return 0.0
+            return float(maybe)
+        except Exception:
+            return 0.0
 
     def _save_generated_article(self, doc_id: str, source: dict, total_score: float = 0.0,
                                 translation_result: dict | None = None, status: str = 'UNKNOWN', metadata: dict | None = None) -> None:
@@ -104,39 +122,60 @@ class ArticleGenerator:
 
             # First pass: mark all currently CATEGORIZED articles with total_score < 60 as SKIPPED
             try:
+                # Page through CATEGORIZED docs in chunks to avoid long-running Firestore queries
                 low_score_count = 0
-                for d in self.db.collection('articles').where('status', '==', 'CATEGORIZED').stream():
+                db = self.db
+                page_size = 500
+                last_snapshot = None
+                while True:
                     try:
-                        data = d.to_dict() or {}
-                        maybe = data.get('total_score')
-                        if maybe is None:
-                            interest = data.get('interest') or {}
-                            maybe = interest.get('total_score') or interest.get('total')
-                        total_score = None
-                        if maybe is not None:
+                        query = db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(page_size)
+                        if last_snapshot is not None:
                             try:
-                                total_score = float(maybe)
+                                query = query.start_after(last_snapshot)
                             except Exception:
-                                total_score = None
+                                # some test fakes may not support start_after
+                                pass
 
-                        if total_score is None:
-                            total_score = 0.0
+                        docs = list(query.stream())
+                    except Exception as exc:
+                        # retry once after a short backoff for transient issues
+                        self.logger.exception('Pre-scan query failed, retrying once: %s', exc)
+                        try:
+                            time.sleep(1)
+                            docs = list(query.stream())
+                        except Exception as exc2:
+                            self.logger.exception('Pre-scan retry failed: %s', exc2)
+                            break
 
-                        if total_score < 60:
-                            try:
-                                self.db.collection('articles').document(d.id).set({
-                                    'status': 'SKIPPED',
-                                    'skipped_reason': 'low_score',
-                                    'total_score': total_score,
-                                    'skipped_at': datetime.now(timezone.utc).isoformat(),
-                                    'updated_at': datetime.now(timezone.utc).isoformat(),
-                                }, merge=True)
-                                low_score_count += 1
-                            except Exception:
-                                logging.exception('Failed to mark low-score article %s as SKIPPED', d.id)
-                    except Exception:
-                        # protect the sweep from single-doc failures
-                        logging.exception('Error while evaluating score for document %s', getattr(d, 'id', '?'))
+                    if not docs:
+                        break
+
+                    for d in docs:
+                        try:
+                            data = d.to_dict() or {}
+                            total_score = self._get_total_score(data)
+
+                            if total_score < 60:
+                                try:
+                                    db.collection('articles').document(d.id).set({
+                                        'status': 'SKIPPED',
+                                        'skipped_reason': 'low_score',
+                                        'total_score': total_score,
+                                        'skipped_at': datetime.now(timezone.utc).isoformat(),
+                                        'updated_at': datetime.now(timezone.utc).isoformat(),
+                                    }, merge=True)
+                                    low_score_count += 1
+                                except Exception:
+                                    self.logger.exception('Failed to mark low-score article %s as SKIPPED', d.id)
+                        except Exception:
+                            # protect the sweep from single-doc failures
+                            self.logger.exception('Error while evaluating score for document %s', getattr(d, 'id', '?'))
+
+                    last_snapshot = docs[-1]
+                    # if we received fewer docs than page_size, we've reached the end
+                    if len(docs) < page_size:
+                        break
 
                 if low_score_count:
                     results['skipped'] += low_score_count
@@ -179,8 +218,7 @@ class ArticleGenerator:
                 def _process_doc(doc):
                     try:
                         proc_start = time.perf_counter()
-                        logger = logging.getLogger('workers.article_generator')
-                        logger.info('start processing doc %s', getattr(doc, 'id', '?'))
+                        self.logger.info('start processing doc %s', getattr(doc, 'id', '?'))
 
                         doc_id = doc.id
                         data = doc.to_dict() or {}
@@ -188,20 +226,8 @@ class ArticleGenerator:
                         description = data.get('description', '') or ''
                         content = data.get('content', '') or ''
 
-                        # Determine score from several possible locations
-                        total_score = None
-                        try:
-                            maybe = data.get('total_score')
-                            if maybe is None:
-                                interest = data.get('interest') or {}
-                                maybe = interest.get('total_score') or interest.get('total')
-                            if maybe is not None:
-                                total_score = float(maybe)
-                        except Exception:
-                            total_score = None
-
-                        if total_score is None:
-                            total_score = 0.0
+                        # Determine total_score using helper
+                        total_score = self._get_total_score(data)
 
                         if total_score < 60:
                             update_payload = {
@@ -236,7 +262,7 @@ class ArticleGenerator:
                         trans_start = time.perf_counter()
                         translation_result = self.translator.translate(title, description, content, metadata=article_metadata)
                         trans_duration = time.perf_counter() - trans_start
-                        logger.debug('translator finished for %s in %.3fs', doc_id, trans_duration)
+                        self.logger.debug('translator finished for %s in %.3fs', doc_id, trans_duration)
 
                         if not translation_result:
                             update_payload = {
@@ -349,9 +375,9 @@ class ArticleGenerator:
                             with log_file.open('a', encoding='utf-8') as f:
                                 f.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
-                            logger.info('finished processing doc %s: trans=%.3fs total=%.3fs', doc_id, trans_duration, proc_duration)
+                            self.logger.info('finished processing doc %s: trans=%.3fs total=%.3fs', doc_id, trans_duration, proc_duration)
                         except Exception:
-                            logger.exception('failed to write log for %s', doc_id)
+                            self.logger.exception('failed to write log for %s', doc_id)
 
                     except Exception as proc_err:
                         err = f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}"
