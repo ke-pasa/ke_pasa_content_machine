@@ -107,7 +107,7 @@ class ArticleGenerator:
             last_snapshot = None
 
             while processed_total < requested_total:
-                limit_for_query = min(chunk_size, requested_total - processed_total)
+                limit_for_query = int(min(chunk_size, requested_total - processed_total))
 
                 try:
                     query = self.db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(limit_for_query)
