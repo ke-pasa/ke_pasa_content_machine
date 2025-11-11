@@ -51,7 +51,62 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     to interpret the response; callers should parse JSON if needed.
     """
     logger = logging.getLogger('workers.tools.openai_client')
-    logger.debug('OpenAI request: model=%s messages=%d max_tokens=%s', model, len(messages) if messages is not None else 0, max_tokens)
+    # Basic validation and sanitization of inputs to surface obvious issues early
+    try:
+        msg_count = len(messages) if messages is not None else 0
+    except Exception:
+        msg_count = 0
+
+    try:
+        max_tokens = int(max_tokens)
+    except Exception:
+        max_tokens = 600
+
+    logger.debug('OpenAI request: model=%s messages=%d max_tokens=%d', model, msg_count, max_tokens)
+
+    # Build a safe, truncated payload snippet for logging to aid debugging without
+    # dumping possibly huge or sensitive content. Each message content is truncated.
+    try:
+        snippet_messages = []
+        if isinstance(messages, list):
+            for m in messages:
+                try:
+                    role = m.get('role') if isinstance(m, dict) else str(type(m))
+                    content = m.get('content', '') if isinstance(m, dict) else ''
+                    if content and not isinstance(content, str):
+                        content = str(content)
+                    snippet_messages.append({'role': role, 'content_snippet': (content[:500] + '...') if len(content) > 500 else content})
+                except Exception:
+                    snippet_messages.append({'role': '??', 'content_snippet': '<<unserializable>>'})
+        else:
+            snippet_messages = [{'role': '??', 'content_snippet': '<<invalid messages type>>'}]
+        try:
+            logger.debug('OpenAI payload snippet: %s', json.dumps({'model': model, 'messages_sample': snippet_messages, 'max_tokens': max_tokens}, ensure_ascii=False)[:2000])
+        except Exception:
+            logger.debug('OpenAI payload snippet available but failed to serialize details')
+    except Exception:
+        # Don't fail on logging preparations
+        pass
+
+    # Simple payload size guard to catch accidentally huge inputs (helps avoid 400s)
+    try:
+        approx_payload_size = 0
+        if isinstance(messages, list):
+            for m in messages:
+                try:
+                    if isinstance(m, dict):
+                        approx_payload_size += len(str(m.get('content', '')))
+                    else:
+                        approx_payload_size += len(str(m))
+                except Exception:
+                    approx_payload_size += 1000
+        else:
+            approx_payload_size = len(str(messages))
+        if approx_payload_size > 200000:  # 200k chars threshold
+            logger.warning('OpenAI request payload appears very large (%d chars); aborting request to avoid 400', approx_payload_size)
+            return None
+    except Exception:
+        pass
 
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
@@ -92,14 +147,36 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 logger.warning('OpenAI request failed with client error status=%s; not retrying (attempt %d/%d)', status, attempt, max_attempts)
                 try:
                     details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
-                    if hasattr(e, 'response'):
+                    # Attempt to extract HTTP-like response body/text for diagnostics
+                    resp_text = None
+                    try:
+                        if hasattr(e, 'response'):
+                            resp = getattr(e, 'response')
+                            resp_text = getattr(resp, 'text', None) or getattr(resp, 'body', None)
+                        # Some SDK exceptions include a raw 'response_text' or similar
+                        if not resp_text and hasattr(e, 'response_text'):
+                            resp_text = getattr(e, 'response_text')
+                    except Exception:
+                        resp_text = None
+
+                    if resp_text:
                         try:
-                            text = getattr(e.response, 'text', None)
-                            if text:
-                                details['response_text_snippet'] = (text[:400] + '...') if len(text) > 400 else text
+                            details['response_text_snippet'] = (resp_text[:1000] + '...') if len(resp_text) > 1000 else resp_text
                         except Exception:
-                            pass
-                    logger.exception('OpenAI chat completion failed: %s; details=%s', str(e), details)
+                            details['response_text_snippet'] = '<<failed to capture response text>>'
+
+                    # If the exception carries headers or request id, include them for tracing
+                    try:
+                        hdrs = getattr(e, 'headers', None) or getattr(getattr(e, 'response', None), 'headers', None)
+                        if hdrs:
+                            # include a couple of useful headers when present
+                            for h in ('x-request-id', 'x-request-id', 'x-openai-request-id', 'x-request-id'):
+                                if isinstance(h, str) and h in hdrs:
+                                    details.setdefault('headers', {})[h] = hdrs.get(h)
+                    except Exception:
+                        pass
+
+                    logger.exception('OpenAI chat completion failed (client error): %s; details=%s', str(e), details)
                 except Exception:
                     logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
                 try:

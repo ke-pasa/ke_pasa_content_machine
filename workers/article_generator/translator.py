@@ -155,6 +155,27 @@ class ArticleTranslator:
 
         messages = stage1_messages(article_text)
 
+        # diagnostic logging to help debug request issues (400 responses)
+        try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage1: model=%s messages=%d article_text_len=%d snippet=%s', self.model, msg_count, len(article_text or ''), snippet[:300])
+        except Exception:
+            pass
+
         try:
             text = _chat_completion(
                 self.client,
@@ -192,6 +213,26 @@ class ArticleTranslator:
         messages = stage4_messages(stage2_json)
 
         try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage4: model=%s messages=%d payload_len=%d snippet=%s', self.model, msg_count, len(stage2_json or ''), snippet[:300])
+        except Exception:
+            pass
+
+        try:
             text = _chat_completion(
                 self.client,
                 self.model,
@@ -212,6 +253,25 @@ class ArticleTranslator:
         draft_json = json.dumps(stage1_result, ensure_ascii=False)
 
         messages = stage2_messages(draft_json)
+        try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage2: model=%s messages=%d draft_len=%d snippet=%s', self.model, msg_count, len(draft_json or ''), snippet[:300])
+        except Exception:
+            pass
 
         try:
             text = _chat_completion(
@@ -263,6 +323,25 @@ class ArticleTranslator:
         stage2_json = json.dumps(article_payload, ensure_ascii=False)
 
         messages = stage3_messages(stage2_json, source_line)
+        try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage3: model=%s messages=%d payload_len=%d snippet=%s', self.model, msg_count, len(stage2_json or ''), snippet[:300])
+        except Exception:
+            pass
 
         try:
             text = _chat_completion(

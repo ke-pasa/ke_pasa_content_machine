@@ -14,15 +14,16 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse, unquote
 import re
 from typing import Dict, List, Any, Optional
-# Require firebase_admin at import time: any Firebase import error should
-# stop module import so calling code sees configuration issues early.
-try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-    from firebase_admin import firestore as firestore_types
-except Exception as e:
-    # Fail import early with a helpful message
-    raise ImportError(f"firebase_admin is required by workers.tools.firebase_client but failed to import: {e}")
+
+# Defer firebase_admin imports until FirebaseClient initialization so that
+# scripts which import this module but don't need Firebase (tests, local
+# utilities) won't fail with ModuleNotFoundError at import time.
+# The actual firebase symbols will be injected into module globals when
+# initialization runs.
+firebase_admin = None
+credentials = None
+firestore = None
+firestore_types = None
 
 # Constants for collection names
 COLLECTIONS = {
@@ -69,12 +70,31 @@ class FirebaseClient:
         try:
             if not os.path.exists(credentials_path):
                 raise FileNotFoundError(f"File {credentials_path} not found")
-            # Check whether Firebase has already been initialized
-            if not firebase_admin._apps:
-                cred = credentials.Certificate(credentials_path)
-                firebase_admin.initialize_app(cred)
 
-            self.db = firestore.client()
+            # Import firebase_admin here to avoid failing at module import time
+            try:
+                import firebase_admin as _firebase_admin
+                from firebase_admin import credentials as _credentials
+                from firebase_admin import firestore as _firestore
+                from firebase_admin import firestore as _firestore_types
+            except Exception as e:
+                # Log then raise a clear ImportError so callers understand what's missing
+                print(f"Firebase import error during initialization: {e}")
+                raise ImportError(f"firebase_admin is required but failed to import: {e}")
+
+            # Expose imported symbols at module scope so other functions that
+            # reference firestore_types etc. continue to work.
+            globals()['firebase_admin'] = _firebase_admin
+            globals()['credentials'] = _credentials
+            globals()['firestore'] = _firestore
+            globals()['firestore_types'] = _firestore_types
+
+            # Check whether Firebase has already been initialized
+            if not _firebase_admin._apps:
+                cred = _credentials.Certificate(credentials_path)
+                _firebase_admin.initialize_app(cred)
+
+            self.db = _firestore.client()
             # Try to determine project/credentials info for debugging
             proj = None
             try:

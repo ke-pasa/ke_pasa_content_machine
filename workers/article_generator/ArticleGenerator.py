@@ -128,6 +128,8 @@ class ArticleGenerator:
             try:
                 # Page through CATEGORIZED docs in chunks to avoid long-running Firestore queries
                 low_score_count = 0
+                skipped_ids = []
+                verification_failures = []
                 db = self.db
                 page_size = 500
                 last_snapshot = None
@@ -174,6 +176,24 @@ class ArticleGenerator:
                                     }, merge=True)
                                     # Log the skip so CI shows the action
                                     self.logger.info('pre-scan: marked %s SKIPPED (low_score=%.1f)', d.id, float(total_score))
+                                    # Verify write succeeded by reading the document back
+                                    try:
+                                        read_back = db.collection('articles').document(d.id).get()
+                                        rdata = read_back.to_dict() or {}
+                                        if rdata.get('status') != 'SKIPPED':
+                                            self.logger.warning('pre-scan: write verification failed for %s, status is %s', d.id, rdata.get('status'))
+                                            try:
+                                                # log a truncated snapshot of the stored data for debugging
+                                                snap = json.dumps(rdata, ensure_ascii=False)
+                                                self.logger.warning('pre-scan: stored doc snapshot for %s: %s', d.id, (snap[:1000] + '...') if len(snap) > 1000 else snap)
+                                            except Exception:
+                                                pass
+                                            verification_failures.append(d.id)
+                                        else:
+                                            skipped_ids.append(d.id)
+                                    except Exception:
+                                        self.logger.exception('pre-scan: failed to verify write for %s', d.id)
+                                        verification_failures.append(d.id)
                                     low_score_count += 1
                                 except Exception:
                                     self.logger.exception('Failed to mark low-score article %s as SKIPPED', d.id)
@@ -190,6 +210,16 @@ class ArticleGenerator:
                 if low_score_count:
                     results['skipped'] += low_score_count
                     results['processed'] += low_score_count
+                # Emit concise pre-scan summary
+                try:
+                    self.logger.info('Pre-scan summary: marked %d SKIPPED; verified=%d failed_verifications=%d',
+                                     low_score_count, len(skipped_ids), len(verification_failures))
+                    if skipped_ids:
+                        self.logger.info('Pre-scan: sample skipped ids: %s', ','.join(skipped_ids[:10]))
+                    if verification_failures:
+                        self.logger.warning('Pre-scan: sample verification failures: %s', ','.join(verification_failures[:10]))
+                except Exception:
+                    pass
             except Exception:
                 # If pre-pass fails, continue to translation pass without blocking
                 logging.exception('Pre-scan for low-score articles failed')
@@ -213,6 +243,18 @@ class ArticleGenerator:
 
                     docs = list(query.stream())
                     self.logger.info('Translation batch %d: fetched %d docs', batch_index, len(docs))
+                    try:
+                        ids = []
+                        for dd in docs:
+                            try:
+                                data = dd.to_dict() or {}
+                                score = self._get_total_score(data)
+                                ids.append(f"{dd.id}:{score:.1f}")
+                            except Exception:
+                                ids.append(f"{getattr(dd,'id','?')}:?")
+                        self.logger.info('Translation batch %d docs (id:score): %s', batch_index, ','.join(ids))
+                    except Exception:
+                        self.logger.exception('Failed to summarize doc ids for batch %d', batch_index)
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
 
@@ -252,6 +294,14 @@ class ArticleGenerator:
                             try:
                                 self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
                                 self.logger.info('translation-pass: marked %s SKIPPED (low_score=%.1f)', doc_id, float(total_score))
+
+                                try:
+                                    rb = self.db.collection('articles').document(doc_id).get()
+                                    rdata = rb.to_dict() or {}
+                                    if rdata.get('status') != 'SKIPPED':
+                                        self.logger.warning('translation-pass: write verification failed for %s, status is %s', doc_id, rdata.get('status'))
+                                except Exception:
+                                    self.logger.exception('translation-pass: failed to verify write for %s', doc_id)
                                 with lock:
                                     chunk_results['skipped'] += 1
                                     chunk_results['processed'] += 1
