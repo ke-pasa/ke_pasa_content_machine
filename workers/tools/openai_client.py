@@ -114,7 +114,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 temperature=temperature
             )
             # Support both newer structured responses and older text fields
