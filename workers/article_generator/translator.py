@@ -9,7 +9,6 @@ from .prompts import (
 )
 
 
-# Helpers that prefer test-time monkeypatching via the thin worker module.
 def _get_openai_client():
     try:
         import importlib
@@ -44,6 +43,21 @@ def _parse_json_from_text(text: str):
         pass
     from workers.tools.openai_client import parse_json_from_text
     return parse_json_from_text(text)
+
+
+def _save_raw_response(doc_id: str, stage: str, text: str):
+    try:
+        import time
+        from pathlib import Path
+        log_dir = Path(__file__).parent.parent.parent / 'logs' / 'openai_raw'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fname = log_dir / f"{doc_id}_{stage}_{int(time.time())}.txt"
+        with fname.open('w', encoding='utf-8') as f:
+            f.write(text or '')
+        import logging as _logging
+        _logging.getLogger('workers.article_generator.translator').warning('Saved raw OpenAI output for %s stage=%s to %s', doc_id, stage, str(fname))
+    except Exception:
+        pass
 
 
 class ArticleTranslator:

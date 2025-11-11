@@ -337,6 +337,7 @@ class ArticleGenerator:
                             'published_at': data.get('published_at') or data.get('published') or data.get('pub_date'),
                             'pub_date': data.get('pub_date'),
                             'total_score': total_score,
+                            'doc_id': doc_id,
                         }
 
                         # call translator and measure time
