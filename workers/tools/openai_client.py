@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any
 import os
 import json
 import re
+import logging
 
 _client = None
 
@@ -48,6 +49,9 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     This wraps the common call-site used across workers. It does not attempt
     to interpret the response; callers should parse JSON if needed.
     """
+    logger = logging.getLogger('workers.tools.openai_client')
+    logger.debug('OpenAI request: model=%s messages=%d max_tokens=%s', model, len(messages) if messages is not None else 0, max_tokens)
+
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -60,7 +64,32 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             return resp.choices[0].message.content.strip()
         except Exception:
             return getattr(resp.choices[0], 'text', '').strip()
-    except Exception:
+    except Exception as e:
+        # Log helpful, non-sensitive diagnostics to aid debugging in CI.
+        try:
+            details = {'model': model, 'messages_count': len(messages) if messages is not None else 0}
+            # capture any HTTP/status-like attributes if available
+            for attr in ('http_status', 'status_code', 'code'):
+                if hasattr(e, attr):
+                    try:
+                        details[attr] = getattr(e, attr)
+                    except Exception:
+                        pass
+
+            # some client exceptions expose a response with text
+            if hasattr(e, 'response'):
+                try:
+                    resp_obj = getattr(e, 'response')
+                    text = getattr(resp_obj, 'text', None)
+                    if text:
+                        details['response_text_snippet'] = (text[:400] + '...') if len(text) > 400 else text
+                except Exception:
+                    pass
+
+            logger.exception('OpenAI chat completion failed: %s; details=%s', str(e), details)
+        except Exception:
+            # Ensure we never raise while trying to log an error
+            logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
         return None
 
 

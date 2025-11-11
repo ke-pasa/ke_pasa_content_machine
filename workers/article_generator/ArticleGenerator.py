@@ -117,8 +117,12 @@ class ArticleGenerator:
         results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
 
         try:
+            # startup log for CI visibility
+            self.logger.info('ArticleGenerator starting; instance=%s batch_size=%s', self.instance_id, self.batch_size)
+
             # Respect configured batch_size when provided, otherwise process all available documents
             requested_total = float(self.batch_size) if (self.batch_size is not None) else math.inf
+            self.logger.info('Requested total to process: %s', requested_total)
 
             # First pass: mark all currently CATEGORIZED articles with total_score < 60 as SKIPPED
             try:
@@ -127,6 +131,7 @@ class ArticleGenerator:
                 db = self.db
                 page_size = 500
                 last_snapshot = None
+                page_index = 0
                 while True:
                     try:
                         query = db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(page_size)
@@ -137,7 +142,9 @@ class ArticleGenerator:
                                 # some test fakes may not support start_after
                                 pass
 
+                        self.logger.info('Pre-scan page %d: querying articles (after=%s)', page_index, getattr(last_snapshot, 'id', None))
                         docs = list(query.stream())
+                        self.logger.info('Pre-scan page %d: fetched %d docs', page_index, len(docs))
                     except Exception as exc:
                         # retry once after a short backoff for transient issues
                         self.logger.exception('Pre-scan query failed, retrying once: %s', exc)
@@ -173,6 +180,7 @@ class ArticleGenerator:
                             self.logger.exception('Error while evaluating score for document %s', getattr(d, 'id', '?'))
 
                     last_snapshot = docs[-1]
+                    page_index += 1
                     # if we received fewer docs than page_size, we've reached the end
                     if len(docs) < page_size:
                         break
@@ -187,11 +195,12 @@ class ArticleGenerator:
             chunk_size = 20
             processed_total = 0
             last_snapshot = None
+            batch_index = 0
 
             while processed_total < requested_total:
                 limit_for_query = int(min(chunk_size, requested_total - processed_total))
-
                 try:
+                    self.logger.info('Fetching translation batch %d: limit=%d processed_total=%d requested_total=%s', batch_index, limit_for_query, processed_total, requested_total)
                     query = self.db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(limit_for_query)
                     if last_snapshot is not None:
                         try:
@@ -201,6 +210,7 @@ class ArticleGenerator:
                             pass
 
                     docs = list(query.stream())
+                    self.logger.info('Translation batch %d: fetched %d docs', batch_index, len(docs))
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
 
@@ -263,6 +273,46 @@ class ArticleGenerator:
                         translation_result = self.translator.translate(title, description, content, metadata=article_metadata)
                         trans_duration = time.perf_counter() - trans_start
                         self.logger.debug('translator finished for %s in %.3fs', doc_id, trans_duration)
+
+                        # Report concise JSON-structured stage completion log for CI and parsing
+                        try:
+                            tr = translation_result or {}
+                            editorial = bool(tr.get('editorial_result'))
+                            publish_md = bool(tr.get('publish_md'))
+                            tg_preview = bool(tr.get('tg_preview'))
+                            translation_ru = tr.get('translation_ru') or tr.get('content_ru') or ''
+                            if not isinstance(translation_ru, str):
+                                try:
+                                    translation_ru = str(translation_ru)
+                                except Exception:
+                                    translation_ru = ''
+                            translation_snippet = (translation_ru[:200] + '...') if len(translation_ru) > 200 else translation_ru
+                            translation_len = len(translation_ru)
+                            flags = [str(x) for x in (tr.get('flags') or [])][:20]
+
+                            stage_log = {
+                                'doc_id': doc_id,
+                                'editorial': editorial,
+                                'publish': publish_md,
+                                'telegram': tg_preview,
+                                'translation_len': translation_len,
+                                'translation_snippet': translation_snippet,
+                                'flags': flags,
+                                'translator_seconds': round(trans_duration, 3),
+                                'worker_instance': self.instance_id,
+                                'timestamp': datetime.now(timezone.utc).isoformat(),
+                            }
+
+                            # Emit structured JSON so CI logs are easier to parse/search
+                            try:
+                                self.logger.info(json.dumps(stage_log, ensure_ascii=False, separators=(',', ':')))
+                            except Exception:
+                                # fallback to plain info if JSON encoding fails
+                                self.logger.info('doc %s stages: editorial=%s publish=%s telegram=%s translation_len=%d',
+                                                 doc_id, editorial, publish_md, tg_preview, translation_len)
+                        except Exception:
+                            # don't let logging interfere with processing
+                            self.logger.exception('Failed to log translation stages for %s', doc_id)
 
                         if not translation_result:
                             update_payload = {
@@ -392,11 +442,16 @@ class ArticleGenerator:
                         except Exception as thread_err:
                             chunk_results['errors'].append(str(thread_err))
 
+                # summarize this chunk for CI logs
+                self.logger.info('Batch %d complete: processed=%d skipped=%d translated=%d errors=%d',
+                                 batch_index, chunk_results['processed'], chunk_results['skipped'], chunk_results['translated'], len(chunk_results['errors']))
+
                 results['processed'] += chunk_results['processed']
                 results['skipped'] += chunk_results['skipped']
                 results['translated'] += chunk_results['translated']
                 results['errors'].extend(chunk_results['errors'])
                 processed_total += chunk_results['processed']
+                batch_index += 1
 
                 if processed_total >= requested_total:
                     break
