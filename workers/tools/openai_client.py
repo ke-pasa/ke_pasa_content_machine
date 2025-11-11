@@ -184,6 +184,30 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
                 except Exception:
                     pass
+                # If the server complains about the 'temperature' value being unsupported,
+                # try one fallback: resend the request without the temperature kwarg.
+                try:
+                    lowered = '' if resp_text is None else str(resp_text)
+                    errstr = str(e)
+                    combined = (lowered + '\n' + errstr).lower()
+                    if 'temperature' in combined and ('unsupported' in combined or 'does not support' in combined):
+                        logger.warning('Detected unsupported temperature for model=%s; retrying request without temperature', model)
+                        try:
+                            # retry once without temperature
+                            resp2 = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                max_completion_tokens=max_tokens,
+                            )
+                            try:
+                                return resp2.choices[0].message.content.strip()
+                            except Exception:
+                                return getattr(resp2.choices[0], 'text', '').strip()
+                        except Exception as e2:
+                            logger.exception('Retry without temperature also failed: %s', e2)
+                except Exception:
+                    pass
+
                 return None
 
             # For 5xx or unknown status, retry up to max_attempts
