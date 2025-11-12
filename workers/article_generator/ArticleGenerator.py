@@ -90,8 +90,10 @@ class ArticleGenerator:
         payload = {
             'article_id': doc_id,
             'source_url': source.get('link') or source.get('url'),
+            'source_link': source.get('link') or source.get('url'),  # alias for compatibility
             'source_name': source.get('source') or source.get('source_name'),
             'source_published_at': source.get('published_at') or source.get('pub_date') or None,
+            'image_url': source.get('image') or source.get('image_url') or None,
             'status': status,
             'total_score': total_score,
             'title_ru': title_ru,
@@ -424,9 +426,6 @@ class ArticleGenerator:
                         notes = translation_result.get('notes') or []
                         flags = translation_result.get('flags') or []
 
-                        # Instead of updating the original `articles` doc and setting status=TRANSLATED,
-                        # persist the generated result into `articles_ru` only. Do not modify the
-                        # original article's status (user requested to keep original untouched).
                         try:
                             # persist full generated article to articles_ru
                             self._save_generated_article(
@@ -452,7 +451,6 @@ class ArticleGenerator:
                                 'telegram_preview': translation_result.get('tg_preview'),
                                 'telegram_flags': translation_result.get('tg_flags'),
                                 'status': 'TRANSLATED',
-                                'total_score': total_score,
                                 'translated_at': datetime.now(timezone.utc).isoformat(),
                                 'updated_at': datetime.now(timezone.utc).isoformat(),
                             }
@@ -460,7 +458,6 @@ class ArticleGenerator:
                             try:
                                 self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
                             except Exception as save_err:
-                                # If updating original fails, record error but do not roll back articles_ru
                                 err = f"Firebase save error for {doc_id}: {save_err}"
                                 with lock:
                                     chunk_results['errors'].append(err)
