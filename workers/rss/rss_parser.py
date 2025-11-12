@@ -1017,7 +1017,7 @@ class RSSParser:
         return list(set(categories))  # Remove duplicates
 
 
-    def filter_articles(self, articles: List[Dict[str, Any]], feed_url: str = None) -> List[Dict[str, Any]]:
+    def filter_articles(self, articles: List[Dict[str, Any]], feed_url: str = None, return_stats: bool = False):
         """
         Filter articles for Russian-speaking migrants in Spain
         and save filtered announcements for subsequent clustering.
@@ -1217,6 +1217,8 @@ class RSSParser:
         print(f"   📄 Full text extracted: {stats['text_extracted']}")
         print(f"   💾 Articles saved: {stats['saved']}")
         print(f"ℹ️  Next step: generate articles from filtered announcements")
+        if return_stats:
+            return filtered_articles, stats
         return filtered_articles
     
     def display_feed(self, articles: List[Dict[str, Any]], show_all: bool = False):
@@ -1359,7 +1361,8 @@ class RSSParser:
                 feed_data = parser.parse_feed(feed_url)
                 if not feed_data or not feed_data.get('entries'):
                     print(f"   ⚠️  Failed to load RSS feed: {feed_url}")
-                    return []
+                    # Return empty filtered list and stats indicating zero
+                    return [], {'url': feed_url, 'total': 0, 'removed': 0, 'saved': 0}
 
                 articles = feed_data['entries']
                 try:
@@ -1371,12 +1374,19 @@ class RSSParser:
                     print(f"   ⚖️ Limiting {total_in_feed} → {max_per_feed} items for this feed (RSS_MAX_ITEMS_PER_FEED)")
                     articles = articles[:max_per_feed]
 
-                filtered = parser.filter_articles(articles, feed_url=feed_url)
-                print(f"   📊 Worker processed {len(filtered)} filtered articles for feed {feed_url}")
-                return filtered
+                filtered, stats = parser.filter_articles(articles, feed_url=feed_url, return_stats=True)
+                # Build a compact per-feed stats row
+                feed_stats = {
+                    'url': feed_url,
+                    'total': stats.get('total', len(articles)),
+                    'removed': stats.get('total', len(articles)) - stats.get('saved', len(filtered)),
+                    'saved': stats.get('saved', len(filtered))
+                }
+                print(f"   📊 Worker processed {len(filtered)} filtered articles for feed {feed_url} (saved={feed_stats['saved']})")
+                return filtered, feed_stats
             except Exception as e:
                 print(f"   ❌ Error processing {feed_url}: {e}")
-                return []
+                return [], {'url': feed_url, 'total': 0, 'removed': 0, 'saved': 0}
 
         # Run feed processing in parallel
         futures = []
@@ -1384,13 +1394,25 @@ class RSSParser:
             for feed_url in feeds:
                 futures.append(ex.submit(_process_feed, feed_url))
 
+            # Collect results and per-feed stats from futures
+            per_feed_stats = []
             for f in as_completed(futures):
                 try:
-                    filtered_articles = f.result()
+                    result = f.result()
+                    # Support both (filtered, stats) tuple and legacy single-list return
+                    if isinstance(result, tuple) and len(result) == 2:
+                        filtered_articles, feed_stats = result
+                    else:
+                        filtered_articles = result or []
+                        feed_stats = None
+
                     if filtered_articles:
                         all_articles.extend(filtered_articles)
                         total_processed += len(filtered_articles)
                         total_saved += len([a for a in filtered_articles if a.get('content')])
+
+                    if feed_stats:
+                        per_feed_stats.append(feed_stats)
                 except Exception as e:
                     print(f"   ❌ Worker future error: {e}")
         # After processing all feeds, show final statistics
@@ -1401,6 +1423,29 @@ class RSSParser:
         print(f"   🤖 Articles filtered: {total_processed}")
         print(f"   💾 Articles saved for generation: {total_saved}")
         print(f"   🔄 Unique processed articles: {len(shared_processed_articles)}")
+
+        # Print per-feed table: URL : #of articles : # of removed : # of saved
+        if per_feed_stats:
+            print('\n' + '-' * 80)
+            print('Per-feed import summary:')
+            print(f"{'URL':60} {'#found':>7} {'#removed':>9} {'#saved':>7}")
+            print('-' * 80)
+            totals = {'total': 0, 'removed': 0, 'saved': 0}
+            for row in per_feed_stats:
+                url = (row.get('url') or '')[:60]
+                found = int(row.get('total', 0))
+                removed = int(row.get('removed', 0))
+                saved = int(row.get('saved', 0))
+                print(f"{url:60} {found:7d} {removed:9d} {saved:7d}")
+                totals['total'] += found
+                totals['removed'] += removed
+                totals['saved'] += saved
+
+            # Totals row
+            print('-' * 80)
+            print(f"{'TOTAL':60} {totals['total']:7d} {totals['removed']:9d} {totals['saved']:7d}")
+            print('-' * 80)
+
         print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
         return all_articles
@@ -1492,7 +1537,12 @@ def main():
             if args.no_filter:
                 rss_parser.display_feed(feed_data['entries'], show_all=True)
             else:
-                filtered_articles = rss_parser.filter_articles(feed_data['entries'])
+                result = rss_parser.filter_articles(feed_data['entries'])
+                # filter_articles may return (filtered, stats) if return_stats=True; keep compatibility
+                if isinstance(result, tuple):
+                    filtered_articles = result[0]
+                else:
+                    filtered_articles = result
                 rss_parser.display_feed(filtered_articles, show_all=args.display_all)
         else:
             print("❌ Failed to load RSS feed")
