@@ -82,6 +82,15 @@ class CategorizationWorker:
     def categorize_new_articles(self) -> Dict:
         results = {'processed': 0, 'errors': []}
 
+        # Per-run score buckets accumulator
+        score_buckets = {
+            '90+': 0,
+            '80-90': 0,
+            '70-80': 0,
+            '60-70': 0,
+            '<60': 0
+        }
+
         try:
             requested_total = int(self.config.batch_size)
             if requested_total <= 0:
@@ -257,6 +266,34 @@ class CategorizationWorker:
                         except Exception:
                             pass
 
+                        # Update per-run score buckets (thread-safe)
+                        try:
+                            ts = None
+                            if isinstance(interest_result, dict):
+                                ts = interest_result.get('total_score') or interest_result.get('total')
+                            # Fall back to update_payload total_score
+                            if ts is None:
+                                ts = update_payload.get('total_score')
+                            if ts is not None:
+                                try:
+                                    val = float(ts)
+                                except Exception:
+                                    val = None
+                                if val is not None:
+                                    with lock:
+                                        if val >= 90:
+                                            score_buckets['90+'] += 1
+                                        elif val >= 80:
+                                            score_buckets['80-90'] += 1
+                                        elif val >= 70:
+                                            score_buckets['70-80'] += 1
+                                        elif val >= 60:
+                                            score_buckets['60-70'] += 1
+                                        else:
+                                            score_buckets['<60'] += 1
+                        except Exception:
+                            pass
+
                     except Exception as e:
                         err = f"Processing error for doc {getattr(doc, 'id', '?')}: {e}"
                         with lock:
@@ -291,6 +328,18 @@ class CategorizationWorker:
                 if len(docs) < limit_for_query:
                     break
 
+            # After successful processing, print detailed score buckets summary
+            try:
+                print('\n📊 Detailed scoring summary for this run:')
+                print(f"   Total processed: {results.get('processed', 0)}")
+                print(f"   90+: {score_buckets.get('90+', 0)}")
+                print(f"   80-90: {score_buckets.get('80-90', 0)}")
+                print(f"   70-80: {score_buckets.get('70-80', 0)}")
+                print(f"   60-70: {score_buckets.get('60-70', 0)}")
+                print(f"   <60: {score_buckets.get('<60', 0)}")
+            except Exception:
+                pass
+
             return {'status': 'success', **results}
 
         except Exception as e:
@@ -304,7 +353,14 @@ class CategorizationWorker:
                 'total': len(articles),
                 'urgent': 0,
                 'by_priority': {'high': 0, 'medium': 0, 'low': 0},
-                'by_category': {}
+                'by_category': {},
+                'score_buckets': {
+                    '90+': 0,
+                    '80-90': 0,
+                    '70-80': 0,
+                    '60-70': 0,
+                    '<60': 0
+                }
             }
 
             for doc in articles:
@@ -320,6 +376,30 @@ class CategorizationWorker:
                     stats['by_priority']['low'] += 1
                 for category in data.get('categories', []):
                     stats['by_category'][category] = stats['by_category'].get(category, 0) + 1
+
+                # Score buckets
+                try:
+                    ts = data.get('total_score')
+                    if ts is None and isinstance(data.get('interest'), dict):
+                        ts = data['interest'].get('total_score') or data['interest'].get('total')
+                    if ts is not None:
+                        try:
+                            val = float(ts)
+                        except Exception:
+                            val = None
+                        if val is not None:
+                            if val >= 90:
+                                stats['score_buckets']['90+'] += 1
+                            elif val >= 80:
+                                stats['score_buckets']['80-90'] += 1
+                            elif val >= 70:
+                                stats['score_buckets']['70-80'] += 1
+                            elif val >= 60:
+                                stats['score_buckets']['60-70'] += 1
+                            else:
+                                stats['score_buckets']['<60'] += 1
+                except Exception:
+                    pass
 
             return stats
 
