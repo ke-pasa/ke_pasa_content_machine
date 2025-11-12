@@ -7,6 +7,9 @@ on:
         description: 'Batch size to process (optional)'
         required: false
         default: '5'
+  schedule:
+    # Runs every 4 hours
+    - cron: '0 */4 * * *'
 
 
 jobs:
@@ -49,18 +52,15 @@ jobs:
       - name: Run article generator
         run: |
           if [ -n "${{ github.event.inputs.batch_size }}" ]; then
+            # Manual trigger with custom batch size
             python -m workers.article_generator.worker --batch-size ${{ github.event.inputs.batch_size }}
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            # Scheduled run: batch_size=20
+            python -m workers.article_generator.worker --batch-size 20
           else
-            # no batch_size provided -> process all articles with expected status
+            # No batch_size provided -> process all articles with expected status
             python -m workers.article_generator.worker
           fi
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_key.json
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: article-generator-logs
-          path: logs/article_generation.jsonl

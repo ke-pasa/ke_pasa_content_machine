@@ -1,9 +1,8 @@
 import uuid
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 import math
-from pathlib import Path
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -161,7 +160,6 @@ class ArticleGenerator:
                 # Page through CATEGORIZED docs in chunks to avoid long-running Firestore queries
                 low_score_count = 0
                 skipped_ids = []
-                verification_failures = []
                 db = self.db
                 page_size = 500
                 last_snapshot = None
@@ -196,39 +194,52 @@ class ArticleGenerator:
                         try:
                             data = d.to_dict() or {}
                             total_score = self._get_total_score(data)
-
+                            
+                            # Check if article is older than 5 days
+                            skip_reason = None
+                            age_days = None
+                            
                             if total_score < 60:
+                                skip_reason = 'low_score'
+                            else:
+                                # Check article age - use published_at or fallback to created_at
+                                date_field = data.get('published_at') or data.get('published') or data.get('pub_date') or data.get('created_at')
+                                if date_field:
+                                    try:
+                                        # Parse ISO format timestamp or Firestore timestamp
+                                        if isinstance(date_field, str):
+                                            pub_dt = datetime.fromisoformat(date_field.replace('Z', '+00:00'))
+                                        else:
+                                            # Firestore timestamp object
+                                            pub_dt = date_field
+                                        
+                                        now_utc = datetime.now(timezone.utc)
+                                        age_days = (now_utc - pub_dt).total_seconds() / 86400
+                                        
+                                        if age_days > 5:
+                                            skip_reason = 'too_old'
+                                    except Exception as parse_err:
+                                        self.logger.debug('Failed to parse date for %s: %s', d.id, parse_err)
+
+                            if skip_reason:
                                 try:
                                     db.collection('articles').document(d.id).set({
                                         'status': 'SKIPPED',
-                                        'skipped_reason': 'low_score',
+                                        'skipped_reason': skip_reason,
                                         'total_score': total_score,
                                         'skipped_at': datetime.now(timezone.utc).isoformat(),
                                         'updated_at': datetime.now(timezone.utc).isoformat(),
                                     }, merge=True)
-                                    # Log the skip so CI shows the action
-                                    self.logger.info('pre-scan: marked %s SKIPPED (low_score=%.1f)', d.id, float(total_score))
-                                    # Verify write succeeded by reading the document back
-                                    try:
-                                        read_back = db.collection('articles').document(d.id).get()
-                                        rdata = read_back.to_dict() or {}
-                                        if rdata.get('status') != 'SKIPPED':
-                                            self.logger.warning('pre-scan: write verification failed for %s, status is %s', d.id, rdata.get('status'))
-                                            try:
-                                                # log a truncated snapshot of the stored data for debugging
-                                                snap = json.dumps(rdata, ensure_ascii=False)
-                                                self.logger.warning('pre-scan: stored doc snapshot for %s: %s', d.id, (snap[:1000] + '...') if len(snap) > 1000 else snap)
-                                            except Exception:
-                                                pass
-                                            verification_failures.append(d.id)
-                                        else:
-                                            skipped_ids.append(d.id)
-                                    except Exception:
-                                        self.logger.exception('pre-scan: failed to verify write for %s', d.id)
-                                        verification_failures.append(d.id)
+                                    
+                                    if skip_reason == 'low_score':
+                                        self.logger.info('pre-scan: marked %s SKIPPED (low_score=%.1f)', d.id, float(total_score))
+                                    else:
+                                        self.logger.info('pre-scan: marked %s SKIPPED (too_old, age=%.1f days)', d.id, age_days)
+                                    
+                                    skipped_ids.append(d.id)
                                     low_score_count += 1
                                 except Exception:
-                                    self.logger.exception('Failed to mark low-score article %s as SKIPPED', d.id)
+                                    self.logger.exception('Failed to mark article %s as SKIPPED', d.id)
                         except Exception:
                             # protect the sweep from single-doc failures
                             self.logger.exception('Error while evaluating score for document %s', getattr(d, 'id', '?'))
@@ -242,16 +253,8 @@ class ArticleGenerator:
                 if low_score_count:
                     results['skipped'] += low_score_count
                     results['processed'] += low_score_count
-                # Emit concise pre-scan summary
-                try:
-                    self.logger.info('Pre-scan summary: marked %d SKIPPED; verified=%d failed_verifications=%d',
-                                     low_score_count, len(skipped_ids), len(verification_failures))
-                    if skipped_ids:
-                        self.logger.info('Pre-scan: sample skipped ids: %s', ','.join(skipped_ids[:10]))
-                    if verification_failures:
-                        self.logger.warning('Pre-scan: sample verification failures: %s', ','.join(verification_failures[:10]))
-                except Exception:
-                    pass
+                
+                self.logger.info('Pre-scan complete: marked %d SKIPPED', low_score_count)
             except Exception:
                 # If pre-scan fails, continue to translation pass without blocking
                 logging.exception('Pre-scan for low-score articles failed')
@@ -277,18 +280,6 @@ class ArticleGenerator:
 
                     docs = list(query.stream())
                     self.logger.info('Translation batch %d: fetched %d docs', batch_index, len(docs))
-                    try:
-                        ids = []
-                        for dd in docs:
-                            try:
-                                data = dd.to_dict() or {}
-                                score = self._get_total_score(data)
-                                ids.append(f"{dd.id}:{score:.1f}")
-                            except Exception:
-                                ids.append(f"{getattr(dd,'id','?')}:?")
-                        self.logger.info('Translation batch %d docs (id:score): %s', batch_index, ','.join(ids))
-                    except Exception:
-                        self.logger.exception('Failed to summarize doc ids for batch %d', batch_index)
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
 
@@ -306,52 +297,19 @@ class ArticleGenerator:
                 def _process_doc(doc):
                     try:
                         proc_start = time.perf_counter()
-                        self.logger.info('start processing doc %s', getattr(doc, 'id', '?'))
-
                         doc_id = doc.id
                         data = doc.to_dict() or {}
                         title = data.get('title', '') or ''
                         description = data.get('description', '') or ''
                         content = data.get('content', '') or ''
 
-                        # Determine total_score using helper
+                        # Get total_score for metadata
                         total_score = self._get_total_score(data)
-
-                        if total_score < 60:
-                            update_payload = {
-                                'status': 'SKIPPED',
-                                'skipped_reason': 'low_score',
-                                'total_score': total_score,
-                                'skipped_at': datetime.now(timezone.utc).isoformat(),
-                                'updated_at': datetime.now(timezone.utc).isoformat(),
-                            }
-                            try:
-                                self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
-                                self.logger.info('translation-pass: marked %s SKIPPED (low_score=%.1f)', doc_id, float(total_score))
-
-                                try:
-                                    rb = self.db.collection('articles').document(doc_id).get()
-                                    rdata = rb.to_dict() or {}
-                                    if rdata.get('status') != 'SKIPPED':
-                                        self.logger.warning('translation-pass: write verification failed for %s, status is %s', doc_id, rdata.get('status'))
-                                except Exception:
-                                    self.logger.exception('translation-pass: failed to verify write for %s', doc_id)
-                                with lock:
-                                    chunk_results['skipped'] += 1
-                                    chunk_results['processed'] += 1
-                            except Exception as save_err:
-                                err = f"Firebase save error for {doc_id}: {save_err}"
-                                with lock:
-                                    chunk_results['errors'].append(err)
-                            return
 
                         article_metadata = {
                             'url': data.get('link') or data.get('url'),
-                            'link': data.get('link'),
                             'source': data.get('source') or data.get('source_name'),
-                            'source_name': data.get('source_name') or data.get('source'),
                             'published_at': data.get('published_at') or data.get('published') or data.get('pub_date'),
-                            'pub_date': data.get('pub_date'),
                             'total_score': total_score,
                             'doc_id': doc_id,
                         }
@@ -360,47 +318,22 @@ class ArticleGenerator:
                         trans_start = time.perf_counter()
                         translation_result = self.translator.translate(title, description, content, metadata=article_metadata)
                         trans_duration = time.perf_counter() - trans_start
-                        self.logger.debug('translator finished for %s in %.3fs', doc_id, trans_duration)
 
-                        # Report concise JSON-structured stage completion log for CI and parsing
-                        try:
-                            tr = translation_result or {}
-                            editorial = bool(tr.get('editorial_result'))
-                            publish_md = bool(tr.get('publish_md'))
-                            tg_preview = bool(tr.get('tg_preview'))
-                            translation_ru = tr.get('translation_ru') or tr.get('content_ru') or ''
-                            if not isinstance(translation_ru, str):
-                                try:
-                                    translation_ru = str(translation_ru)
-                                except Exception:
-                                    translation_ru = ''
-                            translation_snippet = (translation_ru[:200] + '...') if len(translation_ru) > 200 else translation_ru
-                            translation_len = len(translation_ru)
-                            flags = [str(x) for x in (tr.get('flags') or [])][:20]
+                        # Report concise JSON-structured stage completion log
+                        tr = translation_result or {}
+                        translation_ru = tr.get('translation_ru') or tr.get('content_ru') or ''
+                        translation_len = len(translation_ru) if isinstance(translation_ru, str) else 0
 
-                            stage_log = {
-                                'doc_id': doc_id,
-                                'editorial': editorial,
-                                'publish': publish_md,
-                                'telegram': tg_preview,
-                                'translation_len': translation_len,
-                                'translation_snippet': translation_snippet,
-                                'flags': flags,
-                                'translator_seconds': round(trans_duration, 3),
-                                'worker_instance': self.instance_id,
-                                'timestamp': datetime.now(timezone.utc).isoformat(),
-                            }
-
-                            # Emit structured JSON so CI logs are easier to parse/search
-                            try:
-                                self.logger.info(json.dumps(stage_log, ensure_ascii=False, separators=(',', ':')))
-                            except Exception:
-                                # fallback to plain info if JSON encoding fails
-                                self.logger.info('doc %s stages: editorial=%s publish=%s telegram=%s translation_len=%d',
-                                                 doc_id, editorial, publish_md, tg_preview, translation_len)
-                        except Exception:
-                            # don't let logging interfere with processing
-                            self.logger.exception('Failed to log translation stages for %s', doc_id)
+                        stage_log = {
+                            'doc_id': doc_id,
+                            'editorial': bool(tr.get('editorial_result')),
+                            'publish': bool(tr.get('publish_md')),
+                            'telegram': bool(tr.get('tg_preview')),
+                            'translation_len': translation_len,
+                            'flags': [str(x) for x in (tr.get('flags') or [])][:20],
+                            'translator_seconds': round(trans_duration, 3),
+                        }
+                        self.logger.info(json.dumps(stage_log, ensure_ascii=False, separators=(',', ':')))
 
                         if not translation_result:
                             update_payload = {
@@ -466,56 +399,15 @@ class ArticleGenerator:
                                 chunk_results['translated'] += 1
                                 chunk_results['processed'] += 1
                         except Exception as save_err:
-                            err = f"Generated-article save error for {doc_id}: {save_err}"
                             with lock:
-                                chunk_results['errors'].append(err)
+                                chunk_results['errors'].append(f"Save error for {doc_id}: {save_err}")
 
-                        try:
-                            proc_duration = time.perf_counter() - proc_start
-                            log_dir = Path(__file__).parent.parent.parent / 'logs'
-                            log_dir.mkdir(parents=True, exist_ok=True)
-                            log_file = log_dir / 'article_generation.jsonl'
-
-                            # build rich log entry
-                            entry = {
-                                'doc_id': doc_id,
-                                'source_url': article_metadata.get('url'),
-                                'source_name': article_metadata.get('source_name') or article_metadata.get('source'),
-                                'total_score': total_score,
-                                'model': getattr(self.translator, 'model', None) or 'gpt-5-mini',
-                                'translation_result_summary': {
-                                    'has_translation': bool(translation_result.get('translation_ru')) if isinstance(translation_result, dict) else False,
-                                    'title_ru_len': len((translation_result.get('title_ru') or '') if isinstance(translation_result, dict) else ''),
-                                    'content_ru_len': len((translation_result.get('content_ru') or translation_result.get('translation_ru') or '') if isinstance(translation_result, dict) else ''),
-                                    'flags': translation_result.get('flags') if isinstance(translation_result, dict) else [],
-                                    'publish_md_len': len((translation_result.get('publish_md') or '') if isinstance(translation_result, dict) else ''),
-                                    'tg_preview_len': len((translation_result.get('tg_preview') or '') if isinstance(translation_result, dict) else ''),
-                                },
-                                'timings': {
-                                    'translator_seconds': round(trans_duration, 3),
-                                    'processing_seconds': round(proc_duration, 3),
-                                },
-                                'worker_instance': self.instance_id,
-                                'timestamp': datetime.now(timezone.utc).isoformat(),
-                            }
-
-                            # include full translation_result for deeper debugging
-                            try:
-                                entry['translation_full'] = translation_result
-                            except Exception:
-                                entry['translation_full'] = str(translation_result)
-
-                            with log_file.open('a', encoding='utf-8') as f:
-                                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
-
-                            self.logger.info('finished processing doc %s: trans=%.3fs total=%.3fs', doc_id, trans_duration, proc_duration)
-                        except Exception:
-                            self.logger.exception('failed to write log for %s', doc_id)
+                        proc_duration = time.perf_counter() - proc_start
+                        self.logger.info('finished doc %s: trans=%.3fs total=%.3fs', doc_id, trans_duration, proc_duration)
 
                     except Exception as proc_err:
-                        err = f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}"
                         with lock:
-                            chunk_results['errors'].append(err)
+                            chunk_results['errors'].append(f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}")
 
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
                     futures = [ex.submit(_process_doc, d) for d in docs]
