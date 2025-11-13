@@ -7,10 +7,12 @@ on:
         description: 'Max articles to process (optional)'
         required: false
         default: '1'
+  schedule:
+    - cron: '0 8-22 * * *'
 
 jobs:
   publish:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -72,9 +74,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          LIMIT: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.limit != '' && github.event.inputs.limit) || '1' }}
         run: |
-          echo "Starting publisher worker"
-          python -m workers.publisher.worker
+          echo "Starting publisher worker (LIMIT=$LIMIT)"
+          python -m workers.publisher.worker --limit "$LIMIT"
 
       - name: Upload artifacts on failure
         if: failure()
