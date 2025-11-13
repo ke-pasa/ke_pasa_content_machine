@@ -1,6 +1,0 @@
-# Problematic RSS feeds
-# Updated: 2025-11-04 16:32:49
-# Total: 1
-#
-
-https://valencian.es/feed
