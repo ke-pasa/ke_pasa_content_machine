@@ -8,6 +8,18 @@ from .prompts import (
     stage4_messages,
 )
 
+# Ensure translator logger prints to console for local debugging
+try:
+    import logging as _logging
+    _tlogger = _logging.getLogger('workers.article_generator.translator')
+    if not any(isinstance(h, _logging.StreamHandler) for h in _tlogger.handlers):
+        _ch = _logging.StreamHandler()
+        _ch.setLevel(_logging.DEBUG)
+        _ch.setFormatter(_logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+        _tlogger.addHandler(_ch)
+except Exception:
+    pass
+
 
 def _get_openai_client():
     try:
@@ -46,18 +58,37 @@ def _parse_json_from_text(text: str):
 
 
 def _save_raw_response(doc_id: str, stage: str, text: str):
+    # Previously this function saved the raw model output to disk.
+    # Per request, stop writing files and instead log the raw output to the console
     try:
-        import time
-        from pathlib import Path
-        log_dir = Path(__file__).parent.parent.parent / 'logs' / 'openai_raw'
-        log_dir.mkdir(parents=True, exist_ok=True)
-        fname = log_dir / f"{doc_id}_{stage}_{int(time.time())}.txt"
-        with fname.open('w', encoding='utf-8') as f:
-            f.write(text or '')
         import logging as _logging
-        _logging.getLogger('workers.article_generator.translator').warning('Saved raw OpenAI output for %s stage=%s to %s', doc_id, stage, str(fname))
+        logger = _logging.getLogger('workers.article_generator.translator')
+        # log stage and doc id, then the content at WARNING so it appears in CI logs
+        logger.warning('Raw OpenAI output for %s stage=%s:\n%s', doc_id, stage, (text or '')[:20000])
+        # If running in GitHub Actions, also write the raw text to the workspace so the workflow
+        # can upload it as an artifact and you can download it from the Actions UI.
+        try:
+            import os
+            from pathlib import Path
+            gha = os.environ.get('GITHUB_ACTIONS')
+            if gha and gha.lower() == 'true':
+                gw = os.environ.get('GITHUB_WORKSPACE') or os.getcwd()
+                log_dir = Path(gw) / 'logs' / 'openai_raw'
+                log_dir.mkdir(parents=True, exist_ok=True)
+                import time
+                fname = log_dir / f"{doc_id}_{stage}_{int(time.time())}.txt"
+                with fname.open('w', encoding='utf-8') as f:
+                    f.write(text or '')
+                logger.warning('Wrote CI raw OpenAI output to %s', str(fname))
+                # Return the saved text for caller use (string)
+                return text or None
+        except Exception:
+            # If writing fails, still return the raw text
+            return text or None
+        # Default return of raw text
+        return text or None
     except Exception:
-        pass
+        return None
 
 
 class ArticleTranslator:
@@ -207,7 +238,11 @@ class ArticleTranslator:
             if parsed is None or not isinstance(parsed, dict):
                 # Save raw response for debugging when parse fails
                 doc_id = (metadata or {}).get('doc_id', 'unknown')
-                _save_raw_response(doc_id, 'stage1', text or '')
+                raw_text = _save_raw_response(doc_id, 'stage1', text or '')
+                # Return a sentinel dict indicating parse failed and include raw text
+                if raw_text:
+                    return {'_parse_error': True, '_raw_text': raw_text}
+                return None
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
@@ -266,7 +301,10 @@ class ArticleTranslator:
             parsed = _parse_json_from_text(text or '')
             if parsed is None or not isinstance(parsed, dict):
                 doc_id = metadata.get('doc_id', 'unknown')
-                _save_raw_response(doc_id, 'stage4', text or '')
+                raw_text = _save_raw_response(doc_id, 'stage4', text or '')
+                if raw_text:
+                    return {'_parse_error': True, '_raw_text': raw_text}
+                return None
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
@@ -311,7 +349,10 @@ class ArticleTranslator:
             parsed = _parse_json_from_text(text or '')
             if parsed is None or not isinstance(parsed, dict):
                 doc_id = metadata.get('doc_id', 'unknown')
-                _save_raw_response(doc_id, 'stage2', text or '')
+                raw_text = _save_raw_response(doc_id, 'stage2', text or '')
+                if raw_text:
+                    return {'_parse_error': True, '_raw_text': raw_text}
+                return None
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
@@ -384,7 +425,10 @@ class ArticleTranslator:
             parsed = _parse_json_from_text(text or '')
             if parsed is None or not isinstance(parsed, dict):
                 doc_id = metadata.get('doc_id', 'unknown')
-                _save_raw_response(doc_id, 'stage3', text or '')
+                raw_text = _save_raw_response(doc_id, 'stage3', text or '')
+                if raw_text:
+                    return {'_parse_error': True, '_raw_text': raw_text}
+                return None
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None

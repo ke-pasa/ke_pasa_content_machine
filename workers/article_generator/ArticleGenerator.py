@@ -43,6 +43,16 @@ class ArticleGenerator:
             stage3_max_tokens=2000
         )
         self.logger = logging.getLogger('workers.article_generator')
+        # Ensure console output for the worker during local runs / CI
+        try:
+            if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
+                ch = logging.StreamHandler()
+                ch.setLevel(logging.DEBUG)
+                fmt = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+                ch.setFormatter(fmt)
+                self.logger.addHandler(ch)
+        except Exception:
+            pass
 
     def _get_total_score(self, data: dict) -> float:
         """Extract a float total_score from article data.
@@ -336,18 +346,53 @@ class ArticleGenerator:
                         }
                         self.logger.info(json.dumps(stage_log, ensure_ascii=False, separators=(',', ':')))
 
-                        if not translation_result:
+                        # Detect both falsy returns and sentinel dicts from translator indicating parse errors
+                        is_parse_error = isinstance(translation_result, dict) and bool(translation_result.get('_parse_error') or translation_result.get('parse_error'))
+                        if (not translation_result) or is_parse_error:
+                            # translation_result may contain direct raw filename info
+                            raw_files = []
+                            try:
+                                if isinstance(translation_result, dict):
+                                    rf = translation_result.get('_raw_file') or translation_result.get('raw_file')
+                                    if rf:
+                                        raw_files = [rf]
+                                # Fallback: discover any files in logs matching doc_id
+                                if not raw_files:
+                                    log_dir = Path(__file__).parent.parent.parent / 'logs' / 'openai_raw'
+                                    if log_dir.exists():
+                                        raw_files = [p.name for p in log_dir.glob(f"{doc_id}_*.txt")]
+                            except Exception:
+                                raw_files = []
+
                             update_payload = {
                                 'status': 'TRANSLATION_FAILED',
                                 'total_score': total_score,
                                 'translated_at': None,
                                 'updated_at': datetime.now(timezone.utc).isoformat(),
+                                'translation_failure_raw_files': raw_files,
                             }
                             try:
                                 self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+
+                                try:
+                                    raw_text = None
+                                    if isinstance(translation_result, dict):
+                                        raw_text = translation_result.get('_raw_text') or translation_result.get('raw_text')
+                                    if raw_text:
+                                        snippet = (raw_text[:4000] + '...') if len(raw_text) > 4000 else raw_text
+                                        self.logger.warning('Translation failed for %s; raw_output_snippet:\n%s', doc_id, snippet)
+                                    elif raw_files:
+                                        self.logger.warning('Translation failed for %s; raw_files=%s', doc_id, raw_files)
+                                    else:
+                                        self.logger.warning('Translation failed for %s', doc_id)
+                                except Exception:
+                                    pass
                                 with lock:
                                     chunk_results['processed'] += 1
-                                    chunk_results['errors'].append(f"Translation failed for {doc_id}")
+                                    if raw_files:
+                                        chunk_results['errors'].append(f"Translation failed for {doc_id} (raw_files={raw_files})")
+                                    else:
+                                        chunk_results['errors'].append(f"Translation failed for {doc_id}")
                             except Exception as save_err:
                                 err = f"Firebase save error for {doc_id}: {save_err}"
                                 with lock:
