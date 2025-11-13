@@ -10,10 +10,18 @@ on:
 
 jobs:
   publish:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Provenance - print trigger info
+        run: |
+          echo "GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-${{ github.event_name }}}"
+          echo "GITHUB_ACTOR=${GITHUB_ACTOR:-${{ github.actor }}}"
+          echo "GITHUB_WORKFLOW=${GITHUB_WORKFLOW:-${{ github.workflow }}}"
+          echo "GITHUB_SHA=${GITHUB_SHA:-${{ github.sha }}}"
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -26,11 +34,13 @@ jobs:
           if [ -f workers/publisher/requirements.txt ]; then pip install -r workers/publisher/requirements.txt; fi
 
       - name: Write Firebase service account
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
         run: |
-          echo "$FIREBASE_SERVICE_ACCOUNT" > /tmp/firebase_key.json
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          if [ -n "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" ]; then
+            printf '%s' "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" > /tmp/firebase_key.json
+            echo "Wrote /tmp/firebase_key.json"
+          else
+            echo "FIREBASE_SERVICE_ACCOUNT secret not set; skipping write"
+          fi
 
       - name: Export env vars
         run: |
