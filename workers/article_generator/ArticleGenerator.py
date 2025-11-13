@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone, timedelta
 import time
 import math
+from pathlib import Path
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -351,6 +352,25 @@ class ArticleGenerator:
                                 err = f"Firebase save error for {doc_id}: {save_err}"
                                 with lock:
                                     chunk_results['errors'].append(err)
+
+                            # Per-article summary for failures
+                            try:
+                                summary = {
+                                    'doc_id': doc_id,
+                                    'status': 'TRANSLATION_FAILED',
+                                    'total_score': total_score,
+                                    'translation_len': 0,
+                                    'flags': [],
+                                    'processing_time_s': round(time.perf_counter() - proc_start, 3),
+                                    'error': 'translation_failed'
+                                }
+                                try:
+                                    self.logger.info(json.dumps(summary, ensure_ascii=False))
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
                             return
 
                         title_ru = translation_result.get('title_ru') or None
@@ -398,6 +418,23 @@ class ArticleGenerator:
                             with lock:
                                 chunk_results['translated'] += 1
                                 chunk_results['processed'] += 1
+
+                            # Per-article success summary
+                            try:
+                                summary = {
+                                    'doc_id': doc_id,
+                                    'status': 'TRANSLATED',
+                                    'total_score': total_score,
+                                    'translation_len': translation_len,
+                                    'flags': [str(x) for x in (tr.get('flags') or [])][:20],
+                                    'processing_time_s': round(proc_duration, 3),
+                                }
+                                try:
+                                    self.logger.info(json.dumps(summary, ensure_ascii=False))
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
                         except Exception as save_err:
                             with lock:
                                 chunk_results['errors'].append(f"Save error for {doc_id}: {save_err}")

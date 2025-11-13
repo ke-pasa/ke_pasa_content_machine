@@ -64,3 +64,4 @@ jobs:
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_key.json
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # (no ARTICLE_GENERATOR_FAIL_ON_ERRORS) - strict failure on collected errors by default

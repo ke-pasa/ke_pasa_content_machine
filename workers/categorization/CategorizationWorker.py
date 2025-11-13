@@ -1,6 +1,7 @@
 import uuid
 import json
 import time
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
@@ -258,9 +259,21 @@ class CategorizationWorker:
                             with log_file.open('a', encoding='utf-8') as f:
                                 f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
                             try:
-                                result_log = log_dir / 'categorization_results.log'
-                                with result_log.open('a', encoding='utf-8') as rf:
-                                    rf.write(result_line + '\n')
+                                # Emit a concise machine-readable summary to the logger (console)
+                                summary = {
+                                    'doc_id': doc_id,
+                                    'total_score': total_score,
+                                    'rating': rating,
+                                    'short_note': short_note,
+                                    'processing_time_ms': processing_time_ms,
+                                    'save_status': save_status,
+                                    'timestamp': datetime.now(timezone.utc).isoformat()
+                                }
+                                try:
+                                    _log = logging.getLogger('workers.categorization')
+                                    _log.info(json.dumps(summary, ensure_ascii=False))
+                                except Exception:
+                                    pass
                             except Exception:
                                 pass
                         except Exception:
