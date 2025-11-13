@@ -74,10 +74,20 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          LIMIT: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.limit != '' && github.event.inputs.limit) || '1' }}
+          LIMIT: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.limit != '' && github.event.inputs.limit) || '3' }}
         run: |
           echo "Starting publisher worker (LIMIT=$LIMIT)"
-          python -m workers.publisher.worker --limit "$LIMIT"
+          mkdir -p logs || true
+          # Run the worker and capture stdout/stderr to a logfile so we can inspect for failures
+          python -m workers.publisher.worker --limit "$LIMIT" 2>&1 | tee logs/publisher_run.log
+          # If the worker prints known error markers, fail the step so the job is marked failed and artifacts are uploaded
+          if grep -q -E "Errors occurred: [1-9]|Error publishing doc|Telegram send(Message|Photo) failed|Bad Request: message is too long" logs/publisher_run.log; then
+            echo "Publisher reported errors; failing the job to trigger artifact upload"
+            # print a short excerpt for convenience
+            echo "--- Publisher log excerpt ---"
+            grep -nE "Errors occurred: [1-9]|Error publishing doc|Telegram send(Message|Photo) failed|Bad Request: message is too long" -n logs/publisher_run.log || true
+            exit 1
+          fi
 
       - name: Upload artifacts on failure
         if: failure()
@@ -86,6 +96,7 @@ jobs:
           name: publish-failure-logs-${{ matrix.python-version }}
           path: |
             logs/openai_raw/
+            logs/publisher_run.log
             workers/publisher/*.log
           retention-days: 7
 
