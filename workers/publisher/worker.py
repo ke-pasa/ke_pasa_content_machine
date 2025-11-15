@@ -163,15 +163,36 @@ class PublisherWorker:
             return results
 
         try:
-            # Read a window of recent articles ordered by creation date and filter in Python
             coll = self.db.collection('articles_ru')
-            # Server-side: fetch articles with total_score > 80 (any status)
-            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run )
-            docs = list(query.stream())
+            try:
+                query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run)
+                docs = list(query.stream())
+            except Exception:
+                try:
+                    query = coll.where('total_score', '>', 80).limit(self.config.max_articles_per_run * 20)
+                    docs = list(query.stream())
+                except Exception:
+                    query = coll.limit(self.config.max_articles_per_run * 20)
+                    docs = list(query.stream())
 
             # Skip already published and require status TRANSLATED
             filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
-            docs = filtered[: self.config.max_articles_per_run]
+            # Sort by created_at (fallback to string) and take oldest N
+            def _created_key(doc):
+                try:
+                    v = (doc.to_dict() or {}).get('created_at')
+                    if v is None:
+                        return ''
+                    # Try common timestamp types
+                    if hasattr(v, 'isoformat'):
+                        return v.isoformat()
+                    if hasattr(v, 'seconds'):
+                        return str(v.seconds)
+                    return str(v)
+                except Exception:
+                    return ''
+
+            docs = sorted(filtered, key=_created_key)[: self.config.max_articles_per_run]
         except Exception as e:
             err = f'Firestore query error: {e}'
             print(f"[publisher] ❌ {err}")
@@ -308,15 +329,16 @@ class PublisherWorker:
 
         try:
             coll = self.db.collection('articles_ru')
-            # Query: status == 'TRANSLATED', order by created_at ascending; filter total_score in Python
-            # Pull a window ordered by created_at and filter in Python to avoid index requirements
-            # Server-side: query for high-score docs and order by creation
-            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(200)
+
+            # Strict server-side composite query: status + total_score + order_by(created_at)
+            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(500)
             docs = list(query.stream())
+
             # Filter out already published_to_telegram and require status TRANSLATED client-side
-            docs = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
-            # Keep only the oldest matching doc
-            docs = docs[:1]
+            candidates = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
+            # Sort by created_at and pick the oldest
+            candidates = sorted(candidates, key=lambda d: ((d.to_dict() or {}).get('created_at') and str((d.to_dict() or {}).get('created_at'))) or '')
+            docs = candidates[:1]
         except Exception as e:
             err = f'Firestore query error: {e}'
             print(f"[publisher] ❌ {err}")
