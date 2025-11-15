@@ -166,11 +166,11 @@ class PublisherWorker:
             # Read a window of recent articles ordered by creation date and filter in Python
             coll = self.db.collection('articles_ru')
             # Server-side: fetch articles with total_score > 80 (any status)
-            query = coll.where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run )
+            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run )
             docs = list(query.stream())
 
-            # Still skip any already published_to_telegram markers client-side
-            filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram')]
+            # Skip already published and require status TRANSLATED
+            filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
             docs = filtered[: self.config.max_articles_per_run]
         except Exception as e:
             err = f'Firestore query error: {e}'
@@ -311,10 +311,10 @@ class PublisherWorker:
             # Query: status == 'TRANSLATED', order by created_at ascending; filter total_score in Python
             # Pull a window ordered by created_at and filter in Python to avoid index requirements
             # Server-side: query for high-score docs and order by creation
-            query = coll.where('total_score', '>', 80).order_by('created_at').limit(200)
+            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(200)
             docs = list(query.stream())
-            # Filter out already published_to_telegram client-side
-            docs = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram')]
+            # Filter out already published_to_telegram and require status TRANSLATED client-side
+            docs = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
             # Keep only the oldest matching doc
             docs = docs[:1]
         except Exception as e:
