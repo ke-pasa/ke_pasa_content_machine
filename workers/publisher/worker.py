@@ -164,16 +164,9 @@ class PublisherWorker:
 
         try:
             coll = self.db.collection('articles_ru')
-            try:
-                query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run)
-                docs = list(query.stream())
-            except Exception:
-                try:
-                    query = coll.where('total_score', '>', 80).limit(self.config.max_articles_per_run * 20)
-                    docs = list(query.stream())
-                except Exception:
-                    query = coll.limit(self.config.max_articles_per_run * 20)
-                    docs = list(query.stream())
+            # Strict server-side composite query: status + total_score + order_by(created_at)
+            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run)
+            docs = list(query.stream())
 
             # Skip already published and require status TRANSLATED
             filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
