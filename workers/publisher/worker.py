@@ -18,8 +18,7 @@ load_dotenv()
 
 from workers.tools.firebase_client import get_firebase_client
 import html
-import requests
-from telegram import Bot
+from workers.tools.telegram_helper import send_message, send_photo
 from .config import PublisherConfig
 
 class PublisherWorker:
@@ -39,15 +38,8 @@ class PublisherWorker:
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN') or None
         if not bot_token:
             print("[publisher] ⚠️ TELEGRAM_BOT_TOKEN not set in environment; publishing will fail until configured")
-        # Keep token for direct HTTP calls; also try to create Bot for compatibility if available
+        # Keep token for helper usage
         self.telegram_token = bot_token
-        self.telegram_bot = None
-        if bot_token:
-            try:
-                self.telegram_bot = Bot(token=bot_token)
-            except Exception as e:
-                print(f"[publisher] ⚠️ telegram.Bot creation failed: {e}; falling back to HTTP requests only")
-                self.telegram_bot = None
         # Chat id may come from env or from Firebase settings
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID') or None
         
@@ -120,30 +112,12 @@ class PublisherWorker:
             return None
 
     def _http_send_message(self, chat_id: str, text: str) -> dict:
-        """Send a text message via Telegram HTTP API (synchronous). Returns parsed JSON result or raises."""
-        if not self.telegram_token:
-            raise RuntimeError('No telegram token configured')
-        url = f'https://api.telegram.org/bot{self.telegram_token}/sendMessage'
-        resp = requests.post(url, json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'})
-        j = resp.json()
-        if not (resp.status_code == 200 and j.get('ok')):
-            raise RuntimeError(f'Telegram sendMessage failed: {j}')
-        return j.get('result')
+        """Send a text message via Telegram (helper). Returns parsed result or raises."""
+        return send_message(chat_id, text, token=self.telegram_token)
 
     def _http_send_photo(self, chat_id: str, photo_url: str, caption: str = None) -> dict:
-        """Send a photo by URL using Telegram HTTP API. Returns parsed JSON result or raises."""
-        if not self.telegram_token:
-            raise RuntimeError('No telegram token configured')
-        url = f'https://api.telegram.org/bot{self.telegram_token}/sendPhoto'
-        payload = {'chat_id': chat_id, 'photo': photo_url}
-        if caption:
-            payload['caption'] = caption
-            payload['parse_mode'] = 'HTML'
-        resp = requests.post(url, json=payload)
-        j = resp.json()
-        if not (resp.status_code == 200 and j.get('ok')):
-            raise RuntimeError(f'Telegram sendPhoto failed: {j}')
-        return j.get('result')
+        """Send a photo by URL using Telegram (helper). Returns parsed result or raises."""
+        return send_photo(chat_id, photo_url, caption=caption, token=self.telegram_token)
 
     # --- Helpers to deduplicate publishing logic ---
     def _build_message(self, data: dict, include_source: bool = True) -> str:
@@ -230,7 +204,7 @@ class PublisherWorker:
         """Publishes up to configured max articles from `articles_ru` collection."""
         results = {'published': 0, 'checked': 0, 'errors': []}
 
-        if not self.telegram_bot:
+        if not self.telegram_token:
             err = 'Telegram bot not configured (TELEGRAM_BOT_TOKEN missing)'
             print(f"[publisher] ❌ {err}")
             results['errors'].append(err)
@@ -313,7 +287,7 @@ class PublisherWorker:
         """
         results = {'published': 0, 'checked': 0, 'errors': []}
 
-        if not self.telegram_bot:
+        if not self.telegram_token:
             err = 'Telegram bot not configured (TELEGRAM_BOT_TOKEN missing)'
             print(f"[publisher] ❌ {err}")
             results['errors'].append(err)

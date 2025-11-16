@@ -25,7 +25,12 @@ if str(repo_root) not in sys.path:
 
 from workers.tools.firebase_client import get_firebase_client
 from workers.article_generator.translator import ArticleTranslator
-from workers.publisher.worker import PublisherWorker
+from workers.article_generator.translator import _chat_completion as _translator_chat
+from workers.article_generator.translator import _parse_json_from_text as _translator_parse_json
+from workers.article_generator.prompts import STAGE_EVAL_SYSTEM_PROMPT, STAGE_EVAL_USER_TEMPLATE
+from workers.tools.telegram_helper import send_message, send_photo
+
+
 
 
 def load_article(db, article_id: str):
@@ -92,51 +97,7 @@ def save_generated(db, doc_id: str, source: dict, translation_result: dict):
         logging.exception('Failed to update original articles doc %s', doc_id)
 
 
-def send_final_preview(pub: PublisherWorker, article_doc: dict, translation_result: dict) -> dict | None:
-    # Determine final preview and image
-    stage5 = translation_result.get('stage5_final') or None
-    stage4 = translation_result.get('stage4_raw') or {'tg_preview': translation_result.get('tg_preview'), 'flags': translation_result.get('tg_flags') or []}
-    # Prefer explicit stage5, then stage4, then any top-level tg_preview
-    final_preview = None
-    if isinstance(stage5, dict):
-        final_preview = stage5.get('tg_preview')
-    if not final_preview and isinstance(stage4, dict):
-        final_preview = stage4.get('tg_preview')
-    if not final_preview:
-        final_preview = translation_result.get('tg_preview')
-
-    if not final_preview:
-        logging.warning('No telegram preview generated (stage5/stage4 missing)')
-        return None
-
-    image = article_doc.get('image') or article_doc.get('image_url') or None
-
-    # If no telegram token/chat configured, print the preview instead of sending
-    if not pub.telegram_token:
-        logging.info('TELEGRAM_BOT_TOKEN not configured, printing final preview:')
-        print('\n--- FINAL TELEGRAM PREVIEW ---\n')
-        print(final_preview)
-        print('\n--- END PREVIEW ---\n')
-        return None
-
-    chat_id = pub._get_chat_id()
-    if not chat_id:
-        raise RuntimeError('Telegram chat id not configured')
-
-    # Try sending photo with caption if present and fits; otherwise text
-    try:
-        if image:
-            caption = final_preview
-            max_caption = 1024
-            if len(caption) <= max_caption:
-                return pub._http_send_photo(chat_id, image, caption)
-            else:
-                return pub._http_send_message(chat_id, final_preview)
-        else:
-            return pub._http_send_message(chat_id, final_preview)
-    except Exception:
-        logging.exception('Failed to send final preview for article')
-        raise
+# Note: send_final_preview logic moved inline to main() to use shared telegram helper
 
 
 def main(article_id: str):
@@ -176,8 +137,17 @@ def main(article_id: str):
         logger.error('Translator failed for %s', article_id)
         return 3
 
-    # Print each stage for visibility
-    print('\n--- начальный текст ---\n')
+    # Print each stage for visibility with larger separators
+    SEP = '\n' + '=' * 88 + '\n'
+    SUBSEP = '\n' + '-' * 40 + '\n'
+
+    def pretty_print_heading(title: str):
+        print(SEP)
+        print(f"*** {title} ***")
+        print(SUBSEP)
+
+    # initial text
+    pretty_print_heading('НАЧАЛЬНЫЙ ТЕКСТ')
     print('Title:\n', title)
     print('\nDescription:\n', description)
     print('\nContent:\n', (content or '')[:2000])
@@ -187,7 +157,7 @@ def main(article_id: str):
         s1 = translator._stage1_translate(title, description, content, metadata)
     except Exception:
         s1 = None
-    print('\n--- Грубый перевод (stage1) ---\n')
+    pretty_print_heading('ГРУБЫЙ ПЕРЕВОД (stage1)')
     try:
         import json as _json
         print(_json.dumps(s1, ensure_ascii=False, indent=2))
@@ -199,7 +169,7 @@ def main(article_id: str):
         s2 = translator._stage2_edit(s1 or {}, metadata)
     except Exception:
         s2 = None
-    print('\n--- Редактура / перевод для сайта (stage2) ---\n')
+    pretty_print_heading('РЕДАКТУРА / ПЕРЕВОД ДЛЯ САЙТА (stage2)')
     try:
         import json as _json
         print(_json.dumps(s2, ensure_ascii=False, indent=2))
@@ -211,7 +181,7 @@ def main(article_id: str):
         s3 = translator._stage3_publish(s2 or {}, metadata)
     except Exception:
         s3 = None
-    print('\n--- Publish (stage3) ---\n')
+    pretty_print_heading('PUBLISH (stage3)')
     try:
         import json as _json
         print(_json.dumps(s3, ensure_ascii=False, indent=2))
@@ -225,7 +195,7 @@ def main(article_id: str):
             s4 = translator._stage4_telegram(s2 or {}, metadata)
     except Exception:
         s4 = None
-    print('\n--- Телеграмм (грубая версия) (stage4) ---\n')
+    pretty_print_heading('ТЕЛЕГРАММ (ГРУБАЯ ВЕРСИЯ) (stage4)')
     try:
         import json as _json
         print(_json.dumps(s4, ensure_ascii=False, indent=2))
@@ -239,7 +209,7 @@ def main(article_id: str):
             s5 = translator._stage5_finalize(s4, metadata)
     except Exception:
         s5 = None
-    print('\n--- Телеграмм (финал) (stage5) ---\n')
+    pretty_print_heading('ТЕЛЕГРАММ (ФИНАЛ) (stage5)')
     try:
         import json as _json
         print(_json.dumps(s5, ensure_ascii=False, indent=2))
@@ -250,57 +220,284 @@ def main(article_id: str):
     # Persist outputs
     save_generated(db, article_id, src, tr)
 
-    # Create publisher and send final preview. Use HTTP helpers to avoid potential httpx/async issues.
-    saved_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    # Send final preview via shared telegram helper
     try:
-        # Temporarily remove token when instantiating to avoid Bot creation side-effects; we'll use HTTP calls below.
-        if 'TELEGRAM_BOT_TOKEN' in os.environ:
-            del os.environ['TELEGRAM_BOT_TOKEN']
-        pub = PublisherWorker()
-    finally:
-        if saved_token is not None:
-            os.environ['TELEGRAM_BOT_TOKEN'] = saved_token
+        # Determine final preview and image
+        stage5 = tr.get('stage5_final') or None
+        stage4 = tr.get('stage4_raw') or {'tg_preview': tr.get('tg_preview'), 'flags': tr.get('tg_flags') or []}
+        final_preview = None
+        if isinstance(stage5, dict):
+            final_preview = stage5.get('tg_preview')
+        if not final_preview and isinstance(stage4, dict):
+            final_preview = stage4.get('tg_preview')
+        if not final_preview:
+            final_preview = tr.get('tg_preview')
 
-    pub.telegram_token = saved_token
-    pub.telegram_bot = None
+        if not final_preview:
+            logger.warning('No telegram preview generated (stage5/stage4 missing)')
+            sent = None
+        else:
+            chat_id = os.environ.get('TELEGRAM_CHAT_ID') or None
+            if not chat_id:
+                # Try firebase settings
+                try:
+                    client = get_firebase_client()
+                    settings = client.get_settings()
+                    chat_id = settings.get('telegram_chat_id')
+                except Exception:
+                    chat_id = None
 
-    try:
-        sent = send_final_preview(pub, src, tr)
+            image = src.get('image') or src.get('image_url') or None
+
+            if not os.environ.get('TELEGRAM_BOT_TOKEN') or not chat_id:
+                logger.info('TELEGRAM_BOT_TOKEN or chat id not configured, printing final preview:')
+                print(SEP)
+                print('*** FINAL TELEGRAM PREVIEW ***')
+                print(SUBSEP)
+                print(final_preview)
+                print(SEP)
+                sent = None
+            else:
+                # Try sending photo with caption, fall back to text
+                try:
+                    if image:
+                        caption = final_preview
+                        max_caption = 1024
+                        if len(caption) <= max_caption:
+                            sent = send_photo(chat_id, image, caption=caption, token=os.environ.get('TELEGRAM_BOT_TOKEN'))
+                        else:
+                            sent = send_message(chat_id, final_preview, token=os.environ.get('TELEGRAM_BOT_TOKEN'))
+                    else:
+                        sent = send_message(chat_id, final_preview, token=os.environ.get('TELEGRAM_BOT_TOKEN'))
+                except Exception:
+                    logger.exception('Failed to send final preview for article %s', article_id)
+                    sent = None
+
+        # Record and mark published
+        # Only record/mark published when a real Telegram send occurred
+        if sent:
+            try:
+                # Determine chat id for record (env or firebase)
+                recorded_chat_id = os.environ.get('TELEGRAM_CHAT_ID') or None
+                if not recorded_chat_id:
+                    try:
+                        client = get_firebase_client()
+                        settings = client.get_settings()
+                        recorded_chat_id = settings.get('telegram_chat_id')
+                    except Exception:
+                        recorded_chat_id = None
+
+                post_record = {
+                    'article_id': article_id,
+                    'telegram_message': sent.to_dict() if hasattr(sent, 'to_dict') else sent,
+                    'chat_id': recorded_chat_id,
+                    'created_at': datetime.utcnow().isoformat(),
+                }
+                db.collection('telegram_posts').add(post_record)
+            except Exception:
+                logger.exception('Failed to record telegram_posts for %s', article_id)
+
+            try:
+                db.collection('articles_ru').document(article_id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat(), 'status': 'PUBLISHED'}, merge=True)
+            except Exception:
+                logger.exception('Failed to mark articles_ru %s as published', article_id)
+
+            try:
+                art_doc = db.collection('articles').document(article_id)
+                if art_doc.get().exists:
+                    db.collection('articles').document(article_id).set({'status': 'PUBLISHED'}, merge=True)
+            except Exception:
+                logger.exception('Failed to update articles %s status', article_id)
+
+            logger.info('Article %s generated and published', article_id)
+
+        else:
+            logger.info('Article %s generated but not sent to Telegram (no token/chat or send failed). Not marking as published.', article_id)
+
     except Exception as e:
-        logger.exception('Failed to send article %s: %s', article_id, e)
+        logger.exception('Failed to prepare/send article %s: %s', article_id, e)
         return 4
 
-    # Record and mark published
-    # Only record/mark published when a real Telegram send occurred
-    if sent:
+    # Run a structured translation evaluation using LLM and save as a comment
+    try:
+        # Choose source Spanish text and final Telegram Russian text
         try:
-            post_record = {
-                'article_id': article_id,
-                'telegram_message': sent.to_dict() if hasattr(sent, 'to_dict') else sent,
-                'chat_id': pub._get_chat_id(),
-                'created_at': datetime.utcnow().isoformat(),
-            }
-            db.collection('telegram_posts').add(post_record)
+            # Prefer original source fields in `src`
+            source_text_es = src.get('content') or src.get('description') or src.get('title') or ''
         except Exception:
-            logger.exception('Failed to record telegram_posts for %s', article_id)
+            source_text_es = src.get('content') or ''
 
         try:
-            db.collection('articles_ru').document(article_id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat(), 'status': 'PUBLISHED'}, merge=True)
+            stage5 = tr.get('stage5_final') or None
+            stage4 = tr.get('stage4_raw') or {'tg_preview': tr.get('tg_preview')}
+            if isinstance(stage5, dict) and stage5.get('tg_preview'):
+                final_tg_text = stage5.get('tg_preview')
+            elif isinstance(stage4, dict) and stage4.get('tg_preview'):
+                final_tg_text = stage4.get('tg_preview')
+            else:
+                final_tg_text = tr.get('translation_ru') or tr.get('content_ru') or ''
         except Exception:
-            logger.exception('Failed to mark articles_ru %s as published', article_id)
+            final_tg_text = tr.get('translation_ru') or tr.get('content_ru') or ''
 
+        # Provided evaluation prompts
+        STAGE_EVAL_SYSTEM_PROMPT = (
+            "Ты — эксперт по переводам, журналистике и SMM в Telegram.\n\n"
+            "На вход ты получаешь два текста:\n"
+            "1️⃣ Исходный материал на испанском (source_text_es)\n"
+            "2️⃣ Финальный короткий Telegram-анонс на русском (final_tg_text)\n\n"
+            "Твоя задача — провести детальный анализ качества адаптации и перевода.\n"
+            "Оцени, насколько русский текст передаёт смысл оригинала, насколько он читается естественно, редакторски чист, структурно сбалансирован и подходит для формата Telegram.\n\n"
+            "⚙️ Критерии (каждый оцени от 0 до 100):\n"
+            "1. **Качество перевода (translation_quality)** — точность передачи фактов, смыслов и интонации оригинала.\n"
+            "2. **Языковая естественность (language_naturalness)** — гладкость фраз, отсутствие кальки, органичность для носителя русского языка.\n"
+            "3. **Редакторская чистота (editorial_clarity)** — отсутствие повторов, канцелярита, тяжёлых или неуклюжих конструкций.\n"
+            "4. **Структура и ритм (structure_rhythm)** — ритм чтения, длина предложений, логика абзацев, удобство восприятия с телефона.\n"
+            "5. **Виральность и вовлекаемость (virality_potential)** — насколько текст способен привлечь внимание (без кликбейта), есть ли живой заход.\n"
+            "6. **Соответствие формату Telegram (format_fit)** — длина ≤ 600 символов, 1–2 абзаца, ссылка на отдельной строке.\n\n"
+            "💡 Вес критериев для общей оценки:\n"
+            "- translation_quality — 25%\n"
+            "- language_naturalness — 20%\n"
+            "- editorial_clarity — 15%\n"
+            "- structure_rhythm — 15%\n"
+            "- virality_potential — 15%\n"
+            "- format_fit — 10%\n\n"
+            "📊 Итог:\n"
+            "Рассчитай итоговый балл (total_score) как взвешенное среднее всех критериев и укажи его в процентах (0–100).\n\n"
+            "🔍 Также добавь пояснения:\n"
+            "- Что получилось хорошо (strengths)\n"
+            "- Что можно улучшить (weaknesses)\n"
+            "- 1–2 конкретных совета (suggestions)\n\n"
+            "📦 Формат вывода строго JSON:\n"
+            "{\n"
+            "  \"scores\": {\n"
+            "    \"translation_quality\": <0–100>,\n"
+            "    \"language_naturalness\": <0–100>,\n"
+            "    \"editorial_clarity\": <0–100>,\n"
+            "    \"structure_rhythm\": <0–100>,\n"
+            "    \"virality_potential\": <0–100>,\n"
+            "    \"format_fit\": <0–100>\n"
+            "  },\n"
+            "  \"total_score_percent\": <0–100>,\n"
+            "  \"summary\": {\n"
+            "    \"strengths\": [\"что хорошо\"],\n"
+            "            \"weaknesses\": [\"что плохо\"],\n"
+            "    \"suggestions\": [\"1–2 совета по улучшению\"]\n"
+            "  }\n"
+            "}"
+        )
+
+        STAGE_EVAL_USER_TEMPLATE = (
+            "Проанализируй качество перевода и адаптации исходного текста в Telegram-анонс.\n"
+            "Выстави оценки по шести критериям (0–100) и выведи общий процент качества.\n"
+            "Добавь краткие объяснения — что получилось, что нет, и 1–2 совета по улучшению.\n\n"
+            "Исходный текст (испанский):\n"
+            "<<SOURCE_TEXT_ES>>\n\n"
+            "Финальный Telegram-анонс (русский):\n"
+            "<<FINAL_TG_TEXT>>\n\n"
+            "Верни строго JSON:\n"
+            "{\n"
+            "  \"scores\": { ... },\n"
+            "  \"total_score_percent\": <число>,\n"
+            "  \"summary\": { ... }\n"
+            "}"
+        )
+
+        user_prompt = STAGE_EVAL_USER_TEMPLATE.replace('<<SOURCE_TEXT_ES>>', source_text_es or '').replace('<<FINAL_TG_TEXT>>', final_tg_text or '')
+
+        messages = [
+            {'role': 'system', 'content': STAGE_EVAL_SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_prompt},
+        ]
+
+        # Call the model via translator's client
         try:
-            art_doc = db.collection('articles').document(article_id)
-            if art_doc.get().exists:
-                db.collection('articles').document(article_id).set({'status': 'PUBLISHED'}, merge=True)
+            raw_eval_text = _translator_chat(translator.client, translator.model, messages, max_tokens=1200, temperature=0.0)
         except Exception:
-            logger.exception('Failed to update articles %s status', article_id)
+            raw_eval_text = None
 
-        logger.info('Article %s generated and published', article_id)
-        return 0
-    else:
-        logger.info('Article %s generated but not sent to Telegram (no token/chat or send failed). Not marking as published.', article_id)
-        return 0
+        eval_json = None
+        eval_text_snippet = (raw_eval_text or '')[:4000]
+        print('\n' + '=' * 88 + '\n')
+        print('*** TRANSLATION EVALUATION (RAW) ***')
+        print('\n' + '-' * 40 + '\n')
+        print(eval_text_snippet)
+        print('\n' + '=' * 88 + '\n')
+
+        # Try to parse JSON using translator helper
+        try:
+            parsed = _translator_parse_json(raw_eval_text or '')
+            if isinstance(parsed, dict):
+                eval_json = parsed
+            else:
+                # fallback: store raw text
+                eval_json = {'raw': raw_eval_text or ''}
+        except Exception:
+            eval_json = {'raw': raw_eval_text or ''}
+
+        # Save eval JSON into articles_ru
+        try:
+            db.collection('articles_ru').document(article_id).set({'translation_eval': eval_json, 'translation_eval_at': datetime.utcnow().isoformat()}, merge=True)
+            logger.info('Saved structured translation evaluation for %s', article_id)
+        except Exception:
+            logger.exception('Failed to save structured translation evaluation for %s', article_id)
+
+        # If we have a sent message record earlier, try to add a telegram_posts comment entry
+        try:
+            if sent:
+                # recorded_chat_id and sent were added to telegram_posts earlier; try to record an eval comment
+                comment_record = {
+                    'article_id': article_id,
+                    'kind': 'translation_eval',
+                    'eval': eval_json,
+                    'created_at': datetime.utcnow().isoformat(),
+                }
+                db.collection('telegram_post_comments').add(comment_record)
+                # Also try to post eval as a Telegram reply to the sent message
+                try:
+                    # Determine message id and thread id from `sent` (could be dict or object)
+                    msg_id = None
+                    thread_id = None
+                    try:
+                        if hasattr(sent, 'message_id'):
+                            msg_id = getattr(sent, 'message_id')
+                        elif isinstance(sent, dict):
+                            msg_id = sent.get('message_id') or (sent.get('message') or {}).get('message_id') or (sent.get('result') or {}).get('message_id')
+                            # Telegram may include a 'message_thread_id' in some responses (forum topics)
+                            thread_id = sent.get('message_thread_id') or (sent.get('message') or {}).get('message_thread_id') or (sent.get('result') or {}).get('message_thread_id')
+                    except Exception:
+                        msg_id = None
+                        thread_id = None
+
+                    eval_text_to_send = None
+                    try:
+                        import json as _json
+                        eval_text_to_send = _json.dumps(eval_json, ensure_ascii=False, indent=2)
+                    except Exception:
+                        eval_text_to_send = str(eval_json)
+
+                    # If thread_id exists or forum topic can be created, post eval via helper
+                    try:
+                        from workers.tools.telegram_helper import post_eval_comment
+                        # post_eval_comment returns the telegram send result or an error dict or None
+                        post_result = post_eval_comment(chat_id, eval_json, raw_text=raw_eval_text, sent=sent, token=os.environ.get('TELEGRAM_BOT_TOKEN'), max_len=1000)
+                        # Record result or error into telegram_post_comments
+                        try:
+                            comment_record_update = {'post_result': post_result, 'post_result_at': datetime.utcnow().isoformat()}
+                            # update the same comment record we added earlier (best-effort: add a separate doc if update fails)
+                            db.collection('telegram_post_comments').add({**comment_record, **comment_record_update})
+                        except Exception:
+                            logger.exception('Failed to record telegram_post_comments post result for %s', article_id)
+                    except Exception:
+                        logger.exception('Failed to post eval to Telegram for %s', article_id)
+                except Exception:
+                    logger.exception('Failed to post eval as Telegram reply for %s', article_id)
+        except Exception:
+            logger.exception('Failed to save telegram post comment for %s', article_id)
+
+    except Exception:
+        logger.exception('Translation evaluation step failed for %s', article_id)
+
+    return 0
 
 
 if __name__ == '__main__':
@@ -308,11 +505,91 @@ if __name__ == '__main__':
 
     p = argparse.ArgumentParser()
     p.add_argument('--article-id', required=True, help='Article id in `articles` to generate+publish')
+    p.add_argument('--eval-only', action='store_true', help='Run translation evaluation only (no Firebase). Requires --source-text/--final-text or file variants')
+    p.add_argument('--source-text-file', help='Path to file containing source Spanish text (used with --eval-only)')
+    p.add_argument('--final-text-file', help='Path to file containing final Telegram Russian text (used with --eval-only)')
+    p.add_argument('--source-text', help='Inline source Spanish text (used with --eval-only)')
+    p.add_argument('--final-text', help='Inline final Telegram Russian text (used with --eval-only)')
     args = p.parse_args()
 
     try:
-        rc = main(args.article_id)
-        sys.exit(rc)
+        # Support eval-only mode to run the STAGE_EVAL prompt locally without Firebase
+        if getattr(args, 'eval_only', False):
+            src_text = ''
+            final_text = ''
+            if args.source_text:
+                src_text = args.source_text
+            elif args.source_text_file:
+                try:
+                    with open(args.source_text_file, 'r', encoding='utf-8') as f:
+                        src_text = f.read()
+                except Exception as e:
+                    print('Failed to read source text file:', e)
+                    sys.exit(2)
+
+            if args.final_text:
+                final_text = args.final_text
+            elif args.final_text_file:
+                try:
+                    with open(args.final_text_file, 'r', encoding='utf-8') as f:
+                        final_text = f.read()
+                except Exception as e:
+                    print('Failed to read final text file:', e)
+                    sys.exit(2)
+
+            if not src_text or not final_text:
+                print('For --eval-only please provide --source-text and --final-text (or their file variants).')
+                sys.exit(2)
+
+            # Build prompts (reuse the same constants defined above in main's eval section)
+            from workers.article_generator.translator import _parse_json_from_text as _parse_json
+            messages = [
+                {'role': 'system', 'content': STAGE_EVAL_SYSTEM_PROMPT},
+                {'role': 'user', 'content': STAGE_EVAL_USER_TEMPLATE.replace('<<SOURCE_TEXT_ES>>', src_text).replace('<<FINAL_TG_TEXT>>', final_text)},
+            ]
+            # Use translator client if available
+            tr_client = None
+            tr_model = None
+            try:
+                translator = ArticleTranslator()
+                tr_client = translator.client
+                tr_model = translator.model
+            except Exception:
+                tr_client = None
+                tr_model = None
+
+            raw_eval_text = None
+            if tr_client and tr_model:
+                try:
+                    raw_eval_text = _translator_chat(tr_client, tr_model, messages, max_tokens=1200, temperature=0.0)
+                except Exception:
+                    raw_eval_text = None
+
+            # If LLM call failed, print message and exit
+            if not raw_eval_text:
+                print('LLM call failed: ensure OPENAI_API_KEY is set and openai package is installed.')
+                sys.exit(3)
+
+            print('\n' + '=' * 88 + '\n')
+            print('*** TRANSLATION EVALUATION (RAW) ***')
+            print('\n' + '-' * 40 + '\n')
+            print((raw_eval_text or '')[:4000])
+            print('\n' + '=' * 88 + '\n')
+
+            parsed = _translator_parse_json(raw_eval_text or '')
+            if parsed is None:
+                print('Failed to parse JSON from model response; raw output printed above.')
+                sys.exit(0)
+            import json as _json
+            try:
+                print(_json.dumps(parsed, ensure_ascii=False, indent=2))
+            except Exception:
+                print(parsed)
+
+            sys.exit(0)
+        else:
+            rc = main(args.article_id)
+            sys.exit(rc)
     except Exception:
         traceback.print_exc()
         sys.exit(1)
