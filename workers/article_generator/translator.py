@@ -138,6 +138,14 @@ class ArticleTranslator:
         if total_score_meta >= 80 and metadata.get('url'):
             stage4 = self._stage4_telegram(stage2, metadata)
 
+        # Optional final refinement (stage5) — run final editor on already-generated tg preview
+        stage5 = None
+        try:
+            if isinstance(stage4, dict) and stage4.get('tg_preview'):
+                stage5 = self._stage5_finalize(stage4, metadata)
+        except Exception:
+            stage5 = None
+
         # Ensure required fields present and fill fallbacks
         final = {
             'translation_ru': stage2.get('translation_ru') or stage1.get('translation_ru') or '',
@@ -175,15 +183,34 @@ class ArticleTranslator:
                 final['flags'] = combined_flags
             final['publish_flags'] = publish_flags
 
+        # Attach stage4 raw output if present (unrefined preview)
         if isinstance(stage4, dict):
-            tg_preview = stage4.get('tg_preview')
-            if tg_preview:
-                final['tg_preview'] = tg_preview
-            tg_flags = stage4.get('flags') or []
-            if tg_flags:
-                combined_flags = list(dict.fromkeys((final.get('flags') or []) + tg_flags))
-                final['flags'] = combined_flags
-            final['tg_flags'] = tg_flags
+            final['stage4_raw'] = stage4
+
+        # If stage5 (final refinement) present, prefer its preview, otherwise use stage4
+        if isinstance(stage5, dict):
+            final_preview = stage5.get('tg_preview')
+            if final_preview:
+                final['tg_preview'] = final_preview
+            # merge flags produced by stage4 and stage5
+            s4_flags = (stage4.get('flags') if isinstance(stage4, dict) else []) or []
+            s5_flags = stage5.get('flags') or []
+            combined = list(dict.fromkeys((final.get('flags') or []) + s4_flags + s5_flags))
+            if combined:
+                final['flags'] = combined
+            final['tg_flags'] = s5_flags or s4_flags or []
+            final['stage5_final'] = stage5
+        else:
+            # fallback to stage4 preview if no stage5
+            if isinstance(stage4, dict):
+                tg_preview = stage4.get('tg_preview')
+                if tg_preview:
+                    final['tg_preview'] = tg_preview
+                tg_flags = stage4.get('flags') or []
+                if tg_flags:
+                    combined_flags = list(dict.fromkeys((final.get('flags') or []) + tg_flags))
+                    final['flags'] = combined_flags
+                final['tg_flags'] = tg_flags
 
         return final
 
@@ -304,6 +331,36 @@ class ArticleTranslator:
                 raw_text = _save_raw_response(doc_id, 'stage4', text or '')
                 if raw_text:
                     return {'_parse_error': True, '_raw_text': raw_text}
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def _stage5_finalize(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
+        """Final refinement of an already-generated tg_preview.
+
+        Accepts the output of _stage4_telegram (or a dict with 'tg_preview') and runs
+        a short final pass to tighten phrasing. Returns parsed dict or None.
+        """
+        if not isinstance(stage4_result, dict):
+            return None
+
+        try:
+            payload = {
+                'preview': stage4_result.get('tg_preview') or '',
+                'url': metadata.get('url') or metadata.get('link') or ''
+            }
+            import json
+            stage_json = json.dumps(payload, ensure_ascii=False)
+            try:
+                from .prompts import stage5_messages
+            except Exception:
+                from workers.article_generator.prompts import stage5_messages
+
+            messages = stage5_messages(stage_json)
+            text = _chat_completion(self.client, self.model, messages, max_tokens=300, temperature=0.3)
+            parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
                 return None
             return parsed if isinstance(parsed, dict) else None
         except Exception:

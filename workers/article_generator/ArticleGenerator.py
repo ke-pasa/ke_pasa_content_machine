@@ -90,7 +90,8 @@ class ArticleGenerator:
         # Stage outputs
         stage2 = tr.get('editorial_result') or None
         stage3 = {'publish_md': tr.get('publish_md'), 'flags': tr.get('publish_flags') or []}
-        stage4 = {'tg_preview': tr.get('tg_preview'), 'flags': tr.get('tg_flags') or []}
+        stage4 = tr.get('stage4_raw') or {'tg_preview': tr.get('tg_preview'), 'flags': tr.get('tg_flags') or []}
+        stage5 = tr.get('stage5_final') or None
 
         # Combine flags from various sources
         combined_flags = []
@@ -113,6 +114,7 @@ class ArticleGenerator:
                 'editorial': stage2,
                 'publish': stage3,
                 'telegram': stage4,
+                'telegram_final': stage5,
             },
             'flags': sorted(set(combined_flags)),
             'created_at': now,
