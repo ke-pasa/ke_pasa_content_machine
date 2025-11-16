@@ -139,14 +139,89 @@ class PublisherWorker:
             raise RuntimeError(f'Telegram sendPhoto failed: {j}')
         return j.get('result')
 
-    def publish_articles_from_articles_ru(self) -> Dict:
-        """Publishes up to configured max articles from `articles_ru` collection.
+    # --- Helpers to deduplicate publishing logic ---
+    def _build_message(self, data: dict, include_source: bool = True) -> str:
+        title = data.get('title_ru') or data.get('title') or ''
+        text = data.get('content_ru') or data.get('description_ru') or ''
+        source = data.get('source_name') or data.get('source') or data.get('source_link') or data.get('source_url') or ''
+        parts = []
+        if title:
+            parts.append(title)
+        if text:
+            parts.append(text)
+        if include_source and source:
+            parts.append(f"Источник: {source}")
+        return '\n\n'.join([p for p in parts if p]) or title or 'Новость'
 
-        For each article:
-        - If image_url present: send_photo with caption containing text + source
-        - Otherwise: sendMessage with text + source
-        - Record publication in `telegram_posts` and update article doc with published=True
-        """
+    def _prepare_caption(self, message: str, max_caption: int = 1024) -> str:
+        if len(message) <= max_caption:
+            return message
+        # Try to keep the last line (often source) and truncate the rest
+        parts = message.split('\n')
+        if len(parts) > 1:
+            last = parts[-1]
+            front = '\n'.join(parts[:-1])
+            avail = max_caption - len(last) - 3
+            if avail > 0:
+                front_trunc = (front[:avail] + '...') if len(front) > avail else front
+                return front_trunc + '\n' + last
+            else:
+                return last[:max_caption-3] + '...'
+        return message[:max_caption-3] + '...'
+
+    def _record_post(self, article_id: str, telegram_result, chat_id: str):
+        try:
+            post_record = {
+                'article_id': article_id,
+                'telegram_message': telegram_result.to_dict() if hasattr(telegram_result, 'to_dict') else None,
+                'chat_id': chat_id,
+                'created_at': datetime.utcnow().isoformat(),
+            }
+            self.db.collection('telegram_posts').add(post_record)
+        except Exception as e:
+            print(f"[publisher] ⚠️ Failed to record telegram_posts for {article_id}: {e}")
+
+    def _mark_article_published(self, coll, doc_id: str, sent_message, error_str: str | None = None):
+        try:
+            update_fields = {
+                'status': 'PUBLISHED',
+                'published_to_telegram': True if sent_message else False,
+                'published_to_telegram_at': datetime.utcnow().isoformat(),
+                'telegram_publish_error': error_str,
+            }
+            coll.document(doc_id).set(update_fields, merge=True)
+        except Exception as e:
+            print(f"[publisher] ⚠️ Failed to update article doc {doc_id}: {e}")
+
+    def _send_with_fallback(self, chat_id: str, image: str | None, message: str, data: dict) -> tuple:
+        """Try to send a photo with caption, fall back to sending text. Returns (result, error_str)."""
+        sent_message = None
+        doc_error = None
+        if image:
+            try:
+                caption = message
+                max_caption = 1024
+                if len(caption) > max_caption:
+                    caption = self._prepare_caption(caption, max_caption=max_caption)
+                sent_message = self._http_send_photo(chat_id, image, caption)
+            except Exception as e:
+                print(f"[publisher] ⚠️ Failed to send photo: {e}")
+                doc_error = str(e)
+                try:
+                    sent_message = self._http_send_message(chat_id, html.escape(message) if not isinstance(message, str) else message)
+                except Exception as e2:
+                    print(f"[publisher] ⚠️ Fallback text send failed: {e2}")
+                    doc_error = f"{doc_error}; fallback_send_error: {e2}" if doc_error else str(e2)
+        else:
+            try:
+                sent_message = self._http_send_message(chat_id, html.escape(message) if not isinstance(message, str) else message)
+            except Exception as e:
+                print(f"[publisher] ⚠️ sendMessage failed: {e}")
+                doc_error = str(e)
+        return sent_message, doc_error
+
+    def publish_articles_from_articles_ru(self) -> Dict:
+        """Publishes up to configured max articles from `articles_ru` collection."""
         results = {'published': 0, 'checked': 0, 'errors': []}
 
         if not self.telegram_bot:
@@ -164,19 +239,16 @@ class PublisherWorker:
 
         try:
             coll = self.db.collection('articles_ru')
-            # Strict server-side composite query: status + total_score + order_by(created_at)
             query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run)
             docs = list(query.stream())
 
-            # Skip already published and require status TRANSLATED
             filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
-            # Sort by created_at (fallback to string) and take oldest N
+
             def _created_key(doc):
                 try:
                     v = (doc.to_dict() or {}).get('created_at')
                     if v is None:
                         return ''
-                    # Try common timestamp types
                     if hasattr(v, 'isoformat'):
                         return v.isoformat()
                     if hasattr(v, 'seconds'):
@@ -198,99 +270,19 @@ class PublisherWorker:
             try:
                 data = doc.to_dict() or {}
                 article_id = data.get('article_id') or doc.id
-                title = data.get('title_ru') or data.get('title') or ''
-                text = data.get('content_ru') or data.get('description_ru') or ''
-                source = data.get('source_name') or data.get('source') or data.get('source_link') or data.get('source_url') or ''
                 image = data.get('image_url') or data.get('image') or None
 
-                # Build message: title, text, then source (each separated by blank line)
-                msg_lines = []
-                if title:
-                    msg_lines.append(f"{title}")
-                if text:
-                    msg_lines.append(text)
-                message = '\n\n'.join([l for l in msg_lines if l]) or title or 'Новость'
+                message = self._build_message(data, include_source=True)
+                sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
-                # Send image first if exists: prefer a single photo message with caption (max ~1024 chars)
-                sent_message = None
-                if image:
-                    try:
-                        max_caption = 1024
-                        caption = message
-                        if len(caption) <= max_caption:
-                            # caption fits — send photo with caption
-                            sent_message = self._http_send_photo(chat_id, image, caption)
-                        else:
-                            # caption too long — per request: do NOT send the image; instead send a truncated text message keeping the source link
-                            # Determine URL and display text for source
-                            data_source_url = data.get('source_url') or data.get('source_link') or (data.get('source') if isinstance(data.get('source'), str) and data.get('source').startswith('http') else None)
-                            source_name = data.get('source_name') or (data.get('source') if data.get('source') and not data_source_url else '')
+                self._record_post(article_id, sent_message, chat_id)
+                self._mark_article_published(coll, doc.id, sent_message, doc_error)
 
-                            # Build HTML-safe content
-                            title_html = html.escape(title)
-                            text_html = html.escape(text)
-
-                            content_parts = []
-                            if title_html:
-                                content_parts.append(title_html)
-                            if text_html:
-                                content_parts.append(text_html)
-                            content = '\n\n'.join(content_parts)
-
-                            # Build clickable source HTML if URL available, otherwise plain source text
-                            if data_source_url:
-                                link_html = f'<a href="{html.escape(data_source_url)}">Источник</a>'
-                            elif source_name:
-                                link_html = f'Источник: {html.escape(source_name)}'
-                            else:
-                                link_html = ''
-
-                            # Truncate content so total message <= 2000 chars (safe limit)
-                            max_total = 2000
-                            total_reserved = len(link_html) + 2 if link_html else 0
-                            allowed = max_total - total_reserved
-                            if allowed <= 0:
-                                truncated = ''
-                            else:
-                                if len(content) > allowed:
-                                    truncated = content[: allowed - 3] + '...'
-                                else:
-                                    truncated = content
-
-                            message_html = (truncated + '\n\n' + link_html) if link_html else truncated
-                            # Send text-only message (HTML)
-                            sent_result = self._http_send_message(chat_id, message_html)
-                            sent_message = sent_result
-                    except Exception as e:
-                        print(f"[publisher] ⚠️ Failed to send photo for {article_id}: {e}")
-                        # fallback to sending text only (best-effort)
-                        try:
-                            sent_message = self._http_send_message(chat_id, html.escape(message) if not isinstance(message, str) else message)
-                        except Exception as e2:
-                            print(f"[publisher] ⚠️ Fallback text send failed for {article_id}: {e2}")
+                if sent_message:
+                    results['published'] += 1
+                    print(f"[publisher] ✅ Published article {article_id} to Telegram")
                 else:
-                    sent_message = self._http_send_message(chat_id, html.escape(message) if not isinstance(message, str) else message)
-
-                # Record publication in telegram_posts
-                try:
-                    post_record = {
-                        'article_id': article_id,
-                        'telegram_message': sent_message.to_dict() if hasattr(sent_message, 'to_dict') else None,
-                        'chat_id': chat_id,
-                        'created_at': datetime.utcnow().isoformat(),
-                    }
-                    self.db.collection('telegram_posts').add(post_record)
-                except Exception as e:
-                    print(f"[publisher] ⚠️ Failed to record telegram_posts for {article_id}: {e}")
-
-                # Update article doc: mark published_to_telegram True and add published_at
-                try:
-                    coll.document(doc.id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat()}, merge=True)
-                except Exception as e:
-                    print(f"[publisher] ⚠️ Failed to update article doc {doc.id}: {e}")
-
-                results['published'] += 1
-                print(f"[publisher] ✅ Published article {article_id} to Telegram")
+                    print(f"[publisher] ⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
             except Exception as e:
                 err = f"Error publishing doc {getattr(doc, 'id', '?')}: {e}"
                 print(f"[publisher] ❌ {err}")
@@ -320,14 +312,10 @@ class PublisherWorker:
 
         try:
             coll = self.db.collection('articles_ru')
-
-            # Strict server-side composite query: status + total_score + order_by(created_at)
             query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(500)
             docs = list(query.stream())
 
-            # Filter out already published_to_telegram and require status TRANSLATED client-side
             candidates = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
-            # Sort by created_at and pick the oldest
             candidates = sorted(candidates, key=lambda d: ((d.to_dict() or {}).get('created_at') and str((d.to_dict() or {}).get('created_at'))) or '')
             docs = candidates[:1]
         except Exception as e:
@@ -342,64 +330,19 @@ class PublisherWorker:
             try:
                 data = doc.to_dict() or {}
                 article_id = data.get('article_id') or doc.id
-                title = data.get('title_ru') or data.get('title') or ''
-                text = data.get('content_ru') or data.get('description_ru') or ''
-                source = data.get('source_name') or data.get('source') or data.get('source_link') or data.get('source_url') or ''
                 image = data.get('image_url') or data.get('image') or None
 
-                msg_lines = []
-                if title:
-                    msg_lines.append(f"{title}")
-                if text:
-                    msg_lines.append(text)
-                if source:
-                    msg_lines.append(f"Источник: {source}")
-                message = '\n\n'.join([l for l in msg_lines if l]) or title or 'Новость'
+                message = self._build_message(data, include_source=True)
+                sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
-                sent_message = None
-                if image:
-                    try:
-                        max_caption = 1024
-                        caption = message
-                        if len(caption) > max_caption:
-                            parts = caption.split('\n')
-                            if len(parts) > 1:
-                                last = parts[-1]
-                                front = '\n'.join(parts[:-1])
-                                avail = max_caption - len(last) - 3
-                                if avail > 0:
-                                    front_trunc = (front[:avail] + '...') if len(front) > avail else front
-                                    caption = front_trunc + '\n' + last
-                                else:
-                                    caption = (last[:max_caption-3] + '...')
-                            else:
-                                caption = caption[:max_caption-3] + '...'
+                self._record_post(article_id, sent_message, chat_id)
+                self._mark_article_published(coll, doc.id, sent_message, doc_error)
 
-                        sent_message = self._http_send_photo(chat_id, image, caption)
-                    except Exception as e:
-                        print(f"[publisher] ⚠️ Failed to send photo for {article_id}: {e}")
-                        sent_message = self._http_send_message(chat_id, message)
+                if sent_message:
+                    results['published'] += 1
+                    print(f"[publisher] ✅ Published article {article_id} to Telegram (TRANSLATED/high-score)")
                 else:
-                    sent_message = self._http_send_message(chat_id, message)
-
-                try:
-                    post_record = {
-                        'article_id': article_id,
-                        'telegram_message': sent_message.to_dict() if hasattr(sent_message, 'to_dict') else None,
-                        'chat_id': chat_id,
-                        'created_at': datetime.utcnow().isoformat(),
-                    }
-                    self.db.collection('telegram_posts').add(post_record)
-                except Exception as e:
-                    print(f"[publisher] ⚠️ Failed to record telegram_posts for {article_id}: {e}")
-
-                try:
-                    coll.document(doc.id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat()}, merge=True)
-                except Exception as e:
-                    print(f"[publisher] ⚠️ Failed to update article doc {doc.id}: {e}")
-
-                results['published'] += 1
-                print(f"[publisher] ✅ Published article {article_id} to Telegram (TRANSLATED/high-score)")
+                    print(f"[publisher] ⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
             except Exception as e:
                 err = f"Error publishing doc {getattr(doc, 'id', '?')}: {e}"
                 print(f"[publisher] ❌ {err}")
