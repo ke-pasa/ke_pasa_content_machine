@@ -115,9 +115,6 @@ class ArticleGenerator:
                 'telegram': stage4,
             },
             'flags': sorted(set(combined_flags)),
-            'model': getattr(getattr(self, 'translator', None), 'model', None) or 'gpt-5-mini',
-            'worker': metadata.get('worker_name'),
-            'translation_metadata': tr,
             'created_at': now,
             'updated_at': now,
         }

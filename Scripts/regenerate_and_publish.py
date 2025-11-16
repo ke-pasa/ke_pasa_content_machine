@@ -1,0 +1,219 @@
+"""Regenerate Telegram preview for a given article_id and publish it immediately.
+
+Usage: run from repo root in venv. The script will:
+- load article data from `articles_ru` (or fallback to `articles`)
+- call ArticleTranslator._stage4_telegram to regenerate `tg_preview`
+- send message/photo to Telegram using PublisherWorker's HTTP helpers
+- mark document as `published` and record `telegram_posts`/published flag
+
+This script will NOT modify `updated_at` unless you explicitly change it later.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+import logging
+from datetime import datetime
+import os
+
+
+# Ensure repo root on sys.path when running from Scripts/
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from workers.tools.firebase_client import get_firebase_client
+from workers.article_generator.translator import ArticleTranslator
+from workers.publisher.worker import PublisherWorker
+
+
+def load_article(db, article_id: str):
+    # Try articles_ru first
+    doc = db.collection('articles_ru').document(article_id).get()
+    if getattr(doc, 'exists', False):
+        return doc.to_dict() or {}, 'articles_ru', article_id
+
+    return None, None, None
+
+
+def build_stage2_from_doc(data: dict) -> dict:
+    # stage2_result should contain title_ru/content_ru/translation_ru
+    stage2 = {}
+    if data.get('title_ru'):
+        stage2['title_ru'] = data.get('title_ru')
+    elif data.get('title'):
+        stage2['title_ru'] = data.get('title')
+
+    if data.get('content_ru'):
+        stage2['content_ru'] = data.get('content_ru')
+    elif data.get('translation_ru'):
+        stage2['translation_ru'] = data.get('translation_ru')
+    elif data.get('content'):
+        stage2['translation_ru'] = data.get('content')
+
+    return stage2
+
+
+def send_via_publisher(pub_worker: PublisherWorker, article_doc: dict, tg_preview: str, image_url: str | None):
+    chat_id = pub_worker._get_chat_id()
+    if not chat_id:
+        raise RuntimeError('Telegram chat id not configured')
+
+    title = article_doc.get('title_ru') or article_doc.get('title') or ''
+    text = tg_preview or ''
+    source = article_doc.get('source_name') or article_doc.get('source') or article_doc.get('source_link') or article_doc.get('source_url') or ''
+
+    msg_lines = []
+    if title:
+        msg_lines.append(f"{title}")
+    if text:
+        msg_lines.append(text)
+
+    message = '\n\n'.join([l for l in msg_lines if l]) or title or 'Новость'
+
+
+    sent = None
+    if image_url:
+        # try sending photo with caption if fits
+        max_caption = 1024
+        caption = message
+        if len(caption) <= max_caption:
+            sent = pub_worker._http_send_photo(chat_id, image_url, caption)
+            return sent
+        else:
+            # caption too long — send text only (publisher logic avoids photo then)
+            sent = pub_worker._http_send_message(chat_id, message)
+            return sent
+    else:
+        sent = pub_worker._http_send_message(chat_id, message)
+        return sent
+
+
+def main(article_id: str):
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger('regenerate_and_publish')
+
+    fb = get_firebase_client()
+    db = fb.db
+
+    # Load article data
+    data, which, doc_id = load_article(db, article_id)
+    if data is None:
+        logger.error('Article %s not found in articles_ru or articles', article_id)
+        return 2
+
+    translator = ArticleTranslator()
+
+    # Build stage2_result
+    stage2 = build_stage2_from_doc(data)
+    metadata = {'url': data.get('source_url') or data.get('source_link') or data.get('url') or data.get('source'), 'doc_id': article_id}
+
+    logger.info('Generating tg_preview for %s (from %s)', article_id, which)
+    tg_result = translator._stage4_telegram(stage2, metadata)
+    if not tg_result or not isinstance(tg_result, dict):
+        logger.error('Translator returned no tg_preview for %s', article_id)
+        return 3
+
+    tg_preview = tg_result.get('tg_preview')
+    tg_flags = tg_result.get('flags') or tg_result.get('tg_flags') or []
+
+    if not tg_preview:
+        logger.error('No tg_preview generated for %s', article_id)
+        return 4
+
+    # Save preview back to articles_ru (do not touch updated_at)
+    update_payload = {
+        'stages': {'telegram': {'tg_preview': tg_preview, 'flags': tg_flags}},
+        'telegram_preview': tg_preview,
+        'telegram_flags': tg_flags,
+    }
+    db.collection('articles_ru').document(article_id).set(update_payload, merge=True)
+
+    saved_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+    try:
+        if 'TELEGRAM_BOT_TOKEN' in os.environ:
+            del os.environ['TELEGRAM_BOT_TOKEN']
+        pub = PublisherWorker()
+    finally:
+        # restore environment for callers
+        if saved_token is not None:
+            os.environ['TELEGRAM_BOT_TOKEN'] = saved_token
+    # ensure instance has token for HTTP calls and avoid having a Bot instance
+    pub.telegram_token = saved_token
+    pub.telegram_bot = None
+
+    # Determine image url
+    image = (data.get('image_url') or data.get('image') or data.get('image_url') or None)
+
+    try:
+        sent = send_via_publisher(pub, data, tg_preview, image)
+    except Exception as e:
+        logger.exception('Failed to send article %s: %s', article_id, e)
+        return 5
+
+    # Record telegram_posts and mark published
+    message_url = None
+    try:
+        post_record = {
+            'article_id': article_id,
+            'telegram_message': sent.to_dict() if hasattr(sent, 'to_dict') else sent,
+            'chat_id': pub._get_chat_id(),
+            'created_at': datetime.utcnow().isoformat(),
+        }
+        db.collection('telegram_posts').add(post_record)
+    except Exception:
+        logger.exception('Failed to record telegram_posts for %s', article_id)
+
+        # Try to compute a public URL for the sent message when possible
+        try:
+            chat_id = str(pub._get_chat_id())
+            message_id = None
+            if isinstance(sent, dict):
+                message_id = sent.get('message_id') or sent.get('result', {}).get('message_id')
+            elif hasattr(sent, 'get'):
+                try:
+                    message_id = sent.get('message_id')
+                except Exception:
+                    message_id = None
+
+            if message_id:
+                if chat_id.startswith('@'):
+                    uname = chat_id.lstrip('@')
+                    message_url = f'https://t.me/{uname}/{message_id}'
+                elif chat_id.startswith('-100'):
+                    short = chat_id[4:]
+                    message_url = f'https://t.me/c/{short}/{message_id}'
+                else:
+                    message_url = None
+        except Exception:
+            message_url = None
+
+    if message_url:
+        # Print machine-parseable line for CI to pick up
+        print(f'TELEGRAM_MESSAGE_URL={message_url}')
+
+    try:
+        db.collection('articles_ru').document(article_id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat(), 'status': 'published'}, merge=True)
+    except Exception:
+        logger.exception('Failed to mark articles_ru %s as published', article_id)
+
+    try:
+        art_doc = db.collection('articles').document(article_id)
+        if art_doc.get().exists:
+            db.collection('articles').document(article_id).set({'status': 'published'}, merge=True)
+    except Exception:
+        logger.exception('Failed to update articles %s status', article_id)
+
+    logger.info('Article %s published', article_id)
+    return 0
+
+
+if __name__ == '__main__':
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument('--article-id', required=True, help='Article id to regenerate+publish')
+    args = p.parse_args()
+
+    rc = main(args.article_id)
+    sys.exit(rc)

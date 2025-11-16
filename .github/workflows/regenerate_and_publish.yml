@@ -1,0 +1,58 @@
+name: Publish Article
+
+on:
+  workflow_dispatch:
+    inputs:
+      article_id:
+        description: 'Article id to publish'
+        required: true
+
+jobs:
+  regenerate-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Prepare Firebase credentials (optional)
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "Writing Firebase service account to firebase_key.json"
+            echo "$FIREBASE_SERVICE_ACCOUNT" > firebase_key.json
+          else
+            echo "No FIREBASE_SERVICE_ACCOUNT secret set; skipping firebase_key.json write"
+          fi
+
+      - name: Run regenerate and publish
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_key.json
+        run: |
+          set -e
+          ARID="${{ github.event.inputs.article_id }}"
+          CMD="python Scripts/regenerate_and_publish.py --article-id $ARID"
+          echo "Running: $CMD"
+          # Capture TELEGRAM_MESSAGE_URL printed by the script (if any)
+          OUTPUT=$($CMD 2>&1)
+          echo "$OUTPUT"
+          # Extract URL line
+          URL_LINE=$(echo "$OUTPUT" | grep -m 1 '^TELEGRAM_MESSAGE_URL=' || true)
+          if [ -n "$URL_LINE" ]; then
+            URL=${URL_LINE#TELEGRAM_MESSAGE_URL=}
+            echo "telegram_message_url=$URL" >> $GITHUB_OUTPUT
+          else
+            echo "telegram_message_url=" >> $GITHUB_OUTPUT
+          fi

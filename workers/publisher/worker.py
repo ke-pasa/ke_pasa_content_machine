@@ -209,8 +209,6 @@ class PublisherWorker:
                     msg_lines.append(f"{title}")
                 if text:
                     msg_lines.append(text)
-                if source:
-                    msg_lines.append(f"Источник: {source}")
                 message = '\n\n'.join([l for l in msg_lines if l]) or title or 'Новость'
 
                 # Send image first if exists: prefer a single photo message with caption (max ~1024 chars)
