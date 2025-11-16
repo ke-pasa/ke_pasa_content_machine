@@ -193,14 +193,14 @@ def main(article_id: str):
         print(f'TELEGRAM_MESSAGE_URL={message_url}')
 
     try:
-        db.collection('articles_ru').document(article_id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat(), 'status': 'published'}, merge=True)
+        db.collection('articles_ru').document(article_id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat(), 'status': 'PUBLISHED'}, merge=True)
     except Exception:
         logger.exception('Failed to mark articles_ru %s as published', article_id)
 
     try:
         art_doc = db.collection('articles').document(article_id)
         if art_doc.get().exists:
-            db.collection('articles').document(article_id).set({'status': 'published'}, merge=True)
+            db.collection('articles').document(article_id).set({'status': 'PUBLISHED'}, merge=True)
     except Exception:
         logger.exception('Failed to update articles %s status', article_id)
 
@@ -210,10 +210,16 @@ def main(article_id: str):
 
 if __name__ == '__main__':
     import argparse
+    import traceback
 
     p = argparse.ArgumentParser()
     p.add_argument('--article-id', required=True, help='Article id to regenerate+publish')
     args = p.parse_args()
 
-    rc = main(args.article_id)
-    sys.exit(rc)
+    try:
+        rc = main(args.article_id)
+        sys.exit(rc)
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Unhandled exception: {e}")
+        sys.exit(1)
