@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 import requests
 from typing import Optional, Dict, Any
+import inspect
+import asyncio
 
 
 def _http_post(token: str, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -32,7 +34,24 @@ def create_forum_topic(chat_id: str, name: str, token: Optional[str] = None, ico
         from telegram import Bot
         bot = Bot(token=token)
         # python-telegram-bot names this method create_forum_topic (>=13.4/20); use bot.create_forum_topic
-        return bot.create_forum_topic(chat_id=chat_id, name=name, icon_color=icon_color)
+        res = bot.create_forum_topic(chat_id=chat_id, name=name, icon_color=icon_color)
+        # If library returns a coroutine (async API), run it synchronously when possible
+        try:
+            if inspect.iscoroutine(res):
+                loop = None
+                try:
+                    loop = asyncio.get_event_loop()
+                except Exception:
+                    loop = None
+                if loop and loop.is_running():
+                    # Can't run coroutine synchronously when loop is running; fallback to HTTP
+                    raise RuntimeError('Event loop running; falling back to HTTP')
+                # run until complete
+                return (loop.run_until_complete(res) if loop else asyncio.run(res))
+        except Exception:
+            # fallback to HTTP path below
+            pass
+        return res
     except Exception:
         # Fallback to HTTP method name: createForumTopic
         payload = {'chat_id': chat_id, 'name': name}
@@ -54,7 +73,22 @@ def send_message(chat_id: str, text: str, token: Optional[str] = None, parse_mod
     try:
         from telegram import Bot
         bot = Bot(token=token)
-        return bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        res = bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
+        try:
+            if inspect.iscoroutine(res):
+                loop = None
+                try:
+                    loop = asyncio.get_event_loop()
+                except Exception:
+                    loop = None
+                if loop and loop.is_running():
+                    # Can't await here; fall back to HTTP
+                    raise RuntimeError('Event loop running; falling back to HTTP')
+                return (loop.run_until_complete(res) if loop else asyncio.run(res))
+        except Exception:
+            # fall back to HTTP below
+            pass
+        return res
     except Exception:
         # Fallback to HTTP
         payload = {'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode}
@@ -74,7 +108,22 @@ def send_photo(chat_id: str, photo_url: str, caption: Optional[str] = None, toke
     try:
         from telegram import Bot
         bot = Bot(token=token)
-        return bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=parse_mode, message_thread_id=message_thread_id)
+        res = bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=parse_mode, message_thread_id=message_thread_id)
+        try:
+            if inspect.iscoroutine(res):
+                loop = None
+                try:
+                    loop = asyncio.get_event_loop()
+                except Exception:
+                    loop = None
+                if loop and loop.is_running():
+                    # Can't await here; fall back to HTTP
+                    raise RuntimeError('Event loop running; falling back to HTTP')
+                return (loop.run_until_complete(res) if loop else asyncio.run(res))
+        except Exception:
+            # fall back to HTTP below
+            pass
+        return res
     except Exception:
         payload = {'chat_id': chat_id, 'photo': photo_url}
         if caption:
