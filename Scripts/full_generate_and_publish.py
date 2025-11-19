@@ -27,7 +27,7 @@ from workers.tools.firebase_client import get_firebase_client
 from workers.article_generator.translator import ArticleTranslator
 from workers.article_generator.translator import _chat_completion as _translator_chat
 from workers.article_generator.translator import _parse_json_from_text as _translator_parse_json
-from workers.article_generator.prompts import STAGE_EVAL_SYSTEM_PROMPT, STAGE_EVAL_USER_TEMPLATE
+# Note: prompts moved to per-stage JSON files. Do not import stage eval constants here.
 from workers.tools.telegram_helper import send_message, send_photo
 
 
@@ -339,73 +339,15 @@ def main(article_id: str):
         except Exception:
             final_tg_text = tr.get('translation_ru') or tr.get('content_ru') or ''
 
-        # Provided evaluation prompts
-        STAGE_EVAL_SYSTEM_PROMPT = (
-            "Ты — эксперт по переводам, журналистике и SMM в Telegram.\n\n"
-            "На вход ты получаешь два текста:\n"
-            "1️⃣ Исходный материал на испанском (source_text_es)\n"
-            "2️⃣ Финальный короткий Telegram-анонс на русском (final_tg_text)\n\n"
-            "Твоя задача — провести детальный анализ качества адаптации и перевода.\n"
-            "Оцени, насколько русский текст передаёт смысл оригинала, насколько он читается естественно, редакторски чист, структурно сбалансирован и подходит для формата Telegram.\n\n"
-            "⚙️ Критерии (каждый оцени от 0 до 100):\n"
-            "1. **Качество перевода (translation_quality)** — точность передачи фактов, смыслов и интонации оригинала.\n"
-            "2. **Языковая естественность (language_naturalness)** — гладкость фраз, отсутствие кальки, органичность для носителя русского языка.\n"
-            "3. **Редакторская чистота (editorial_clarity)** — отсутствие повторов, канцелярита, тяжёлых или неуклюжих конструкций.\n"
-            "4. **Структура и ритм (structure_rhythm)** — ритм чтения, длина предложений, логика абзацев, удобство восприятия с телефона.\n"
-            "5. **Виральность и вовлекаемость (virality_potential)** — насколько текст способен привлечь внимание (без кликбейта), есть ли живой заход.\n"
-            "6. **Соответствие формату Telegram (format_fit)** — длина ≤ 600 символов, 1–2 абзаца, ссылка на отдельной строке.\n\n"
-            "💡 Вес критериев для общей оценки:\n"
-            "- translation_quality — 25%\n"
-            "- language_naturalness — 20%\n"
-            "- editorial_clarity — 15%\n"
-            "- structure_rhythm — 15%\n"
-            "- virality_potential — 15%\n"
-            "- format_fit — 10%\n\n"
-            "📊 Итог:\n"
-            "Рассчитай итоговый балл (total_score) как взвешенное среднее всех критериев и укажи его в процентах (0–100).\n\n"
-            "🔍 Также добавь пояснения:\n"
-            "- Что получилось хорошо (strengths)\n"
-            "- Что можно улучшить (weaknesses)\n"
-            "- 1–2 конкретных совета (suggestions)\n\n"
-            "📦 Формат вывода строго JSON:\n"
-            "{\n"
-            "  \"scores\": {\n"
-            "    \"translation_quality\": <0–100>,\n"
-            "    \"language_naturalness\": <0–100>,\n"
-            "    \"editorial_clarity\": <0–100>,\n"
-            "    \"structure_rhythm\": <0–100>,\n"
-            "    \"virality_potential\": <0–100>,\n"
-            "    \"format_fit\": <0–100>\n"
-            "  },\n"
-            "  \"total_score_percent\": <0–100>,\n"
-            "  \"summary\": {\n"
-            "    \"strengths\": [\"что хорошо\"],\n"
-            "            \"weaknesses\": [\"что плохо\"],\n"
-            "    \"suggestions\": [\"1–2 совета по улучшению\"]\n"
-            "  }\n"
-            "}"
-        )
-
-        STAGE_EVAL_USER_TEMPLATE = (
-            "Проанализируй качество перевода и адаптации исходного текста в Telegram-анонс.\n"
-            "Выстави оценки по шести критериям (0–100) и выведи общий процент качества.\n"
-            "Добавь краткие объяснения — что получилось, что нет, и 1–2 совета по улучшению.\n\n"
-            "Исходный текст (испанский):\n"
-            "<<SOURCE_TEXT_ES>>\n\n"
-            "Финальный Telegram-анонс (русский):\n"
-            "<<FINAL_TG_TEXT>>\n\n"
-            "Верни строго JSON:\n"
-            "{\n"
-            "  \"scores\": { ... },\n"
-            "  \"total_score_percent\": <число>,\n"
-            "  \"summary\": { ... }\n"
-            "}"
-        )
-
-        user_prompt = STAGE_EVAL_USER_TEMPLATE.replace('<<SOURCE_TEXT_ES>>', source_text_es or '').replace('<<FINAL_TG_TEXT>>', final_tg_text or '')
+        # Load evaluation prompts from JSON-based prompt files
+        from workers.article_generator.prompts import _load_eval
+        eval_prompts = _load_eval()
+        system_prompt = eval_prompts.get('system', '')
+        user_template = eval_prompts.get('user', '')
+        user_prompt = user_template.replace('<<SOURCE_TEXT_ES>>', source_text_es or '').replace('<<FINAL_TG_TEXT>>', final_tg_text or '')
 
         messages = [
-            {'role': 'system', 'content': STAGE_EVAL_SYSTEM_PROMPT},
+            {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_prompt},
         ]
 
@@ -541,11 +483,13 @@ if __name__ == '__main__':
                 print('For --eval-only please provide --source-text and --final-text (or their file variants).')
                 sys.exit(2)
 
-            # Build prompts (reuse the same constants defined above in main's eval section)
+            # Build prompts using JSON-based prompt files
             from workers.article_generator.translator import _parse_json_from_text as _parse_json
+            from workers.article_generator.prompts import _load_eval
+            eval_prompts = _load_eval()
             messages = [
-                {'role': 'system', 'content': STAGE_EVAL_SYSTEM_PROMPT},
-                {'role': 'user', 'content': STAGE_EVAL_USER_TEMPLATE.replace('<<SOURCE_TEXT_ES>>', src_text).replace('<<FINAL_TG_TEXT>>', final_text)},
+                {'role': 'system', 'content': eval_prompts.get('system', '')},
+                {'role': 'user', 'content': eval_prompts.get('user', '').replace('<<SOURCE_TEXT_ES>>', src_text).replace('<<FINAL_TG_TEXT>>', final_text)},
             ]
             # Use translator client if available
             tr_client = None
