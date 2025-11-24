@@ -10,6 +10,14 @@ helpers instead of importing openai directly.
 from typing import Optional, List, Dict, Any
 import os
 import json
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    try:
+        _load_dotenv()
+    except Exception:
+        pass
+except Exception:
+    _load_dotenv = None
 import re
 import logging
 import time

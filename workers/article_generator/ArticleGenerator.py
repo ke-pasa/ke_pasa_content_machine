@@ -9,6 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .translator import ArticleTranslator
+# embedding/publishing handled in publisher worker; no OpenAI client here
 
 
 # Helpers that prefer test-time monkeypatching via the thin worker module.
@@ -120,6 +121,8 @@ class ArticleGenerator:
             'created_at': now,
             'updated_at': now,
         }
+
+        # Embedding computation and deduplication are performed by the publisher worker.
 
         try:
             doc_ref = self.db.collection('articles_ru').document(doc_id)

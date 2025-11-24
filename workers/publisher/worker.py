@@ -20,6 +20,7 @@ from workers.tools.firebase_client import get_firebase_client
 import html
 from workers.tools.telegram_helper import send_message, send_photo
 from .config import PublisherConfig
+from workers.tools import openai_client
 
 class PublisherWorker:
     """Worker for publishing articles to Telegram channels"""
@@ -59,12 +60,17 @@ class PublisherWorker:
         try:
             print(f"[publisher] 🚀 Starting publication run (articles_ru)...")
 
-            # Prefer publishing oldest translated high-score article first
             results = self.publish_oldest_translated_high_score()
 
-            # Fallback to batch publishing if nothing found
-            if results.get('checked', 0) == 0 and results.get('published', 0) == 0:
-                results = self.publish_articles_from_articles_ru()
+            target = int(self.config.max_articles_per_run or 1)
+            published_so_far = results.get('published', 0)
+            if published_so_far < target:
+                remaining = target - published_so_far
+                batch_results = self.publish_articles_from_articles_ru(max_to_publish=remaining)
+                # Merge results
+                results['checked'] = (results.get('checked', 0) or 0) + (batch_results.get('checked', 0) or 0)
+                results['published'] = (results.get('published', 0) or 0) + (batch_results.get('published', 0) or 0)
+                results['errors'] = (results.get('errors', []) or []) + (batch_results.get('errors', []) or [])
 
             published = results.get('published', 0)
             total_checked = results.get('checked', 0)
@@ -110,6 +116,128 @@ class PublisherWorker:
             return settings.get('telegram_chat_id')
         except Exception:
             return None
+
+    # --- Embedding + dedup helpers ---
+    def _compute_embedding(self, text: str):
+        """Return embedding vector for text or None on failure/unsupported."""
+        try:
+            client = openai_client.get_openai_client()
+            if client is None or not text:
+                return None
+            resp = client.embeddings.create(model='text-embedding-3-small', input=[text])
+            if getattr(resp, 'data', None) and len(resp.data) > 0:
+                return resp.data[0].embedding
+        except Exception:
+            print(f"[publisher] ⚠️ Embedding compute failed: {text[:60]}")
+        return None
+    
+    def _compute_and_save_embedding_for_doc(self, coll, doc):
+        """Compute embedding for candidate article and save it to the document. Returns embedding or None."""
+        try:
+            data = doc.to_dict() or {}
+            stages = data.get('stages') or {}
+            final_preview = None
+            try:
+                final_preview = (stages.get('telegram_final') or {}).get('tg_preview')
+            except Exception:
+                final_preview = None
+            if not final_preview:
+                return None
+
+            emb = self._compute_embedding(final_preview)
+            if not emb:
+                return None
+
+            try:
+                coll.document(doc.id).set({'telegram_emb': emb, 'telegram_emb_computed_at': datetime.utcnow().isoformat()}, merge=True)
+            except Exception:
+                pass
+            return emb
+        except Exception:
+            return None
+
+    def _fetch_recent_published_embeddings(self, coll, days: int):
+        """Return list of (doc_id, embedding) for articles published in the last `days` days."""
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            # Support different casing used in the DB: 'PUBLISHED' and 'published'
+            docs = list(coll.where('telegram_emb', '!=', None).stream())
+            # Filter locally by status to avoid complex OR queries
+            docs = [d for d in docs if ((d.to_dict() or {}).get('status') or '').lower() == 'published']
+            out = []
+            for d in docs:
+                try:
+                    data = d.to_dict() or {}
+                    ts = data.get('telegram_emb_computed_at')
+                    # If timestamp is a string, attempt simple parse; otherwise include
+                    include = True
+                    if ts:
+                        try:
+                            # Accept string ISO format
+                            if isinstance(ts, str):
+                                t = datetime.fromisoformat(ts)
+                            else:
+                                t = ts
+                            if hasattr(t, 'tzinfo') and t.tzinfo is None:
+                                # naive -> assume UTC
+                                t = t
+                            include = (t >= cutoff)
+                        except Exception:
+                            include = True
+                    if include:
+                        emb = data.get('telegram_emb')
+                        if emb:
+                            out.append((d.id, emb))
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            return []
+
+    def _cosine_similarity(self, a, b):
+        try:
+            import math
+            if not a or not b or len(a) != len(b):
+                return 0.0
+            dot = 0.0
+            na = 0.0
+            nb = 0.0
+            for x, y in zip(a, b):
+                dot += (float(x) * float(y))
+                na += float(x) * float(x)
+                nb += float(y) * float(y)
+            if na == 0 or nb == 0:
+                return 0.0
+            return float(dot) / (math.sqrt(na) * math.sqrt(nb))
+        except Exception:
+            return 0.0
+
+    def _check_duplicate_and_mark(self, coll, doc, candidate_emb) -> bool:
+        """Check candidate embedding against recent published embeddings.
+
+        If a duplicate is detected (similarity >= threshold), mark the article
+        with status 'DUBLICATED' and return True. Otherwise return False.
+        """
+        try:
+            if not candidate_emb:
+                return False
+            cfg_days = int(getattr(self.config, 'duplicate_check_days', 3) or 3)
+            threshold = float(getattr(self.config, 'similarity_threshold', 0.8))
+            recent = self._fetch_recent_published_embeddings(self.db.collection('articles_ru'), cfg_days)
+            for rid, emb in recent:
+                sim = self._cosine_similarity(candidate_emb, emb)
+                if sim >= threshold:
+                    # Mark as duplicated
+                    try:
+                        coll.document(doc.id).set({'status': 'DUBLICATED', 'duplicate_of': rid, 'duplicate_similarity': float(sim)}, merge=True)
+                        print(f"[publisher] 🔁 Article {doc.id} marked DUBLICATED (sim={sim:.3f}) against {rid}")
+                    except Exception as e:
+                        print(f"[publisher] ⚠️ Failed to mark duplicate for {doc.id}: {e}")
+                    return True
+            return False
+        except Exception as e:
+            print(f"[publisher] ⚠️ Duplicate check failed for {getattr(doc,'id', '?')}: {e}")
+            return False
 
     def _http_send_message(self, chat_id: str, text: str) -> dict:
         """Send a text message via Telegram (helper). Returns parsed result or raises."""
@@ -200,8 +328,15 @@ class PublisherWorker:
                 doc_error = str(e)
         return sent_message, doc_error
 
-    def publish_articles_from_articles_ru(self) -> Dict:
-        """Publishes up to configured max articles from `articles_ru` collection."""
+    def publish_articles_from_articles_ru(self, max_to_publish: int | None = None) -> Dict:
+        """Publishes up to `max_to_publish` (or config.max_articles_per_run) articles from `articles_ru` collection.
+
+        When duplicates are encountered, the method continues to try other candidates
+        until the desired number of publications is reached or the candidate pool is exhausted.
+        """
+        if max_to_publish is None:
+            max_to_publish = self.config.max_articles_per_run
+
         results = {'published': 0, 'checked': 0, 'errors': []}
 
         if not self.telegram_token:
@@ -219,7 +354,10 @@ class PublisherWorker:
 
         try:
             coll = self.db.collection('articles_ru')
-            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(self.config.max_articles_per_run)
+            # Expand initial candidate pool so that if some items are skipped as duplicates
+            # we still have extra candidates to try during the same run.
+            pool_limit = max(self.config.max_articles_per_run * 10, 50)
+            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(pool_limit)
             docs = list(query.stream())
 
             filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
@@ -237,7 +375,8 @@ class PublisherWorker:
                 except Exception:
                     return ''
 
-            docs = sorted(filtered, key=_created_key)[: self.config.max_articles_per_run]
+            # Sort candidates by creation and keep an expanded candidate list
+            docs = sorted(filtered, key=_created_key)[: pool_limit]
         except Exception as e:
             err = f'Firestore query error: {e}'
             print(f"[publisher] ❌ {err}")
@@ -247,6 +386,9 @@ class PublisherWorker:
         results['checked'] = len(docs)
 
         for doc in docs:
+            # stop if we've already published the requested maximum in this run
+            if results['published'] >= max_to_publish:
+                break
             try:
                 data = doc.to_dict() or {}
                 article_id = data.get('article_id') or doc.id
@@ -262,6 +404,19 @@ class PublisherWorker:
                 if not final_preview:
                     print(f"[publisher] ⚠️ Skipping article {article_id}: missing stages.telegram_final.tg_preview")
                     continue
+                # Before sending, compute embedding and save it to the article document
+                try:
+                    emb = self._compute_and_save_embedding_for_doc(coll, doc)
+                    # If embedding computed, perform deduplication check against recent published
+                    try:
+                        if emb and self._check_duplicate_and_mark(coll, doc, emb):
+                            # Already marked as DUBLICATED in the DB; skip sending and try next candidate
+                            continue
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
                 message = final_preview
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
@@ -271,6 +426,9 @@ class PublisherWorker:
                 if sent_message:
                     results['published'] += 1
                     print(f"[publisher] ✅ Published article {article_id} to Telegram")
+                    # If we've reached the requested maximum, stop attempting more
+                    if results['published'] >= max_to_publish:
+                        break
                 else:
                     print(f"[publisher] ⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
             except Exception as e:
@@ -302,12 +460,14 @@ class PublisherWorker:
 
         try:
             coll = self.db.collection('articles_ru')
-            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(500)
+            pool_limit = 200
+            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(pool_limit)
             docs = list(query.stream())
 
             candidates = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
             candidates = sorted(candidates, key=lambda d: ((d.to_dict() or {}).get('created_at') and str((d.to_dict() or {}).get('created_at'))) or '')
-            docs = candidates[:1]
+            # Keep expanded candidate list; we'll try until we publish one or exhaust the list
+            docs = candidates
         except Exception as e:
             err = f'Firestore query error: {e}'
             print(f"[publisher] ❌ {err}")
@@ -317,6 +477,9 @@ class PublisherWorker:
         results['checked'] = len(docs)
 
         for doc in docs:
+            # stop if we've published one (this method intends to publish a single top candidate)
+            if results['published'] >= 1:
+                break
             try:
                 data = doc.to_dict() or {}
                 article_id = data.get('article_id') or doc.id
@@ -330,6 +493,18 @@ class PublisherWorker:
                 if not final_preview:
                     print(f"[publisher] ⚠️ Skipping article {article_id}: missing stages.telegram_final.tg_preview")
                     continue
+                # compute embedding and save it to the article document
+                try:
+                    emb = self._compute_and_save_embedding_for_doc(coll, doc)
+                    try:
+                        if emb and self._check_duplicate_and_mark(coll, doc, emb):
+                            # marked as duplicate, try next candidate
+                            continue
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
                 message = final_preview
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
