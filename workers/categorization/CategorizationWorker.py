@@ -143,20 +143,18 @@ class CategorizationWorker:
                         source = data.get('source', '') or ''
                         pub_date = data.get('pub_date', '') or ''
 
-                        user_prompt = get_news_filter_prompt(title, description, tags, content, source, pub_date)
+                        feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
+                        region_hint = data.get('region_hint', '') or ''
+                        system_prompt, user_prompt = get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name=feed_name, region_hint=region_hint)
 
                         interest_result = None
                         record_start = time.perf_counter()
 
                         if client:
                             try:
-                                system_msg = (
-                                    "Ты эксперт. Верни JSON с полями: total_score (0-100), "
-                                    "recommendation (ПУБЛИКОВАТЬ/КРАТКАЯ ЗАМЕТКА/НЕ ПУБЛИКОВАТЬ), "
-                                    "short_analysis (короткое обоснование). Только JSON, без лишних комментариев."
-                                )
+                                # Use the provided system and user prompts from get_news_filter_prompt
                                 messages = [
-                                    {"role": "system", "content": system_msg},
+                                    {"role": "system", "content": system_prompt},
                                     {"role": "user", "content": user_prompt}
                                 ]
 

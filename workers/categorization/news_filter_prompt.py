@@ -7,94 +7,66 @@ This file contains the strict JSON-only system prompt and the helper
 `get_news_filter_prompt()` used by the categorization worker.
 """
 
-NEWS_FILTER_PROMPT = """Ты — редактор-фильтр новостей для русскоязычных в Испании. Отвечай строго валидным JSON (никакого текста вне фигурных скобок).
+NEWS_FILTER_SYSTEM_PROMPT = """Ты — редактор-фильтр новостей для русскоязычных в Испании. Отвечай строго валидным JSON (никакого текста вне фигурных скобок).
+Аудитория: 25–55 лет. Интересы: работа и доход, документы/гражданство, жильё/аренда/ипотека, семья/дети/школы, налоги/штрафы, медицина, транспорт, безопасность и погодные риски, масштабные культурные и спортивные события.
+Одобряем: практическая польза / «что делать» (правила/законы/дедлайны/штрафы/льготы), бытовые/финансовые темы (жильё, рынок труда), безопасность/риски (официальные предупреждения/погода), крупные культурные и спортивные события с влиянием на жизнь города.
+Отклоняем: материалы не про Испанию или без влияния на жителей Испании; реклама/промо; чистый шоу-бизнес/спорт без общественной значимости; мелкий криминал без последствий; туманные пресс-релизы без дат/фактов.
+"""
 
-Оцени анонс и реши, публиковать ли его в Telegram-канале для русскоязычных мигрантов в Испании.
+NEWS_FILTER_USER_PROMPT = """Оцени анонс и реши, публиковать ли его в Telegram-канале для русскоязычных мигрантов в Испании.
+Классификация/Правила/Шкалы:
+- Категории (одна): migration | policy | weather | health | crime | events | education | transport | economy | culture
+- Регион: if national -> "spain", else one of: madrid, catalonia, valencia, andalusia, basque-country, galicia, murcia, aragon, castile-and-leon, castile-la-mancha, canary-islands, balearic-islands, navarre, la-rioja, extremadura, asturias, cantabria.
+- Scoring (0–100):
+    region_score (0–10)
+    usefulness_score (0–35)
+    emotion_score (0–25)
+    virality_score (0–20)
+    source_score (0–10)
+    total_score = сумма пяти метрик
+Пограничные правила:
+- Есть дедлайн/штраф/новая обязательная процедура → склоняй вверх.
+- Очевидный дубликат без новой инфы → склоняй вниз.
+- Крупная культура/спорт с влиянием на жизнь города → не занижай.
 
-АУДИТОРИЯ
+Рейтинг:
+80–100 -> "publish"
+60–79 -> "short_note"
+<60 -> "skip"
 
-25–55 лет. Интересы: работа и доход, документы/гражданство, жильё/аренда/ипотека, семья/дети/школы, налоги/штрафы, медицина, транспорт, безопасность и погодные риски, масштабные культурные и спортивные события.
-
-ОДОБРЯЕМ (если есть 2–3 пункта или очевидная значимость)
-
-A. Практическая польза / “что делать” — изменения в правилах/законах/процедурах, дедлайны, штрафы, субсидии/льготы, новые гос-сервисы и инструменты.
-B. Быт и деньги — жильё/аренда/ипотека/дефицит, стоимость жизни, рынок труда/самозанятость, зарплаты.
-C. Безопасность и риски — официальные предупреждения полиции/муниципалитетов/метеослужб, массовые погодные риски.
-D. Крупная культура — фестивали/праздники/музеи/концерты с широким интересом или влиянием на горожан (перекрытия, расписание, билеты).
-E. Крупный спорт — национальные/городские события (логистика, безопасность, график) или резонансные результаты, которые обсуждают многие.
-
-ОТКЛОНЯЕМ
-
-— не про Испанию и не влияет на жителей Испании;
-— чистый спорт/шоу-бизнес без общественной/практической значимости;
-— мелкий криминал без последствий для широкой аудитории;
-— реклама/промо/пустые пресс-релизы;
-— слишком туманно: нет фактов, дат, последствий.
-
-КАТЕГОРИИ (одна)
-
-migration | policy | weather | health | crime | events | education | transport | economy | culture
-
-РЕГИОН
-
-Если национальная тема — "spain". Иначе конкретный регион из:
-madrid, catalonia, valencia, andalusia, basque-country, galicia, murcia, aragon, castile-and-leon, castile-la-mancha, canary-islands, balearic-islands, navarre, la-rioja, extremadura, asturias, cantabria.
-
-СКОРИНГ (0–100)
-region_score (0–10)
-Национальная тема → 9–10.
-Сильные хабы русскоязычных/экспатов → 8–9: madrid, barcelona (catalonia), valencia, malaga/marbella (andalusia), alicante (costa blanca), balearic-islands (palma), canary-islands (tenerife/las-palmas), murcia, costa brava.
-
-Иные регионы → 4–7.
-Не занижай, если тема общенациональная.
-
-usefulness_score (0–35) — чёткие правила/шаги/дедлайны/штрафы/субсидии/пошаговые инструкции/ссылки на сервисы.
-emotion_score (0–25) — удивление/опасность/надежда/конфликт/личная боль/острый спор.
-virality_score (0–20) — “это обсудят многие”, касается денег/дома/детей/документов; легко пересказать в одной фразе.
-source_score (0–10) — официальные сайты/ведущие СМИ: 8–10; качественные региональные: 6–8; сомнительные: 3–5.
-total_score = сумма пяти метрик.
-
-Пограничные правила
-
-Есть дедлайн/штраф/новая обязательная процедура → склоняй вверх.
-Очевидный дубликат без новой инфы → склоняй вниз.
-Крупная культура/спорт с влиянием на жизнь города (перекрытия, транспорт, массовое участие) → не занижай.
-
-РЕЙТИНГ
-
-80–100 → "publish"
-60–79 → "short_note"
-ниже 60 → "skip"
-
-ВЫХОД (ТОЛЬКО ВАЛИДНЫЙ JSON)
-
+ВЫХОД (ТОЛЬКО ВАЛИДНЫЙ JSON):
 {
-    "region_score": 0-10,
-    "usefulness_score": 0-35,
-    "emotion_score": 0-25,
-    "virality_score": 0-20,
-    "source_score": 0-10,
-    "total_score": 0-100,
-    "rating": "publish" | "short_note" | "skip",
-    "category": "одна из категорий сверху",
-    "comment": "1–2 предложения: почему это важно/обсуждаемо и чем полезно читателю"
+        "region_score": 0-10,
+        "usefulness_score": 0-35,
+        "emotion_score": 0-25,
+        "virality_score": 0-20,
+        "source_score": 0-10,
+        "total_score": 0-100,
+        "rating": "publish" | "short_note" | "skip",
+        "category": "одна из категорий сверху",
+        "comment": "1–2 предложения: почему это важно/обсуждаемо и чем полезно читателю"
 }
 
 ДАННЫЕ
-    Title: {title}
-    Description: {description}
-    Tags: {tags}
-    Content: {content}
-    Source: {source}
-    Publication Date: {pub_date}
-    Feed: {feed_name}
-    Region Hint (optional): {region_hint}
+
+Title: {title}
+Description: {description}
+Tags: {tags}
+Content: {content}
+Source: {source}
+Publication Date: {pub_date}
+Feed: {feed_name}
+Region Hint (optional): {region_hint}
 """
 
-def get_news_filter_prompt(title, description, tags, content, source, pub_date):
-    # Use safe replacement to avoid interpreting other JSON-like braces in the
-    # prompt example as format fields (the prompt contains a JSON example).
-    s = NEWS_FILTER_PROMPT
+def get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name='', region_hint=''):
+    """Return a tuple (system_prompt, user_prompt).
+
+    The system prompt contains role/audience and high-level rules.
+    The user prompt contains the scoring rules and the data fields (placeholders).
+    """
+    # Fill placeholders in the user-facing prompt only (where data fields are present).
+    s = NEWS_FILTER_USER_PROMPT
     replacements = {
         'title': title,
         'description': description,
@@ -102,10 +74,13 @@ def get_news_filter_prompt(title, description, tags, content, source, pub_date):
         'content': content,
         'source': source,
         'pub_date': pub_date,
+        'feed_name': feed_name,
+        'region_hint': region_hint,
     }
     for k, v in replacements.items():
         s = s.replace('{' + k + '}', str(v))
-    return s
+    # Return (system, user)
+    return (NEWS_FILTER_SYSTEM_PROMPT, s)
 
 
 def validate_news_interest(news_data):
