@@ -209,16 +209,30 @@ class CategorizationWorker:
                         record_end = time.perf_counter()
                         processing_time_ms = int((record_end - record_start) * 1000)
 
+                        # Determine status: SKIPPED if clearly low-interest
+                        status_field = 'CATEGORIZED'
+                        try:
+                            if total_score is not None:
+                                try:
+                                    ts_val = float(total_score)
+                                except Exception:
+                                    ts_val = None
+                                if ts_val is not None and ts_val < 60:
+                                    status_field = 'SKIPPED'
+
+                        except Exception:
+                            pass
+
                         update_payload = {
                             'interest': interest_result,
-                            'status': 'CATEGORIZED',
+                            'status': status_field,
                             'total_score': total_score,
                             'rating': rating,
                             'short_note': short_note,
                             'category': category_field,
                             'comment': comment_field,
                             'categorized_at': datetime.now(timezone.utc).isoformat(),
-                            'updated_at': datetime.now(timezone.utc).isoformat()
+                            'updated_at': datetime.now(timezone.utc).isoformat(),
                         }
 
                         try:
@@ -328,8 +342,6 @@ class CategorizationWorker:
                 # If we've processed enough, break early
                 if processed_total >= requested_total:
                     break
-                
-                
 
                 try:
                     last_snapshot = docs[-1]
