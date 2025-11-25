@@ -11,7 +11,7 @@ class PublisherConfig:
     """Configuration for publisher worker"""
 
     # Maximum articles to publish per run
-    max_articles_per_run: int = 3
+    max_articles_per_run: int = 1
 
     # Delay between publications (seconds)
     publication_delay: int = 60

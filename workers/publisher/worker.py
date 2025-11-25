@@ -532,6 +532,8 @@ def main():
     
     try:
         config = PublisherConfig.from_env()
+
+        # Use configuration from environment (no CLI or new env overrides)
         worker = PublisherWorker(config)
         result = worker.publish_articles()
         
