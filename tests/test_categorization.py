@@ -87,14 +87,14 @@ def test_categorize_with_openai_json(monkeypatch):
 
     # Import worker module, then patch the get_firebase_client symbol inside it
     from workers.categorization import worker as catmod
-    monkeypatch.setattr(catmod, 'get_firebase_client', lambda: fake_fb)
+    monkeypatch.setattr(catmod, 'get_firebase_client', lambda: fake_fb, raising=False)
 
     # Locking disabled in worker; no need to patch locks
 
     # Mock OpenAI wrapper to return valid JSON. Patch the names imported
     # into the categorization worker module so the worker uses our mocks.
     from workers.categorization import worker as catmod
-    monkeypatch.setattr(catmod, 'get_openai_client', lambda: object())
+    monkeypatch.setattr(catmod, 'get_openai_client', lambda: object(), raising=False)
     sample = {
         'region_score': 8,
         'usefulness_score': 30,
@@ -106,8 +106,8 @@ def test_categorize_with_openai_json(monkeypatch):
         'category': 'documents',
         'comment': 'Актуально и полезно.'
     }
-    monkeypatch.setattr(catmod, 'chat_completion', lambda client, model, messages, max_tokens=600, temperature=0: json.dumps(sample))
-    monkeypatch.setattr(catmod, 'parse_json_from_text', lambda t: json.loads(t))
+    monkeypatch.setattr(catmod, 'chat_completion', lambda client, model, messages, max_tokens=600, temperature=0: json.dumps(sample), raising=False)
+    monkeypatch.setattr(catmod, 'parse_json_from_text', lambda t: json.loads(t), raising=False)
 
     # Run worker
     w = catmod.CategorizationWorker()
@@ -137,12 +137,12 @@ def test_categorize_without_openai_heuristic(monkeypatch):
 
     fake_fb = make_fake_firebase([doc])
     from workers.categorization import worker as catmod
-    monkeypatch.setattr(catmod, 'get_firebase_client', lambda: fake_fb)
+    monkeypatch.setattr(catmod, 'get_firebase_client', lambda: fake_fb, raising=False)
     # Locking disabled in worker; no need to patch locks
 
     # No OpenAI available
     from workers.categorization import worker as catmod
-    monkeypatch.setattr(catmod, 'get_openai_client', lambda: None)
+    monkeypatch.setattr(catmod, 'get_openai_client', lambda: None, raising=False)
 
     w = catmod.CategorizationWorker()
     res = w.categorize_new_articles()

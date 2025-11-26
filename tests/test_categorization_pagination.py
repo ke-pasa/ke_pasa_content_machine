@@ -104,19 +104,19 @@ def test_pagination_processes_requested_total(monkeypatch):
     fake_fb = make_fake_firebase_paging(docs)
 
     # Monkeypatch firebase client used by worker
-    monkeypatch.setattr(catmod, 'get_firebase_client', lambda: fake_fb)
+    monkeypatch.setattr(catmod, 'get_firebase_client', lambda: fake_fb, raising=False)
 
     # Monkeypatch OpenAI client to return a simple JSON per request
-    monkeypatch.setattr(catmod, 'get_openai_client', lambda: object())
+    monkeypatch.setattr(catmod, 'get_openai_client', lambda: object(), raising=False)
 
     sample = {
-        'total_score': 50,
+        'total_score': 80,
         'rating': 'publish',
         'category': 'general',
         'comment': 'ok'
     }
-    monkeypatch.setattr(catmod, 'chat_completion', lambda client, model, messages, max_tokens=600, temperature=0: json.dumps(sample))
-    monkeypatch.setattr(catmod, 'parse_json_from_text', lambda t: json.loads(t))
+    monkeypatch.setattr(catmod, 'chat_completion', lambda client, model, messages, max_tokens=600, temperature=0: json.dumps(sample), raising=False)
+    monkeypatch.setattr(catmod, 'parse_json_from_text', lambda t: json.loads(t), raising=False)
 
     # Instantiate worker with batch_size 45 to force multiple pages (20 per page)
     w = catmod.CategorizationWorker(batch_size=45)

@@ -29,8 +29,7 @@ from workers.article_generator.translator import _chat_completion as _translator
 from workers.article_generator.translator import _parse_json_from_text as _translator_parse_json
 # Note: prompts moved to per-stage JSON files. Do not import stage eval constants here.
 from workers.tools.telegram_helper import send_message, send_photo
-
-
+from workers.article_generator.ArticleGenerator import ArticleGenerator
 
 
 def load_article(db, article_id: str):
@@ -97,9 +96,6 @@ def save_generated(db, doc_id: str, source: dict, translation_result: dict):
         logging.exception('Failed to update original articles doc %s', doc_id)
 
 
-# Note: send_final_preview logic moved inline to main() to use shared telegram helper
-
-
 def main(article_id: str):
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger('full_generate_and_publish')
@@ -116,9 +112,6 @@ def main(article_id: str):
     description = src.get('description', '') or ''
     content = src.get('content', '') or ''
 
-    # Include total_score if present in source so translator can decide whether
-    # to run the telegram preview stage. If missing, default to 100 to force
-    # generation during ad-hoc full runs.
     try:
         total_score_val = float(src.get('total_score')) if src.get('total_score') is not None else 100.0
     except Exception:
@@ -130,8 +123,30 @@ def main(article_id: str):
     }
 
     translator = ArticleTranslator()
+    # Try to fetch the full article content (prefer full text over preview)
+    try:
+        generator = ArticleGenerator(translator=translator)
+        fetched_full = None
+        try:
+            url = metadata.get('url')
+            if url:
+                fetched_full = generator._fetch_article_content(url)
+        except Exception:
+            fetched_full = None
+
+        if fetched_full and len(fetched_full) > len(content):
+            logger.info('Using fetched full article text for %s (fetched %d chars vs stored %d)', article_id, len(fetched_full), len(content))
+            content = fetched_full
+            metadata['fetched_content'] = fetched_full
+            metadata['content_source'] = 'fetched'
+        else:
+            metadata['fetched_content'] = fetched_full
+            metadata['content_source'] = 'stored'
+    except Exception:
+        logger.exception('Failed to fetch full article content for %s', article_id)
+
     logger.info('Running full translator for %s', article_id)
-    # Run translation pipeline
+
     tr = translator.translate(title, description, content, metadata=metadata)
     if not tr or not isinstance(tr, dict):
         logger.error('Translator failed for %s', article_id)

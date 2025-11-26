@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+import logging
 
 # Ensure repository root is importable before loading env
 root_dir = Path(__file__).parent.parent.parent
@@ -22,7 +23,6 @@ def main() -> None:
     args = parser.parse_args()
 
     # Always configure logging to stdout so CI (GitHub Actions) captures worker logs
-    import logging, sys, os
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     handler = logging.StreamHandler(sys.stdout)
