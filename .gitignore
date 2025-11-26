@@ -58,3 +58,4 @@ logs/
 *.tmp
 *.temp 
 .venv/*
+Scripts/*.exe
