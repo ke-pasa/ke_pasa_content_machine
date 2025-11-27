@@ -6,6 +6,8 @@ from .prompts import (
     stage2_messages,
     stage3_messages,
     stage4_messages,
+    stage5_messages,
+    stage6_messages,
 )
 
 # Ensure translator logger prints to console for local debugging
@@ -114,103 +116,169 @@ class ArticleTranslator:
         self.stage3_max_tokens = stage3_max_tokens
         self.stage3_temperature = stage3_temperature
 
-    def translate(self, title: str, description: str, content: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
-        if not self.client:
-            return None
+    def _execute_translation_pipeline(self, title: str, description: str, content: str, metadata: Dict) -> tuple:
+        """
+        Execute 6-stage translation pipeline.
+        
+        Returns:
+            tuple: (stage1, stage2, stage3, stage4, stage5, stage6) or early exit with partial results
+        """
+        # Build source text for stage3 evaluation
+        source_parts = []
+        if title:
+            source_parts.append(f"Заголовок: {title}")
+        if description:
+            source_parts.append(f"Описание: {description}")
+        if content:
+            source_parts.append(f"Текст: {content}")
+        source_text = '\n\n'.join(source_parts).strip()
 
-        metadata = metadata or {}
-
+        # STAGE 1: structured analysis
         stage1 = self._stage1_translate(title, description, content, metadata)
         if not stage1 or not isinstance(stage1, dict):
-            return stage1 if isinstance(stage1, dict) else None
+            return (stage1, None, None, None, None, None)
 
-        stage2 = self._stage2_edit(stage1, metadata)
+        # STAGE 2: human reportage based on stage1
+        stage2 = self._stage2_reporter(stage1, metadata)
         if not stage2 or not isinstance(stage2, dict):
-            return stage1
+            return (stage1, None, None, None, None, None)
 
-        stage3 = self._stage3_publish(stage2, metadata)
+        # STAGE 3: editorial evaluation based on source_text, stage1, stage2
+        stage3 = self._stage3_edit_first(stage1, stage2, source_text, metadata)
+        if not stage3 or not isinstance(stage3, dict):
+            return (stage1, stage2, None, None, None, None)
 
-        stage4 = None
+        # STAGE 4: final article creation based on source_text, stage1, stage2, stage3
+        stage4 = self._stage4_edit_final(stage1, stage2, stage3, source_text, metadata)
+        if not stage4 or not isinstance(stage4, dict):
+            return (stage1, stage2, stage3, None, None, None)
+
+        # STAGE 5: markdown version for site based on stage4
+        stage5 = self._stage5_publish_md(stage4, metadata)
+
+        # STAGE 6: telegram text based on stage4 (conditional on score and URL)
+        stage6 = None
         try:
             total_score_meta = float(metadata.get('total_score', 0))
         except Exception:
             total_score_meta = 0.0
         if total_score_meta >= 80 and metadata.get('url'):
-            stage4 = self._stage4_telegram(stage2, metadata)
+            stage6 = self._stage6_telegram(stage4, metadata)
 
-        # Optional final refinement (stage5) — run final editor on already-generated tg preview
-        stage5 = None
-        try:
-            if isinstance(stage4, dict) and stage4.get('tg_preview'):
-                stage5 = self._stage5_finalize(stage4, metadata)
-        except Exception:
-            stage5 = None
+        return (stage1, stage2, stage3, stage4, stage5, stage6)
 
-        # Ensure required fields present and fill fallbacks
-        final = {
-            'translation_ru': stage2.get('translation_ru') or stage1.get('translation_ru') or '',
-            'notes': stage2.get('notes') or stage1.get('notes') or [],
-            'flags': stage2.get('flags') or [],
-            'lang_detected': stage2.get('lang_detected') or stage1.get('lang_detected') or 'es',
-            'editorial_result': stage2,
+    def _extract_fallback_field(self, field_name: str, stage4: Dict, stage3: Dict, stage2: Dict, stage1: Dict) -> Optional[str]:
+        """Extract field value with fallback chain through stages."""
+        for stage in (stage4, stage3, stage2, stage1):
+            if stage and field_name in stage:
+                return stage[field_name]
+        return None
+
+    def _build_base_result(self, stage1: Dict, stage2: Dict, stage3: Dict, stage4: Dict) -> Dict:
+        """Build base result dictionary with core translation fields."""
+        return {
+            'translation_ru': stage4.get('body') or stage2.get('body') or stage1.get('explanation_ru') or '',
+            'notes': stage4.get('notes') or stage2.get('notes') or [],
+            'flags': stage4.get('flags') or stage2.get('flags') or [],
+            'lang_detected': stage1.get('lang_detected') or 'es',
+            'facts_raw': stage1.get('facts_raw', []),
+            'actors': stage1.get('actors', []),
+            'stage2_facts': stage2.get('facts', []),
+            'stage2_entities': stage2.get('entities', []),
+            'stage4_facts': stage4.get('facts', []),
+            'stage4_entities': stage4.get('entities', []),
+            'stage3_evaluation': stage3 if isinstance(stage3, dict) else {},
+            'editorial_result': {
+                'stage1': stage1,
+                'stage2': stage2,
+                'stage3': stage3,
+                'stage4': stage4,
+            },
         }
 
-        # Provide optional split fields for compatibility
-        if 'title_ru' in stage2:
-            final['title_ru'] = stage2['title_ru']
-        elif 'title_ru' in stage1:
-            final['title_ru'] = stage1['title_ru']
+    def _add_optional_fields(self, final: Dict, stage1: Dict, stage2: Dict, stage3: Dict, stage4: Dict) -> None:
+        """Add optional split fields (title_ru, description_ru, content_ru) with fallback logic."""
+        # title_ru with fallback (stage2 and stage4 use 'title', stage3 is evaluation)
+        title_ru = stage4.get('title') or stage2.get('title')
+        if title_ru:
+            final['title_ru'] = title_ru
 
-        if 'description_ru' in stage2:
-            final['description_ru'] = stage2['description_ru']
-        elif 'description_ru' in stage1:
-            final['description_ru'] = stage1['description_ru']
+        # description_ru with fallback (stage2 and stage4 use 'dek', stage3 is evaluation)
+        description_ru = stage4.get('dek') or stage2.get('dek')
+        if description_ru:
+            final['description_ru'] = description_ru
 
-        if 'content_ru' in stage2:
-            final['content_ru'] = stage2['content_ru']
-        elif 'content_ru' in stage1:
-            final['content_ru'] = stage1['content_ru']
+        # content_ru with fallback (stage2 and stage4 use 'body', stage3 is evaluation)
+        content_ru = stage4.get('body') or stage2.get('body')
+        if content_ru:
+            final['content_ru'] = content_ru
         else:
-            final['content_ru'] = final['translation_ru']
+            final['content_ru'] = final.get('translation_ru', '')
 
-        if isinstance(stage3, dict):
-            publish_md = stage3.get('publish_md')
+    def _merge_stage5_results(self, final: Dict, stage5: Optional[Dict]) -> None:
+        """Merge stage5 (markdown) results into final output."""
+        if isinstance(stage5, dict):
+            publish_md = stage5.get('publish_md')
             if publish_md:
                 final['publish_md'] = publish_md
-            publish_flags = stage3.get('flags') or []
+            publish_flags = stage5.get('flags') or []
             if publish_flags:
                 combined_flags = list(dict.fromkeys((final.get('flags') or []) + publish_flags))
                 final['flags'] = combined_flags
             final['publish_flags'] = publish_flags
 
-        # Attach stage4 raw output if present (unrefined preview)
-        if isinstance(stage4, dict):
-            final['stage4_raw'] = stage4
+    def _merge_stage6_results(self, final: Dict, stage6: Optional[Dict]) -> None:
+        """Merge stage6 (telegram) results into final output."""
+        if isinstance(stage6, dict):
+            tg_preview = stage6.get('tg_preview')
+            if tg_preview:
+                final['tg_preview'] = tg_preview
+            tg_flags = stage6.get('flags') or []
+            if tg_flags:
+                combined_flags = list(dict.fromkeys((final.get('flags') or []) + tg_flags))
+                final['flags'] = combined_flags
+            final['tg_flags'] = tg_flags
+            final['stage6_telegram'] = stage6
 
-        # If stage5 (final refinement) present, prefer its preview, otherwise use stage4
-        if isinstance(stage5, dict):
-            final_preview = stage5.get('tg_preview')
-            if final_preview:
-                final['tg_preview'] = final_preview
-            # merge flags produced by stage4 and stage5
-            s4_flags = (stage4.get('flags') if isinstance(stage4, dict) else []) or []
-            s5_flags = stage5.get('flags') or []
-            combined = list(dict.fromkeys((final.get('flags') or []) + s4_flags + s5_flags))
-            if combined:
-                final['flags'] = combined
-            final['tg_flags'] = s5_flags or s4_flags or []
-            final['stage5_final'] = stage5
-        else:
-            # fallback to stage4 preview if no stage5
-            if isinstance(stage4, dict):
-                tg_preview = stage4.get('tg_preview')
-                if tg_preview:
-                    final['tg_preview'] = tg_preview
-                tg_flags = stage4.get('flags') or []
-                if tg_flags:
-                    combined_flags = list(dict.fromkeys((final.get('flags') or []) + tg_flags))
-                    final['flags'] = combined_flags
-                final['tg_flags'] = tg_flags
+    def translate(self, title: str, description: str, content: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
+        """
+        6-stage translation pipeline:
+        stage1 - structured analysis (explanation_ru, facts_raw, actors)
+        stage2 - human reportage (title, dek, body, facts, entities)
+        stage3 - editorial evaluation (scores, rewrite_focus_points, detected_issues)
+        stage4 - final article creation (title, dek, body, facts, entities, flags)
+        stage5 - markdown for website with YAML frontmatter
+        stage6 - telegram preview with HTML markup
+        """
+        if not self.client:
+            return None
+
+        metadata = metadata or {}
+
+        # Execute translation pipeline
+        stage1, stage2, stage3, stage4, stage5, stage6 = self._execute_translation_pipeline(title, description, content, metadata)
+
+        # Handle early exits (parse errors or stage failures)
+        if not stage1 or not isinstance(stage1, dict):
+            return stage1 if isinstance(stage1, dict) else None
+        if not stage2:
+            return stage1
+        if not stage3:
+            return stage1  # Return stage1 as fallback
+        if not stage4:
+            return stage1  # Return stage1 as fallback
+
+        # Build final result
+        final = self._build_base_result(stage1, stage2, stage3, stage4)
+
+        # Add optional fields with fallback logic
+        self._add_optional_fields(final, stage1, stage2, stage3, stage4)
+
+        # Merge stage5 (markdown) results
+        self._merge_stage5_results(final, stage5)
+
+        # Merge stage6 (telegram) results
+        self._merge_stage6_results(final, stage6)
 
         return final
 
@@ -274,99 +342,8 @@ class ArticleTranslator:
         except Exception:
             return None
 
-    def _stage4_telegram(self, stage2_result: Dict, metadata: Dict) -> Optional[Dict]:
-        if not isinstance(stage2_result, dict):
-            return None
-
-        metadata = metadata or {}
-        url = metadata.get('url') or metadata.get('link')
-        if not url:
-            return None
-
-        payload = {
-            'title': stage2_result.get('title_ru') or stage2_result.get('title') or '',
-            'body': stage2_result.get('content_ru') or stage2_result.get('translation_ru') or '',
-            'url': url,
-        }
-
-        stage2_json = json.dumps(payload, ensure_ascii=False)
-
-        messages = stage4_messages(stage2_json)
-
-        try:
-            import logging as _logging
-            _log = _logging.getLogger('workers.article_generator.translator')
-            try:
-                msg_count = len(messages)
-            except Exception:
-                msg_count = 0
-            try:
-                snippet = ''
-                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
-                    c = messages[-1].get('content', '')
-                    if not isinstance(c, str):
-                        c = str(c)
-                    snippet = (c[:300] + '...') if len(c) > 300 else c
-            except Exception:
-                snippet = '<<unavailable>>'
-            _log.debug('Translator stage4: model=%s messages=%d payload_len=%d snippet=%s', self.model, msg_count, len(stage2_json or ''), snippet[:300])
-        except Exception:
-            pass
-
-        try:
-            text = _chat_completion(
-                self.client,
-                self.model,
-                messages,
-                max_tokens=600,
-                temperature=0.6,
-            )
-        except Exception:
-            return None
-
-        try:
-            parsed = _parse_json_from_text(text or '')
-            if parsed is None or not isinstance(parsed, dict):
-                doc_id = metadata.get('doc_id', 'unknown')
-                raw_text = _save_raw_response(doc_id, 'stage4', text or '')
-                if raw_text:
-                    return {'_parse_error': True, '_raw_text': raw_text}
-                return None
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-
-    def _stage5_finalize(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
-        """Final refinement of an already-generated tg_preview.
-
-        Accepts the output of _stage4_telegram (or a dict with 'tg_preview') and runs
-        a short final pass to tighten phrasing. Returns parsed dict or None.
-        """
-        if not isinstance(stage4_result, dict):
-            return None
-
-        try:
-            payload = {
-                'preview': stage4_result.get('tg_preview') or '',
-                'url': metadata.get('url') or metadata.get('link') or ''
-            }
-            import json
-            stage_json = json.dumps(payload, ensure_ascii=False)
-            try:
-                from .prompts import stage5_messages
-            except Exception:
-                from workers.article_generator.prompts import stage5_messages
-
-            messages = stage5_messages(stage_json)
-            text = _chat_completion(self.client, self.model, messages, max_tokens=300, temperature=0.3)
-            parsed = _parse_json_from_text(text or '')
-            if parsed is None or not isinstance(parsed, dict):
-                return None
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
-
-    def _stage2_edit(self, stage1_result: Dict, metadata: Optional[Dict] = None) -> Optional[Dict]:
+    def _stage2_reporter(self, stage1_result: Dict, metadata: Optional[Dict] = None) -> Optional[Dict]:
+        """Stage 2: Create reporter-style text based on stage1 explanation and facts."""
         metadata = metadata or {}
         draft_json = json.dumps(stage1_result, ensure_ascii=False)
 
@@ -414,39 +391,16 @@ class ArticleTranslator:
         except Exception:
             return None
 
-    def _stage3_publish(self, stage2_result: Dict, metadata: Dict) -> Optional[Dict]:
+    def _stage3_edit_first(self, stage1_result: Dict, stage2_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
+        """Stage 3: Editorial evaluation based on source_text, stage1, and stage2."""
         if not isinstance(stage2_result, dict):
             return None
 
         metadata = metadata or {}
+        stage1_json = json.dumps(stage1_result, ensure_ascii=False)
+        stage2_json = json.dumps(stage2_result, ensure_ascii=False)
 
-        article_payload = {
-            'title': stage2_result.get('title_ru') or stage2_result.get('title') or '',
-            'dek': stage2_result.get('description_ru') or stage2_result.get('dek') or '',
-            'body': stage2_result.get('content_ru') or stage2_result.get('translation_ru') or '',
-            'flags': stage2_result.get('flags') or [],
-        }
-
-        source_line = 'Источник: не указан'
-        url = metadata.get('url') or metadata.get('link')
-        source_name = metadata.get('source') or metadata.get('source_name')
-        published_at = metadata.get('published_at') or metadata.get('pub_date') or metadata.get('published')
-        if url:
-            details = []
-            if source_name:
-                details.append(str(source_name))
-            if published_at:
-                details.append(str(published_at))
-            if details:
-                source_line = f"Источник: {url} ({', '.join(details)})"
-            else:
-                source_line = f"Источник: {url}"
-
-        article_payload['source_line'] = source_line
-
-        stage2_json = json.dumps(article_payload, ensure_ascii=False)
-
-        messages = stage3_messages(stage2_json, source_line)
+        messages = stage3_messages(source_text, stage1_json, stage2_json)
         try:
             import logging as _logging
             _log = _logging.getLogger('workers.article_generator.translator')
@@ -486,6 +440,193 @@ class ArticleTranslator:
                 if raw_text:
                     return {'_parse_error': True, '_raw_text': raw_text}
                 return None
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def _stage4_edit_final(self, stage1_result: Dict, stage2_result: Dict, stage3_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
+        """Stage 4: Final article creation based on source_text, stage1, stage2, and stage3 evaluation."""
+        if not isinstance(stage3_result, dict):
+            return None
+
+        metadata = metadata or {}
+        stage1_json = json.dumps(stage1_result, ensure_ascii=False)
+        stage2_json = json.dumps(stage2_result, ensure_ascii=False)
+        stage3_json = json.dumps(stage3_result, ensure_ascii=False)
+
+        messages = stage4_messages(source_text, stage1_json, stage2_json, stage3_json)
+        try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage4: model=%s messages=%d payload_len=%d snippet=%s', self.model, msg_count, len(stage3_json or ''), snippet[:300])
+        except Exception:
+            pass
+
+        try:
+            text = _chat_completion(
+                self.client,
+                self.model,
+                messages,
+                max_tokens=self.stage3_max_tokens,
+                temperature=self.stage3_temperature,
+            )
+        except Exception:
+            return None
+
+        try:
+            parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
+                doc_id = metadata.get('doc_id', 'unknown')
+                raw_text = _save_raw_response(doc_id, 'stage4', text or '')
+                if raw_text:
+                    return {'_parse_error': True, '_raw_text': raw_text}
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def _stage5_publish_md(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
+        """Stage 5: Generate markdown article for website based on stage4."""
+        if not isinstance(stage4_result, dict):
+            return None
+
+        metadata = metadata or {}
+
+        # Build tech_meta for frontmatter
+        tech_meta = {
+            'source_url': metadata.get('url') or metadata.get('link') or '',
+            'image_hint': metadata.get('image_url') or metadata.get('image') or '',
+            'pub_date_hint': metadata.get('published_at') or metadata.get('pub_date') or None,
+            'category_hint': metadata.get('category') or '',
+            'region_hint': metadata.get('region') or 'unknown',
+        }
+
+        stage4_json = json.dumps(stage4_result, ensure_ascii=False)
+        tech_meta_json = json.dumps(tech_meta, ensure_ascii=False)
+
+        messages = stage5_messages(stage4_json, tech_meta_json)
+        try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage5: model=%s messages=%d payload_len=%d snippet=%s', self.model, msg_count, len(stage4_json or ''), snippet[:300])
+        except Exception:
+            pass
+
+        try:
+            text = _chat_completion(
+                self.client,
+                self.model,
+                messages,
+                max_tokens=self.stage3_max_tokens,
+                temperature=self.stage3_temperature,
+            )
+        except Exception:
+            return None
+
+        # Stage5 returns raw Markdown, not JSON
+        if text:
+            return {'publish_md': text.strip()}
+        return None
+
+    def _stage6_telegram(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
+        """Stage 6: Generate telegram text based on stage4."""
+        if not isinstance(stage4_result, dict):
+            return None
+
+        metadata = metadata or {}
+        url = metadata.get('url') or metadata.get('link')
+        if not url:
+            return None
+
+        stage4_json = json.dumps(stage4_result, ensure_ascii=False)
+
+        messages = stage6_messages(stage4_json, url)
+
+        try:
+            import logging as _logging
+            _log = _logging.getLogger('workers.article_generator.translator')
+            try:
+                msg_count = len(messages)
+            except Exception:
+                msg_count = 0
+            try:
+                snippet = ''
+                if msg_count and isinstance(messages, list) and isinstance(messages[-1], dict):
+                    c = messages[-1].get('content', '')
+                    if not isinstance(c, str):
+                        c = str(c)
+                    snippet = (c[:300] + '...') if len(c) > 300 else c
+            except Exception:
+                snippet = '<<unavailable>>'
+            _log.debug('Translator stage6: model=%s messages=%d payload_len=%d snippet=%s', self.model, msg_count, len(stage4_json or ''), snippet[:300])
+        except Exception:
+            pass
+
+        try:
+            text = _chat_completion(
+                self.client,
+                self.model,
+                messages,
+                max_tokens=600,
+                temperature=0.6,
+            )
+        except Exception:
+            return None
+
+        try:
+            parsed = _parse_json_from_text(text or '')
+            if parsed is None or not isinstance(parsed, dict):
+                doc_id = metadata.get('doc_id', 'unknown')
+                raw_text = _save_raw_response(doc_id, 'stage6', text or '')
+                if raw_text:
+                    return {'_parse_error': True, '_raw_text': raw_text}
+                return None
+
+            # Post-process tg_preview so stored preview doesn't contain <br> tags
+            try:
+                tg = parsed.get('tg_preview') if isinstance(parsed, dict) else None
+                if isinstance(tg, str):
+                    # replace common <br> variants with newlines
+                    tg2 = tg.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                    try:
+                        # prefer using normalization helper if available
+                        from workers.tools.telegram_helper import _normalize_newlines
+                        tg2 = _normalize_newlines(tg2)
+                    except Exception:
+                        # fallback: collapse multiple blank lines
+                        import re as _re
+                        tg2 = _re.sub(r'\n{3,}', '\n\n', tg2)
+                    parsed['tg_preview'] = tg2
+            except Exception:
+                # non-fatal: leave parsed as-is
+                pass
+
             return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None

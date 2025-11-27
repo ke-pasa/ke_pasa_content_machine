@@ -1,4 +1,4 @@
-"""Full generation pipeline for a single article: stage1..stage5 then publish.
+"""Full generation pipeline for a single article: stage1..stage6 then publish.
 
 Usage: run from repo root in venv
   python Scripts/full_generate_and_publish.py --article-id <ID>
@@ -6,9 +6,17 @@ Usage: run from repo root in venv
 This script:
 - loads the article from `articles` collection
 - runs the full translator pipeline via `ArticleTranslator.translate`
-- saves generated outputs into `articles_ru` (stages.editorial/publish/telegram/telegram_final)
+- saves generated outputs into `articles_ru` (stages.stage1/stage2/stage3/stage4, publish_md, telegram_preview, telegram_final)
 - updates the original `articles` document with translation fields
 - sends the final Telegram preview using `PublisherWorker` HTTP helpers
+
+New 6-stage architecture:
+- stage1: structured analysis (explanation_ru, facts_raw, actors)
+- stage2: human reportage (title, dek, body, facts, entities)
+- stage3: editorial evaluation (scores, rewrite_focus_points, detected_issues)
+- stage4: final article synthesis (title, dek, body, facts, entities)
+- stage5: website markdown with YAML frontmatter
+- stage6: Telegram preview with HTML markup
 """
 from __future__ import annotations
 
@@ -42,14 +50,24 @@ def load_article(db, article_id: str):
 def save_generated(db, doc_id: str, source: dict, translation_result: dict):
     now = datetime.utcnow().isoformat()
 
-    stage2 = translation_result.get('editorial_result') or None
-    stage3 = {'publish_md': translation_result.get('publish_md'), 'flags': translation_result.get('publish_flags') or []}
-    stage4 = translation_result.get('stage4_raw') or {'tg_preview': translation_result.get('tg_preview'), 'flags': translation_result.get('tg_flags') or []}
-    stage5 = translation_result.get('stage5_final') or None
+    editorial_result = translation_result.get('editorial_result') or {}
+    stage1 = editorial_result.get('stage1') or {}
+    stage2 = editorial_result.get('stage2') or {}
+    stage3 = editorial_result.get('stage3') or {}
+    stage4 = editorial_result.get('stage4') or {}
+    publish_md = translation_result.get('publish_md')
+    tg_preview = translation_result.get('tg_preview')
+    stage6_telegram = translation_result.get('stage6_telegram') or {}
 
-    title_ru = translation_result.get('title_ru') or (stage2 or {}).get('title_ru')
-    description_ru = translation_result.get('description_ru') or (stage2 or {}).get('description_ru')
-    content_ru = translation_result.get('content_ru') or (stage2 or {}).get('content_ru') or translation_result.get('translation_ru')
+    title_ru = translation_result.get('title_ru') or stage4.get('title') or stage2.get('title')
+    description_ru = translation_result.get('description_ru') or stage4.get('dek') or stage2.get('dek')
+    content_ru = translation_result.get('content_ru') or stage4.get('body') or stage2.get('body') or stage1.get('explanation_ru')
+
+    total_score = editorial_result.get('total_score') or translation_result.get('total_score') or stage3.get('total_score_percent')
+    combined_flags = set()
+    for flag_list in [stage2.get('flags') or [], stage4.get('flags') or [], translation_result.get('publish_flags') or [], translation_result.get('tg_flags') or [], stage6_telegram.get('flags') or []]:
+        if isinstance(flag_list, list):
+            combined_flags.update(flag_list)
 
     payload = {
         'article_id': doc_id,
@@ -57,17 +75,22 @@ def save_generated(db, doc_id: str, source: dict, translation_result: dict):
         'source_name': source.get('source') or source.get('source_name'),
         'image_url': source.get('image') or source.get('image_url') or None,
         'status': 'TRANSLATED',
+        'total_score': total_score,
         'title_ru': title_ru,
         'description_ru': description_ru,
         'content_ru': content_ru,
         'stages': {
-            'editorial': stage2,
-            'publish': stage3,
-            'telegram': stage4,
-            'telegram_final': stage5,
+            'stage1': stage1,
+            'stage2': stage2,
+            'stage3': stage3,
+            'stage4': stage4,
         },
-        'telegram_preview': (stage5 or {}).get('tg_preview') if stage5 else (stage4 or {}).get('tg_preview'),
-        'telegram_flags': (stage5 or {}).get('flags') or (stage4 or {}).get('flags') or [],
+        'publish_md': publish_md,
+        'publish_flags': translation_result.get('publish_flags') or [],
+        'telegram_preview': tg_preview,
+        'telegram_flags': translation_result.get('tg_flags') or [],
+        'telegram_final': stage6_telegram,
+        'flags': sorted(list(combined_flags)),
         'updated_at': now,
         'created_at': now,
     }
@@ -83,10 +106,10 @@ def save_generated(db, doc_id: str, source: dict, translation_result: dict):
             'title_ru': title_ru,
             'description_ru': description_ru,
             'content_ru': content_ru,
-            'publish_md': translation_result.get('publish_md'),
-            'publish_flags': translation_result.get('publish_flags'),
-            'telegram_preview': (stage5 or {}).get('tg_preview') if stage5 else (stage4 or {}).get('tg_preview'),
-            'telegram_flags': (stage5 or {}).get('flags') or (stage4 or {}).get('flags') or [],
+            'publish_md': publish_md,
+            'publish_flags': translation_result.get('publish_flags') or [],
+            'telegram_preview': tg_preview,
+            'telegram_flags': translation_result.get('tg_flags') or [],
             'status': 'TRANSLATED',
             'translated_at': now,
             'updated_at': now,
@@ -167,69 +190,78 @@ def main(article_id: str):
     print('\nDescription:\n', description)
     print('\nContent:\n', (content or '')[:2000])
 
-    # Stage 1 rough parse/translation
+    # Stage 1: structured analysis
     try:
         s1 = translator._stage1_translate(title, description, content, metadata)
     except Exception:
         s1 = None
-    pretty_print_heading('ГРУБЫЙ ПЕРЕВОД (stage1)')
+    pretty_print_heading('СТРУКТУРНЫЙ АНАЛИЗ (stage1)')
     try:
         import json as _json
         print(_json.dumps(s1, ensure_ascii=False, indent=2))
     except Exception:
         print(s1)
 
-    # Stage 2 editorial
+    # Stage 2: human reportage
     try:
-        s2 = translator._stage2_edit(s1 or {}, metadata)
+        s2 = translator._stage2_reporter(s1 or {}, metadata)
     except Exception:
         s2 = None
-    pretty_print_heading('РЕДАКТУРА / ПЕРЕВОД ДЛЯ САЙТА (stage2)')
+    pretty_print_heading('ЧЕЛОВЕЧЕСКИЙ РЕПОРТАЖ (stage2)')
     try:
         import json as _json
         print(_json.dumps(s2, ensure_ascii=False, indent=2))
     except Exception:
         print(s2)
 
-    # Stage 3 publish
+    # Stage 3: editorial evaluation
     try:
-        s3 = translator._stage3_publish(s2 or {}, metadata)
+        source_text = f"{title}\n\n{description}\n\n{content}"
+        s3 = translator._stage3_edit_first(s1 or {}, s2 or {}, source_text, metadata)
     except Exception:
         s3 = None
-    pretty_print_heading('PUBLISH (stage3)')
+    pretty_print_heading('ЭКСПЕРТНАЯ ОЦЕНКА (stage3)')
     try:
         import json as _json
         print(_json.dumps(s3, ensure_ascii=False, indent=2))
     except Exception:
         print(s3)
 
-    # Stage 4 telegram rough
+    # Stage 4: final article synthesis
     try:
-        s4 = None
-        if metadata.get('total_score', 0) >= 80 and metadata.get('url'):
-            s4 = translator._stage4_telegram(s2 or {}, metadata)
+        s4 = translator._stage4_edit_final(s1 or {}, s2 or {}, s3 or {}, source_text, metadata)
     except Exception:
         s4 = None
-    pretty_print_heading('ТЕЛЕГРАММ (ГРУБАЯ ВЕРСИЯ) (stage4)')
+    pretty_print_heading('ФИНАЛЬНАЯ СТАТЬЯ (stage4)')
     try:
         import json as _json
         print(_json.dumps(s4, ensure_ascii=False, indent=2))
     except Exception:
         print(s4)
 
-    # Stage 5 final
+    # Stage 5: website markdown
     try:
-        s5 = None
-        if isinstance(s4, dict) and s4.get('tg_preview'):
-            s5 = translator._stage5_finalize(s4, metadata)
+        s5 = translator._stage5_publish_md(s4 or {}, metadata)
     except Exception:
         s5 = None
-    pretty_print_heading('ТЕЛЕГРАММ (ФИНАЛ) (stage5)')
+    pretty_print_heading('ВЕРСИЯ ДЛЯ САЙТА (stage5)')
     try:
         import json as _json
         print(_json.dumps(s5, ensure_ascii=False, indent=2))
     except Exception:
         print(s5)
+
+    # Stage 6: Telegram preview
+    try:
+        s6 = translator._stage6_telegram(s4 or {}, metadata)
+    except Exception:
+        s6 = None
+    pretty_print_heading('ТЕЛЕГРАММ ПРЕВЬЮ (stage6)')
+    try:
+        import json as _json
+        print(_json.dumps(s6, ensure_ascii=False, indent=2))
+    except Exception:
+        print(s6)
 
 
     # Persist outputs
@@ -237,16 +269,9 @@ def main(article_id: str):
 
     # Send final preview via shared telegram helper
     try:
-        # Determine final preview and image
-        stage5 = tr.get('stage5_final') or None
-        stage4 = tr.get('stage4_raw') or {'tg_preview': tr.get('tg_preview'), 'flags': tr.get('tg_flags') or []}
-        final_preview = None
-        if isinstance(stage5, dict):
-            final_preview = stage5.get('tg_preview')
-        if not final_preview and isinstance(stage4, dict):
-            final_preview = stage4.get('tg_preview')
-        if not final_preview:
-            final_preview = tr.get('tg_preview')
+        # Determine final preview from stage6 or fallback to tg_preview
+        stage6 = tr.get('stage6_telegram') or {}
+        final_preview = stage6.get('tg_preview') or tr.get('tg_preview')
 
         if not final_preview:
             logger.warning('No telegram preview generated (stage5/stage4 missing)')
@@ -332,127 +357,6 @@ def main(article_id: str):
     except Exception as e:
         logger.exception('Failed to prepare/send article %s: %s', article_id, e)
         return 4
-
-    # Run a structured translation evaluation using LLM and save as a comment
-    try:
-        # Choose source Spanish text and final Telegram Russian text
-        try:
-            # Prefer original source fields in `src`
-            source_text_es = src.get('content') or src.get('description') or src.get('title') or ''
-        except Exception:
-            source_text_es = src.get('content') or ''
-
-        try:
-            stage5 = tr.get('stage5_final') or None
-            stage4 = tr.get('stage4_raw') or {'tg_preview': tr.get('tg_preview')}
-            if isinstance(stage5, dict) and stage5.get('tg_preview'):
-                final_tg_text = stage5.get('tg_preview')
-            elif isinstance(stage4, dict) and stage4.get('tg_preview'):
-                final_tg_text = stage4.get('tg_preview')
-            else:
-                final_tg_text = tr.get('translation_ru') or tr.get('content_ru') or ''
-        except Exception:
-            final_tg_text = tr.get('translation_ru') or tr.get('content_ru') or ''
-
-        # Load evaluation prompts from JSON-based prompt files
-        from workers.article_generator.prompts import _load_eval
-        eval_prompts = _load_eval()
-        system_prompt = eval_prompts.get('system', '')
-        user_template = eval_prompts.get('user', '')
-        user_prompt = user_template.replace('<<SOURCE_TEXT_ES>>', source_text_es or '').replace('<<FINAL_TG_TEXT>>', final_tg_text or '')
-
-        messages = [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_prompt},
-        ]
-
-        # Call the model via translator's client
-        try:
-            raw_eval_text = _translator_chat(translator.client, translator.model, messages, max_tokens=1200, temperature=0.0)
-        except Exception:
-            raw_eval_text = None
-
-        eval_json = None
-        eval_text_snippet = (raw_eval_text or '')[:4000]
-        print('\n' + '=' * 88 + '\n')
-        print('*** TRANSLATION EVALUATION (RAW) ***')
-        print('\n' + '-' * 40 + '\n')
-        print(eval_text_snippet)
-        print('\n' + '=' * 88 + '\n')
-
-        # Try to parse JSON using translator helper
-        try:
-            parsed = _translator_parse_json(raw_eval_text or '')
-            if isinstance(parsed, dict):
-                eval_json = parsed
-            else:
-                # fallback: store raw text
-                eval_json = {'raw': raw_eval_text or ''}
-        except Exception:
-            eval_json = {'raw': raw_eval_text or ''}
-
-        # Save eval JSON into articles_ru
-        try:
-            db.collection('articles_ru').document(article_id).set({'translation_eval': eval_json, 'translation_eval_at': datetime.utcnow().isoformat()}, merge=True)
-            logger.info('Saved structured translation evaluation for %s', article_id)
-        except Exception:
-            logger.exception('Failed to save structured translation evaluation for %s', article_id)
-
-        # If we have a sent message record earlier, try to add a telegram_posts comment entry
-        try:
-            if sent:
-                # recorded_chat_id and sent were added to telegram_posts earlier; try to record an eval comment
-                comment_record = {
-                    'article_id': article_id,
-                    'kind': 'translation_eval',
-                    'eval': eval_json,
-                    'created_at': datetime.utcnow().isoformat(),
-                }
-                db.collection('telegram_post_comments').add(comment_record)
-                # Also try to post eval as a Telegram reply to the sent message
-                try:
-                    # Determine message id and thread id from `sent` (could be dict or object)
-                    msg_id = None
-                    thread_id = None
-                    try:
-                        if hasattr(sent, 'message_id'):
-                            msg_id = getattr(sent, 'message_id')
-                        elif isinstance(sent, dict):
-                            msg_id = sent.get('message_id') or (sent.get('message') or {}).get('message_id') or (sent.get('result') or {}).get('message_id')
-                            # Telegram may include a 'message_thread_id' in some responses (forum topics)
-                            thread_id = sent.get('message_thread_id') or (sent.get('message') or {}).get('message_thread_id') or (sent.get('result') or {}).get('message_thread_id')
-                    except Exception:
-                        msg_id = None
-                        thread_id = None
-
-                    eval_text_to_send = None
-                    try:
-                        import json as _json
-                        eval_text_to_send = _json.dumps(eval_json, ensure_ascii=False, indent=2)
-                    except Exception:
-                        eval_text_to_send = str(eval_json)
-
-                    # If thread_id exists or forum topic can be created, post eval via helper
-                    try:
-                        from workers.tools.telegram_helper import post_eval_comment
-                        # post_eval_comment returns the telegram send result or an error dict or None
-                        post_result = post_eval_comment(chat_id, eval_json, raw_text=raw_eval_text, sent=sent, token=os.environ.get('TELEGRAM_BOT_TOKEN'), max_len=1000)
-                        # Record result or error into telegram_post_comments
-                        try:
-                            comment_record_update = {'post_result': post_result, 'post_result_at': datetime.utcnow().isoformat()}
-                            # update the same comment record we added earlier (best-effort: add a separate doc if update fails)
-                            db.collection('telegram_post_comments').add({**comment_record, **comment_record_update})
-                        except Exception:
-                            logger.exception('Failed to record telegram_post_comments post result for %s', article_id)
-                    except Exception:
-                        logger.exception('Failed to post eval to Telegram for %s', article_id)
-                except Exception:
-                    logger.exception('Failed to post eval as Telegram reply for %s', article_id)
-        except Exception:
-            logger.exception('Failed to save telegram post comment for %s', article_id)
-
-    except Exception:
-        logger.exception('Translation evaluation step failed for %s', article_id)
 
     return 0
 

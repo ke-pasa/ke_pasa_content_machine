@@ -9,6 +9,9 @@ import requests
 from typing import Optional, Dict, Any
 import inspect
 import asyncio
+from telegram import Bot
+import re
+
 
 
 def _http_post(token: str, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -18,6 +21,24 @@ def _http_post(token: str, method: str, payload: Dict[str, Any]) -> Dict[str, An
     if not (resp.status_code == 200 and j.get('ok')):
         raise RuntimeError(f'Telegram {method} failed: {j}')
     return j.get('result')
+
+
+def _normalize_newlines(text: str) -> str:
+    """Normalize newlines for Telegram captions/messages.
+
+    - Convert CRLF to LF
+    - Collapse 3+ newlines to 2
+    - Convert single newlines to double newlines so paragraphs display
+    """
+    if not text:
+        return text
+    # normalize CRLF
+    text = text.replace('\r\n', '\n')
+    # collapse 3+ newlines into 2
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    # convert single newlines (not already part of a double newline) into double newlines
+    text = re.sub(r'(?<!\n)\n(?!\n)', '\n\n', text)
+    return text
 
 
 def create_forum_topic(chat_id: str, name: str, token: Optional[str] = None, icon_color: Optional[int] = None) -> Dict[str, Any]:
@@ -31,25 +52,26 @@ def create_forum_topic(chat_id: str, name: str, token: Optional[str] = None, ico
 
     # Bot library support
     try:
-        from telegram import Bot
         bot = Bot(token=token)
         # python-telegram-bot names this method create_forum_topic (>=13.4/20); use bot.create_forum_topic
         res = bot.create_forum_topic(chat_id=chat_id, name=name, icon_color=icon_color)
-        # If library returns a coroutine (async API), run it synchronously when possible
+        # If library returns an awaitable (async API), run it synchronously when possible
         try:
-            if inspect.iscoroutine(res):
-                loop = None
+            if inspect.isawaitable(res):
                 try:
-                    loop = asyncio.get_event_loop()
-                except Exception:
                     loop = None
-                if loop and loop.is_running():
-                    # Can't run coroutine synchronously when loop is running; fallback to HTTP
-                    raise RuntimeError('Event loop running; falling back to HTTP')
-                # run until complete
-                return (loop.run_until_complete(res) if loop else asyncio.run(res))
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except Exception:
+                        loop = None
+                    if loop and loop.is_running():
+                        # Can't run coroutine synchronously when loop is running; fallback to HTTP
+                        raise RuntimeError('Event loop running; falling back to HTTP')
+                    return (loop.run_until_complete(res) if loop else asyncio.run(res))
+                except Exception:
+                    # fallback to HTTP path below
+                    pass
         except Exception:
-            # fallback to HTTP path below
             pass
         return res
     except Exception:
@@ -69,24 +91,31 @@ def send_message(chat_id: str, text: str, token: Optional[str] = None, parse_mod
     if not token:
         raise RuntimeError('No TELEGRAM_BOT_TOKEN provided')
 
+    # sanitize text: Telegram HTML parser doesn't accept <br> tags, replace with newlines
+    if text:
+        text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+        text = _normalize_newlines(text)
+
     # Try python-telegram-bot if available
     try:
-        from telegram import Bot
         bot = Bot(token=token)
         res = bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         try:
-            if inspect.iscoroutine(res):
-                loop = None
+            if inspect.isawaitable(res):
                 try:
-                    loop = asyncio.get_event_loop()
-                except Exception:
                     loop = None
-                if loop and loop.is_running():
-                    # Can't await here; fall back to HTTP
-                    raise RuntimeError('Event loop running; falling back to HTTP')
-                return (loop.run_until_complete(res) if loop else asyncio.run(res))
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except Exception:
+                        loop = None
+                    if loop and loop.is_running():
+                        # Can't await here; fall back to HTTP
+                        raise RuntimeError('Event loop running; falling back to HTTP')
+                    return (loop.run_until_complete(res) if loop else asyncio.run(res))
+                except Exception:
+                    # fall back to HTTP below
+                    pass
         except Exception:
-            # fall back to HTTP below
             pass
         return res
     except Exception:
@@ -105,8 +134,12 @@ def send_photo(chat_id: str, photo_url: str, caption: Optional[str] = None, toke
     if not token:
         raise RuntimeError('No TELEGRAM_BOT_TOKEN provided')
 
+    # sanitize caption before sending
+    if caption:
+        caption = caption.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+        caption = _normalize_newlines(caption)
+
     try:
-        from telegram import Bot
         bot = Bot(token=token)
         res = bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=parse_mode, message_thread_id=message_thread_id)
         try:

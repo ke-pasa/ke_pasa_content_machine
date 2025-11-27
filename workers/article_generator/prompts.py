@@ -62,27 +62,46 @@ def stage2_messages(draft_json: str) -> List[Dict[str, str]]:
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
 
 
-def stage3_messages(stage2_json: str, source_line: str) -> List[Dict[str, str]]:
+def stage3_messages(source_text: str, stage1_json: str, stage2_json: str) -> List[Dict[str, str]]:
     prompts = _load_stage(3)
     system_prompt = prompts.get("system", "")
     user_template = prompts.get("user", "")
-    user_content = user_template.replace("<<STAGE2_JSON>>", stage2_json).replace("<<SOURCE_LINE>>", source_line)
+    user_content = (user_template
+                    .replace("<<SOURCE_TEXT>>", source_text)
+                    .replace("<<STAGE1_JSON>>", stage1_json)
+                    .replace("<<STAGE2_JSON>>", stage2_json))
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
 
 
-def stage4_messages(payload_json: str) -> List[Dict[str, str]]:
+def stage4_messages(source_text: str, stage1_json: str, stage2_json: str, stage3_json: str) -> List[Dict[str, str]]:
     prompts = _load_stage(4)
     system_prompt = prompts.get("system", "")
     user_template = prompts.get("user", "")
-    user_content = user_template.replace("<<PAYLOAD_JSON>>", payload_json)
+    user_content = (user_template
+                    .replace("<<SOURCE_TEXT>>", source_text)
+                    .replace("<<STAGE1_JSON>>", stage1_json)
+                    .replace("<<STAGE2_JSON>>", stage2_json)
+                    .replace("<<STAGE3_JSON>>", stage3_json))
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
 
 
-def stage5_messages(payload_json: str) -> List[Dict[str, str]]:
+def stage5_messages(stage4_json: str, tech_meta_json: str) -> List[Dict[str, str]]:
     prompts = _load_stage(5)
     system_prompt = prompts.get("system", "")
     user_template = prompts.get("user", "")
-    user_content = user_template.replace("<<PAYLOAD_JSON>>", payload_json)
+    user_content = (user_template
+                    .replace("<<STAGE4_JSON>>", stage4_json)
+                    .replace("<<TECH_META>>", tech_meta_json))
+    return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
+
+
+def stage6_messages(stage4_json: str, url: str) -> List[Dict[str, str]]:
+    prompts = _load_stage(6)
+    system_prompt = prompts.get("system", "")
+    user_template = prompts.get("user", "")
+    user_content = (user_template
+                    .replace("<<STAGE4_JSON>>", stage4_json)
+                    .replace("<<URL>>", url))
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
 
 
