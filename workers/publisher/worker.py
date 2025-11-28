@@ -135,10 +135,10 @@ class PublisherWorker:
         """Compute embedding for candidate article and save it to the document. Returns embedding or None."""
         try:
             data = doc.to_dict() or {}
-            # Use only data['telegram_final']['telegram_preview'] as the canonical preview
+            # Use only data['telegram_final']['tg_preview'] as the canonical preview
             final_preview = None
             try:
-                final_preview = (data.get('telegram_final') or {}).get('telegram_preview')
+                final_preview = (data.get('telegram_final') or {}).get('tg_preview')
             except Exception:
                 final_preview = None
             if not final_preview:
@@ -394,14 +394,14 @@ class PublisherWorker:
                 article_id = data.get('article_id') or doc.id
                 image = data.get('image_url') or data.get('image') or None
 
-                # Use only data['telegram_final']['telegram_preview'] as canonical preview
+                # Use only data['telegram_final']['tg_preview'] as canonical preview
                 final_preview = None
                 try:
-                    final_preview = (data.get('telegram_final') or {}).get('telegram_preview')
+                    final_preview = (data.get('telegram_final') or {}).get('tg_preview')
                 except Exception:
                     final_preview = None
                 if not final_preview:
-                    print(f"[publisher] ⚠️ Skipping article {article_id}: missing telegram_final.telegram_preview")
+                    print(f"[publisher] ⚠️ Skipping article {article_id}: missing telegram_final.tg_preview")
                     continue
                 # Before sending, compute embedding and save it to the article document
                 try:
@@ -483,14 +483,14 @@ class PublisherWorker:
                 data = doc.to_dict() or {}
                 article_id = data.get('article_id') or doc.id
                 image = data.get('image_url') or data.get('image') or None
-                # Use only data['telegram_final']['telegram_preview'] as canonical preview
+                # Use only data['telegram_final']['tg_preview'] as canonical preview
                 final_preview = None
                 try:
-                    final_preview = (data.get('telegram_final') or {}).get('telegram_preview')
+                    final_preview = (data.get('telegram_final') or {}).get('tg_preview')
                 except Exception:
                     final_preview = None
                 if not final_preview:
-                    print(f"[publisher] ⚠️ Skipping article {article_id}: missing telegram_final.telegram_preview")
+                    print(f"[publisher] ⚠️ Skipping article {article_id}: missing telegram_final.tg_preview")
                     continue
                 # compute embedding and save it to the article document
                 try:
