@@ -89,7 +89,7 @@ jobs:
           mkdir -p src/content/news
           # Use rsync if available for cleaner sync; fallback to cp
           if command -v rsync >/dev/null 2>&1; then
-            rsync -a --delete $GITHUB_WORKSPACE/articles/ ./src/content/news/
+            rsync -a $GITHUB_WORKSPACE/articles/ ./src/content/news/
           else
             rm -rf ./src/content/news || true
             mkdir -p ./src/content/news
