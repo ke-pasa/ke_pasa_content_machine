@@ -730,6 +730,14 @@ class ArticleGenerator:
         slug_val = _strip_quotes(slug_val)
         image_val = _strip_quotes(image_val)
 
+        # Determine whether the original frontmatter contained an explicit image: field
+        had_image_in_fm = False
+        try:
+            if fm_block and _re.search(r'^image:\s*.*$', fm_block, flags=_re.MULTILINE):
+                had_image_in_fm = True
+        except Exception:
+            had_image_in_fm = False
+
         if not slug_val:
             base = (title_val or translation_result.get('title_ru') or '')
             slug = _re.sub(r'[^a-z0-9\-]', '-', base.lower())
@@ -765,7 +773,10 @@ class ArticleGenerator:
             new_md = '---\n' + '\n'.join(new_fm_lines) + '\n---\n\n' + md
 
         # ensure image markdown after frontmatter
-        if image_val and ('![' not in new_md.split('---', 2)[-1]):
+        # Insert the inline Markdown image only when the body doesn't already contain one
+        # and the original frontmatter did NOT include an explicit image field. This
+        # avoids duplicating an image line when the model already provided it.
+        if image_val and (not had_image_in_fm) and ('![' not in new_md.split('---', 2)[-1]):
             alt = title_val or slug
             closing_idx = new_md.find('\n---', 0)
             if closing_idx != -1:
