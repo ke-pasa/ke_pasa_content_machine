@@ -97,7 +97,7 @@ class CategorizationWorker:
             if requested_total <= 0:
                 return {'status': 'success', 'processed': 0}
 
-            chunk_size = 20
+            chunk_size = 30
             processed_total = 0
             last_snapshot = None
 

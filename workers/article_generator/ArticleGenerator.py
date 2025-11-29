@@ -345,7 +345,7 @@ class ArticleGenerator:
                                     now_utc = datetime.now(timezone.utc)
                                     age_days = (now_utc - pub_dt).total_seconds() / 86400
                                     
-                                    if age_days > 5:
+                                    if age_days > 3:
                                         skip_reason = 'too_old'
                                 except Exception as parse_err:
                                     self.logger.debug('Failed to parse date for %s: %s', d.id, parse_err)
