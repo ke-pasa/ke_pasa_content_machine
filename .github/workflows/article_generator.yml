@@ -65,3 +65,36 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_key.json
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # (no ARTICLE_GENERATOR_FAIL_ON_ERRORS) - strict failure on collected errors by default
+
+      - name: Push generated articles to external repo
+        if: ${{ secrets.GIT_KE_PASA_PAT != '' }}
+        env:
+          ARTICLES_REPO: "ke-pasa/ke_pasa_site"
+          GIT_KE_PASA_PAT: ${{ secrets.GIT_KE_PASA_PAT }}
+          ARTICLES_REPO_BRANCH: ${{ secrets.ARTICLES_REPO_BRANCH || 'main' }}
+        run: |
+          set -euo pipefail
+          git --version
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "Cloning target repo ${ARTICLES_REPO} (branch: ${ARTICLES_REPO_BRANCH})"
+          git clone https://${GIT_KE_PASA_PAT}@github.com/${ARTICLES_REPO} target_repo
+          cd target_repo
+          git checkout -B "${ARTICLES_REPO_BRANCH}"
+          echo "Copying articles/ to target repo: src/content/news"
+          mkdir -p src/content/news
+          # Use rsync if available for cleaner sync; fallback to cp
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -a --delete $GITHUB_WORKSPACE/articles/ ./src/content/news/
+          else
+            rm -rf ./src/content/news || true
+            mkdir -p ./src/content/news
+            cp -R $GITHUB_WORKSPACE/articles/* ./src/content/news/ || true
+          fi
+          git add src/content/news
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update articles from CI run ${GITHUB_RUN_ID}"
+            git push https://${GIT_KE_PASA_PAT}@github.com/${ARTICLES_REPO} HEAD:${ARTICLES_REPO_BRANCH}
+          fi

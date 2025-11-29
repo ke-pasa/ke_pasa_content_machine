@@ -745,8 +745,10 @@ class ArticleGenerator:
         # rebuild frontmatter
         if fm_block:
             fm_text = fm_block
-            fm_text = _re.sub(r'^title:.*$', f'title: "{title_val.replace("\"", "\\\"")}"', fm_text, flags=_re.MULTILINE)
-            fm_text = _re.sub(r'^description:.*$', f'description: "{desc_val.replace("\"", "\\\"")}"', fm_text, flags=_re.MULTILINE)
+            esc_title = title_val.replace('"', '\\"') if isinstance(title_val, str) else ''
+            esc_desc = desc_val.replace('"', '\\"') if isinstance(desc_val, str) else ''
+            fm_text = _re.sub(r'^title:.*$', f'title: "{esc_title}"', fm_text, flags=_re.MULTILINE)
+            fm_text = _re.sub(r'^description:.*$', f'description: "{esc_desc}"', fm_text, flags=_re.MULTILINE)
             if _re.search(r'^image:.*$', fm_text, flags=_re.MULTILINE):
                 fm_text = _re.sub(r'^image:.*$', f'image: {image_val}', fm_text, flags=_re.MULTILINE)
             else:
@@ -757,7 +759,9 @@ class ArticleGenerator:
                 fm_text = fm_text + f'\nslug: {slug}'
             new_md = '---' + fm_text + '\n---' + rest
         else:
-            new_fm_lines = [f'title: "{title_val.replace("\"", "\\\"")}"', f'description: "{desc_val.replace("\"", "\\\"")}"', f'slug: {slug}', f'image: {image_val or ""}']
+            esc_title2 = title_val.replace('"', '\\"') if isinstance(title_val, str) else ''
+            esc_desc2 = desc_val.replace('"', '\\"') if isinstance(desc_val, str) else ''
+            new_fm_lines = [f'title: "{esc_title2}"', f'description: "{esc_desc2}"', f'slug: {slug}', f'image: {image_val or ""}']
             new_md = '---\n' + '\n'.join(new_fm_lines) + '\n---\n\n' + md
 
         # ensure image markdown after frontmatter
