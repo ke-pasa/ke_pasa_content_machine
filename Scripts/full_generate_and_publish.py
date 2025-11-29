@@ -31,6 +31,21 @@ repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+# Load .env from repo root for developer convenience (best-effort)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=repo_root / '.env')
+except Exception:
+    pass
+
+# Ensure articles directory exists (so generated markdown can be saved locally)
+try:
+    articles_dir = repo_root / 'articles'
+    articles_dir.mkdir(parents=True, exist_ok=True)
+    logging.getLogger(__name__).info('Ensured articles directory exists at %s', str(articles_dir))
+except Exception:
+    logging.getLogger(__name__).exception('Failed to ensure articles directory exists')
+
 from workers.tools.firebase_client import get_firebase_client
 from workers.article_generator.translator import ArticleTranslator
 from workers.article_generator.translator import _chat_completion as _translator_chat
@@ -100,6 +115,17 @@ def save_generated(db, doc_id: str, source: dict, translation_result: dict):
     except Exception:
         logging.exception('Failed to save generated article to articles_ru %s', doc_id)
 
+    # Ensure local publish markdown is saved when running this script directly
+    try:
+        if publish_md:
+            try:
+                ag = ArticleGenerator()
+                ag._save_publish_markdown(doc_id, source, {'image_url': payload.get('image_url')}, translation_result)
+            except Exception:
+                logging.getLogger(__name__).exception('Failed to save publish markdown from runner for %s', doc_id)
+    except Exception:
+        pass
+
     # update original article document
     try:
         update_payload = {
@@ -141,6 +167,7 @@ def main(article_id: str):
         total_score_val = 100.0
     metadata = {
         'url': src.get('link') or src.get('url') or src.get('source'),
+        'image_url': src.get('image') or src.get('image_url') or None,
         'doc_id': article_id,
         'total_score': total_score_val,
     }
@@ -266,7 +293,6 @@ def main(article_id: str):
 
     # Persist outputs
     save_generated(db, article_id, src, tr)
-
     # Send final preview via shared telegram helper
     try:
         # Determine final preview from stage6 or fallback to tg_preview
@@ -327,9 +353,42 @@ def main(article_id: str):
                     except Exception:
                         recorded_chat_id = None
 
+                # Normalize `sent` to a serializable structure before writing to Firestore
+                try:
+                    import inspect as _inspect
+                    import asyncio as _asyncio
+
+                    if _inspect.isawaitable(sent):
+                        try:
+                            loop = None
+                            try:
+                                loop = _asyncio.get_event_loop()
+                            except Exception:
+                                loop = None
+                            if loop and loop.is_running():
+                                # Can't run coroutine here; serialize a representation instead
+                                sent_serializable = {'error': 'coroutine_not_resolved', 'repr': repr(sent)}
+                            else:
+                                resolved = _asyncio.run(sent)
+                                sent_serializable = resolved.to_dict() if hasattr(resolved, 'to_dict') else resolved
+                        except Exception:
+                            sent_serializable = {'error': 'coroutine_run_failed', 'repr': repr(sent)}
+                    else:
+                        # If it's a message object from python-telegram-bot, try to convert
+                        try:
+                            if hasattr(sent, 'to_dict'):
+                                sent_serializable = sent.to_dict()
+                            else:
+                                # Ensure it's JSON-serializable (likely dict returned from HTTP fallback)
+                                sent_serializable = sent
+                        except Exception:
+                            sent_serializable = {'error': 'serialization_failed', 'repr': repr(sent)}
+                except Exception:
+                    sent_serializable = {'error': 'unknown_sent_type', 'repr': repr(sent)}
+
                 post_record = {
                     'article_id': article_id,
-                    'telegram_message': sent.to_dict() if hasattr(sent, 'to_dict') else sent,
+                    'telegram_message': sent_serializable,
                     'chat_id': recorded_chat_id,
                     'created_at': datetime.utcnow().isoformat(),
                 }

@@ -11,3 +11,4 @@ firebase-admin==6.4.0
 python-telegram-bot==20.7
 pytz==2024.1
 freezegun==1.2.2 
+python-dotenv==1.0.1

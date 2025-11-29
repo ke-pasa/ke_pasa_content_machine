@@ -11,6 +11,12 @@ import inspect
 import asyncio
 from telegram import Bot
 import re
+try:
+    # Load .env to pick up TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID in dev environments
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 
 
@@ -55,23 +61,13 @@ def create_forum_topic(chat_id: str, name: str, token: Optional[str] = None, ico
         bot = Bot(token=token)
         # python-telegram-bot names this method create_forum_topic (>=13.4/20); use bot.create_forum_topic
         res = bot.create_forum_topic(chat_id=chat_id, name=name, icon_color=icon_color)
-        # If library returns an awaitable (async API), run it synchronously when possible
+        # If library returns an awaitable (async API), prefer HTTP fallback instead of running
+        # asyncio.run / loop.run_until_complete in-process (prevents overlapped loop issues)
         try:
             if inspect.isawaitable(res):
-                try:
-                    loop = None
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except Exception:
-                        loop = None
-                    if loop and loop.is_running():
-                        # Can't run coroutine synchronously when loop is running; fallback to HTTP
-                        raise RuntimeError('Event loop running; falling back to HTTP')
-                    return (loop.run_until_complete(res) if loop else asyncio.run(res))
-                except Exception:
-                    # fallback to HTTP path below
-                    pass
+                raise RuntimeError('Async Bot API returned awaitable; falling back to HTTP')
         except Exception:
+            # fall through to HTTP fallback below
             pass
         return res
     except Exception:
@@ -102,20 +98,9 @@ def send_message(chat_id: str, text: str, token: Optional[str] = None, parse_mod
         res = bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_to_message_id=reply_to_message_id, message_thread_id=message_thread_id)
         try:
             if inspect.isawaitable(res):
-                try:
-                    loop = None
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except Exception:
-                        loop = None
-                    if loop and loop.is_running():
-                        # Can't await here; fall back to HTTP
-                        raise RuntimeError('Event loop running; falling back to HTTP')
-                    return (loop.run_until_complete(res) if loop else asyncio.run(res))
-                except Exception:
-                    # fall back to HTTP below
-                    pass
+                raise RuntimeError('Async Bot API returned awaitable; falling back to HTTP')
         except Exception:
+            # fall through to HTTP fallback below
             pass
         return res
     except Exception:
@@ -143,16 +128,9 @@ def send_photo(chat_id: str, photo_url: str, caption: Optional[str] = None, toke
         bot = Bot(token=token)
         res = bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=parse_mode, message_thread_id=message_thread_id)
         try:
-            if inspect.iscoroutine(res):
-                loop = None
-                try:
-                    loop = asyncio.get_event_loop()
-                except Exception:
-                    loop = None
-                if loop and loop.is_running():
-                    # Can't await here; fall back to HTTP
-                    raise RuntimeError('Event loop running; falling back to HTTP')
-                return (loop.run_until_complete(res) if loop else asyncio.run(res))
+            # If Bot returns coroutine/awaitable, prefer HTTP fallback instead of running it here
+            if inspect.isawaitable(res) or inspect.iscoroutine(res):
+                raise RuntimeError('Async Bot API returned awaitable; falling back to HTTP')
         except Exception:
             # fall back to HTTP below
             pass

@@ -155,6 +155,15 @@ class ArticleGenerator:
                                          len((rb.get('content_ru') or '') if isinstance(rb.get('content_ru', ''), str) else str(rb.get('content_ru'))))
                     except Exception:
                         self.logger.info('Saved articles_ru %s (read-back succeeded)', doc_id)
+                    # Also save publish markdown locally when available
+                    try:
+                        if tr.get('publish_md'):
+                            try:
+                                self._save_publish_markdown(doc_id, source, tr.get('editorial_result') or {}, tr)
+                            except Exception:
+                                self.logger.exception('Failed to save publish markdown after articles_ru write for %s', doc_id)
+                    except Exception:
+                        pass
                 else:
                     self.logger.warning('Write appeared to succeed but articles_ru doc %s does not exist after write', doc_id)
             except Exception:
@@ -426,6 +435,7 @@ class ArticleGenerator:
         """Build metadata dictionary for translation."""
         return {
             'url': article_url,
+            'image_url': data.get('image') or data.get('image_url') or None,
             'source': data.get('source') or data.get('source_name'),
             'published_at': data.get('published_at') or data.get('published') or data.get('pub_date'),
             'total_score': total_score,
@@ -601,6 +611,14 @@ class ArticleGenerator:
                     pass
             except Exception:
                 pass
+            # Additionally, save the generated publish markdown to local `articles/` folder
+            try:
+                self._save_publish_markdown(doc_id, data, article_metadata, translation_result)
+            except Exception:
+                try:
+                    self.logger.exception('Failed to save publish markdown for %s', doc_id)
+                except Exception:
+                    pass
         except Exception as save_err:
             with lock:
                 chunk_results['errors'].append(f"Save error for {doc_id}: {save_err}")
@@ -654,6 +672,117 @@ class ArticleGenerator:
         except Exception as proc_err:
             with lock:
                 chunk_results['errors'].append(f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}")
+
+    def _save_publish_markdown(self, doc_id: str, data: dict, article_metadata: dict, translation_result: dict) -> None:
+        """Save generated publish_md into articles/<slug>_<doc_id>.md with frontmatter fixes."""
+        tr = translation_result if isinstance(translation_result, dict) else None
+        publish_md = tr.get('publish_md') if tr else None
+        try:
+            self.logger.info('_save_publish_markdown called for %s; publish_md present=%s type=%s',
+                             doc_id,
+                             bool(publish_md),
+                             type(publish_md).__name__ if publish_md is not None else 'None')
+        except Exception:
+            pass
+        if not publish_md or not isinstance(publish_md, str):
+            try:
+                self.logger.info('No publish_md to save for %s (publish_md=%r)', doc_id, publish_md)
+            except Exception:
+                pass
+            return
+
+        import re as _re
+        md = publish_md
+        # locate YAML frontmatter
+        fm_start = md.find('---')
+        fm_end = -1
+        if fm_start != -1:
+            fm_end = md.find('\n---', fm_start+3)
+            if fm_end != -1:
+                fm_block = md[fm_start:fm_end]
+                rest = md[fm_end+1:]
+            else:
+                fm_block = ''
+                rest = md
+        else:
+            fm_block = ''
+            rest = md
+
+        def _fm_get(key, text):
+            m = _re.search(rf'^{key}:\s*(.*)$', text, flags=_re.MULTILINE)
+            return m.group(1).strip() if m else None
+
+        title_val = _fm_get('title', fm_block) or translation_result.get('title_ru') or ''
+        desc_val = _fm_get('description', fm_block) or translation_result.get('description_ru') or ''
+        slug_val = _fm_get('slug', fm_block) or ''
+        image_val = _fm_get('image', fm_block) or ''
+
+        def _strip_quotes(s):
+            if not s:
+                return s
+            s = s.strip()
+            if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+                return s[1:-1]
+            return s
+
+        title_val = _strip_quotes(title_val)
+        desc_val = _strip_quotes(desc_val)
+        slug_val = _strip_quotes(slug_val)
+        image_val = _strip_quotes(image_val)
+
+        if not slug_val:
+            base = (title_val or translation_result.get('title_ru') or '')
+            slug = _re.sub(r'[^a-z0-9\-]', '-', base.lower())
+            slug = _re.sub(r'-{2,}', '-', slug).strip('-')
+            if not slug:
+                slug = doc_id
+        else:
+            slug = slug_val
+
+        if not image_val:
+            image_val = article_metadata.get('image_url') or data.get('image') or data.get('image_url') or ''
+
+        # rebuild frontmatter
+        if fm_block:
+            fm_text = fm_block
+            fm_text = _re.sub(r'^title:.*$', f'title: "{title_val.replace("\"", "\\\"")}"', fm_text, flags=_re.MULTILINE)
+            fm_text = _re.sub(r'^description:.*$', f'description: "{desc_val.replace("\"", "\\\"")}"', fm_text, flags=_re.MULTILINE)
+            if _re.search(r'^image:.*$', fm_text, flags=_re.MULTILINE):
+                fm_text = _re.sub(r'^image:.*$', f'image: {image_val}', fm_text, flags=_re.MULTILINE)
+            else:
+                fm_text = fm_text + '\nimage: ' + (image_val or '')
+            if _re.search(r'^slug:.*$', fm_text, flags=_re.MULTILINE):
+                fm_text = _re.sub(r'^slug:.*$', f'slug: {slug}', fm_text, flags=_re.MULTILINE)
+            else:
+                fm_text = fm_text + f'\nslug: {slug}'
+            new_md = '---' + fm_text + '\n---' + rest
+        else:
+            new_fm_lines = [f'title: "{title_val.replace("\"", "\\\"")}"', f'description: "{desc_val.replace("\"", "\\\"")}"', f'slug: {slug}', f'image: {image_val or ""}']
+            new_md = '---\n' + '\n'.join(new_fm_lines) + '\n---\n\n' + md
+
+        # ensure image markdown after frontmatter
+        if image_val and ('![' not in new_md.split('---', 2)[-1]):
+            alt = title_val or slug
+            closing_idx = new_md.find('\n---', 0)
+            if closing_idx != -1:
+                pos = new_md.find('\n', closing_idx+1)
+                if pos == -1:
+                    pos = closing_idx + 4
+                img_line = f"![{alt}]({image_val})\n\n"
+                new_md = new_md[:pos+1] + img_line + new_md[pos+1:]
+
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        articles_dir = repo_root / 'articles'
+        articles_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{slug}_{doc_id}.md"
+        file_path = articles_dir / filename
+        try:
+            self.logger.info('Attempting to write publish markdown to %s', str(file_path))
+            with open(file_path, 'w', encoding='utf-8') as fw:
+                fw.write(new_md)
+            self.logger.info('Wrote publish markdown to %s', str(file_path))
+        except Exception as wf:
+            self.logger.exception('Failed to write publish markdown file %s: %s', str(file_path), wf)
 
     def _phase2_translate_articles(self, requested_total: float) -> dict:
         """
