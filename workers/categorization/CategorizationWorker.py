@@ -8,7 +8,7 @@ from typing import Dict
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .news_filter_prompt import get_news_filter_prompt, validate_news_interest
+from .news_filter_prompt import get_news_filter_prompt
 from workers.tools.openai_client import parse_json_from_text
 
 
@@ -164,33 +164,18 @@ class CategorizationWorker:
                                 if parsed:
                                     interest_result = parsed
                                 else:
-                                    interest_result = validate_news_interest({
-                                        'title': title,
-                                        'description': description,
-                                        'content': content,
-                                        'tags': tags,
-                                        'source': source,
-                                        'pub_date': pub_date
-                                    })
+                                    interest_result = None
+                                    logging.getLogger('workers.categorization').warning(
+                                        'LLM returned invalid JSON for article %s; skipping local heuristic', doc_id)
 
                             except Exception:
-                                interest_result = validate_news_interest({
-                                    'title': title,
-                                    'description': description,
-                                    'content': content,
-                                    'tags': tags,
-                                    'source': source,
-                                    'pub_date': pub_date
-                                })
+                                interest_result = None
+                                logging.getLogger('workers.categorization').exception(
+                                    'Error while calling LLM for article %s; skipping local heuristic', doc_id)
                         else:
-                            interest_result = validate_news_interest({
-                                'title': title,
-                                'description': description,
-                                'content': content,
-                                'tags': tags,
-                                'source': source,
-                                'pub_date': pub_date
-                            })
+                            interest_result = None
+                            logging.getLogger('workers.categorization').warning(
+                                'No LLM client available for article %s; skipping local heuristic', doc_id)
 
                         # extract fields
                         total_score = None

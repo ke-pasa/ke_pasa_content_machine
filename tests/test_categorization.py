@@ -150,6 +150,6 @@ def test_categorize_without_openai_heuristic(monkeypatch):
     assert res['status'] == 'success'
     assert res['processed'] == 1
     assert doc._data.get('status') == 'CATEGORIZED'
+    # Local heuristic removed: interest may be None when no LLM available
     assert 'interest' in doc._data
-    # heuristic sets rating to at least 'skip' or 'short_note'; ensure key exists
-    assert 'rating' in doc._data['interest']
+    assert doc._data['interest'] is None
