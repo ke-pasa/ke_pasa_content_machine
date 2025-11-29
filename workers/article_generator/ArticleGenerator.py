@@ -738,6 +738,7 @@ class ArticleGenerator:
         except Exception:
             had_image_in_fm = False
 
+
         if not slug_val:
             base = (title_val or translation_result.get('title_ru') or '')
             slug = _re.sub(r'[^a-z0-9\-]', '-', base.lower())
@@ -772,19 +773,7 @@ class ArticleGenerator:
             new_fm_lines = [f'title: "{esc_title2}"', f'description: "{esc_desc2}"', f'slug: {slug}', f'image: {image_val or ""}']
             new_md = '---\n' + '\n'.join(new_fm_lines) + '\n---\n\n' + md
 
-        # ensure image markdown after frontmatter
-        # Insert the inline Markdown image only when the body doesn't already contain one
-        # and the original frontmatter did NOT include an explicit image field. This
-        # avoids duplicating an image line when the model already provided it.
-        if image_val and (not had_image_in_fm) and ('![' not in new_md.split('---', 2)[-1]):
-            alt = title_val or slug
-            closing_idx = new_md.find('\n---', 0)
-            if closing_idx != -1:
-                pos = new_md.find('\n', closing_idx+1)
-                if pos == -1:
-                    pos = closing_idx + 4
-                img_line = f"![{alt}]({image_val})\n\n"
-                new_md = new_md[:pos+1] + img_line + new_md[pos+1:]
+        # Do not insert inline image markdown; images are kept in frontmatter only.
 
         repo_root = Path(__file__).resolve().parent.parent.parent
         articles_dir = repo_root / 'articles'
