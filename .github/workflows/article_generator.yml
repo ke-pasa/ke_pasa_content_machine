@@ -67,12 +67,16 @@ jobs:
           # (no ARTICLE_GENERATOR_FAIL_ON_ERRORS) - strict failure on collected errors by default
 
       - name: Push generated articles to external repo
-        if: ${{ secrets.GIT_KE_PASA_PAT != '' }}
         env:
           ARTICLES_REPO: "ke-pasa/ke_pasa_site"
           GIT_KE_PASA_PAT: ${{ secrets.GIT_KE_PASA_PAT }}
-          ARTICLES_REPO_BRANCH: ${{ secrets.ARTICLES_REPO_BRANCH || 'main' }}
+          ARTICLES_REPO_BRANCH: "main"
         run: |
+          # If token not provided, skip the push step (runtime guard avoids linter issues)
+          if [ -z "${GIT_KE_PASA_PAT:-}" ]; then
+            echo "GIT_KE_PASA_PAT not set; skipping push step"
+            exit 0
+          fi
           set -euo pipefail
           git --version
           git config --global user.name "github-actions[bot]"
