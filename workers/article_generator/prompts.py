@@ -95,13 +95,15 @@ def stage5_messages(stage4_json: str, tech_meta_json: str) -> List[Dict[str, str
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
 
 
-def stage6_messages(stage4_json: str, url: str) -> List[Dict[str, str]]:
+def stage6_messages(stage4_json: str, url: str, is_own_site: bool = False) -> List[Dict[str, str]]:
     prompts = _load_stage(6)
     system_prompt = prompts.get("system", "")
     user_template = prompts.get("user", "")
+    link_type = "OWN_SITE" if is_own_site else "ORIGINAL"
     user_content = (user_template
                     .replace("<<STAGE4_JSON>>", stage4_json)
-                    .replace("<<URL>>", url))
+                    .replace("<<URL>>", url)
+                    .replace("<<LINK_TYPE>>", link_type))
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}]
 
 

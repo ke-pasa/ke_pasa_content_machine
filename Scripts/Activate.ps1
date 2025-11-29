@@ -1,12 +1,13 @@
 <#
 .Synopsis
-Activate a Python virtual environment for the current PowerShell session.
+Activate a Python virtual environment for the current PowerShell session and load .env variables.
 
 .Description
 Pushes the python executable for a virtual environment to the front of the
 $Env:PATH environment variable and sets the prompt to signify that you are
 in a Python virtual environment. Makes use of the command line switches as
 well as the `pyvenv.cfg` file values present in the virtual environment.
+Also loads environment variables from .env file in the project root.
 
 .Parameter VenvDir
 Path to the directory that contains the virtual environment to activate. The
@@ -56,6 +57,33 @@ Param(
     [String]
     $Prompt
 )
+
+# Load .env file if it exists
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$EnvFile = Join-Path $ProjectRoot ".env"
+
+if (Test-Path $EnvFile) {
+    Write-Host "Loading environment variables from .env..." -ForegroundColor Green
+    Get-Content $EnvFile | ForEach-Object {
+        $line = $_.Trim()
+        # Skip empty lines and comments
+        if ($line -and -not $line.StartsWith("#")) {
+            # Parse KEY=VALUE
+            if ($line -match "^([^=]+)=(.*)$") {
+                $key = $matches[1].Trim()
+                $value = $matches[2].Trim()
+                # Remove quotes if present
+                $value = $value -replace '^"(.*)"$', '$1'
+                $value = $value -replace "^'(.*)'$", '$1'
+                Set-Item -Path "env:$key" -Value $value
+                Write-Host "  Loaded: $key" -ForegroundColor Cyan
+            }
+        }
+    }
+    Write-Host "Environment variables loaded successfully!" -ForegroundColor Green
+} else {
+    Write-Warning ".env file not found at: $EnvFile"
+}
 
 <# Function declarations --------------------------------------------------- #>
 
@@ -181,8 +209,9 @@ if ($VenvDir) {
     Write-Verbose "VenvDir given as parameter, using '$VenvDir' to determine values"
 }
 else {
-    Write-Verbose "VenvDir not given as a parameter, using parent directory name as VenvDir."
-    $VenvDir = $VenvExecDir.Parent.FullName.TrimEnd("\\/")
+    Write-Verbose "VenvDir not given as a parameter, using venv_new directory."
+    # Use venv_new instead of parent directory
+    $VenvDir = Join-Path $ProjectRoot "venv_new"
     Write-Verbose "VenvDir=$VenvDir"
 }
 

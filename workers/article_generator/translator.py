@@ -163,7 +163,11 @@ class ArticleTranslator:
         except Exception:
             total_score_meta = 0.0
         if total_score_meta >= 80 and metadata.get('url'):
-            stage6 = self._stage6_telegram(stage4, metadata)
+            # Pass slug from stage5 to stage6
+            slug = None
+            if stage5 and isinstance(stage5, dict):
+                slug = stage5.get('slug')
+            stage6 = self._stage6_telegram(stage4, metadata, slug)
 
         return (stage1, stage2, stage3, stage4, stage5, stage6)
 
@@ -551,22 +555,39 @@ class ArticleTranslator:
 
         # Stage5 returns raw Markdown, not JSON
         if text:
-            return {'publish_md': text.strip()}
+            result = {'publish_md': text.strip()}
+            # Extract slug from YAML frontmatter for use in Stage 6
+            try:
+                import re
+                slug_match = re.search(r'^slug:\s*(.+?)\s*$', text, re.MULTILINE)
+                if slug_match:
+                    result['slug'] = slug_match.group(1).strip()
+            except Exception:
+                pass
+            return result
         return None
 
-    def _stage6_telegram(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
+    def _stage6_telegram(self, stage4_result: Dict, metadata: Dict, slug: Optional[str] = None) -> Optional[Dict]:
         """Stage 6: Generate telegram text based on stage4."""
         if not isinstance(stage4_result, dict):
             return None
 
         metadata = metadata or {}
-        url = metadata.get('url') or metadata.get('link')
+        
+        # Use slug to build ke-pasa.es URL if available, otherwise fall back to original URL
+        is_own_site = False
+        if slug:
+            url = f"https://ke-pasa.es/news/{slug}/"
+            is_own_site = True
+        else:
+            url = metadata.get('url') or metadata.get('link')
+        
         if not url:
             return None
 
         stage4_json = json.dumps(stage4_result, ensure_ascii=False)
 
-        messages = stage6_messages(stage4_json, url)
+        messages = stage6_messages(stage4_json, url, is_own_site)
 
         try:
             import logging as _logging
