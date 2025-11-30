@@ -168,6 +168,10 @@ class ArticleTranslator:
             if stage5 and isinstance(stage5, dict):
                 slug = stage5.get('slug')
             stage6 = self._stage6_telegram(stage4, metadata, slug)
+        else:
+            import logging as _log_mod
+            _logger = _log_mod.getLogger('workers.article_generator.translator')
+            _logger.info('Stage6 skipped: total_score=%.1f (need >=80), has_url=%s', total_score_meta, bool(metadata.get('url')))
 
         return (stage1, stage2, stage3, stage4, stage5, stage6)
 
@@ -614,7 +618,7 @@ class ArticleTranslator:
                 self.client,
                 self.model,
                 messages,
-                max_tokens=600,
+                max_tokens=6000,
                 temperature=0.6,
             )
         except Exception:

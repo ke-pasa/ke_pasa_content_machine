@@ -12,11 +12,15 @@ from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
-from readability import Document
+try:
+    from readability import Document
+except Exception:
+    try:
+        from readability.readability import Document
+    except Exception:
+        Document = None
 
 from .translator import ArticleTranslator
-# embedding/publishing handled in publisher worker; no OpenAI client here
-
 
 # Helpers that prefer test-time monkeypatching via the thin worker module.
 def _get_firebase_client():
@@ -105,6 +109,18 @@ class ArticleGenerator:
         publish_md = tr.get('publish_md')
         tg_preview = tr.get('tg_preview')
         stage6_telegram = tr.get('stage6_telegram') or {}
+        # Ensure canonical telegram_final contains tg_preview so publisher can rely on it
+        try:
+            if tg_preview:
+                if not isinstance(stage6_telegram, dict):
+                    stage6_telegram = {'tg_preview': tg_preview}
+                else:
+                    # Only fill missing preview value; preserve any existing fields
+                    if not stage6_telegram.get('tg_preview'):
+                        stage6_telegram['tg_preview'] = tg_preview
+        except Exception:
+            # Best-effort: if anything goes wrong, leave stage6_telegram as-is
+            pass
 
         # Combine flags from various sources
         combined_flags = []
@@ -159,7 +175,9 @@ class ArticleGenerator:
                     try:
                         if tr.get('publish_md'):
                             try:
-                                self._save_publish_markdown(doc_id, source, tr.get('editorial_result') or {}, tr)
+                                # Build minimal article_metadata for markdown save
+                                article_metadata = {'image_url': source.get('image') or source.get('image_url')}
+                                self._save_publish_markdown(doc_id, source, article_metadata, tr)
                             except Exception:
                                 self.logger.exception('Failed to save publish markdown after articles_ru write for %s', doc_id)
                     except Exception:
@@ -558,6 +576,19 @@ class ArticleGenerator:
             )
 
             # Also update original article record to reflect translation status
+            # Ensure telegram_final has tg_preview for compatibility with publisher
+            try:
+                stage6 = translation_result.get('stage6_telegram') or {}
+                tg_prev = translation_result.get('tg_preview')
+                if tg_prev:
+                    if not isinstance(stage6, dict):
+                        stage6 = {'tg_preview': tg_prev}
+                    else:
+                        if not stage6.get('tg_preview'):
+                            stage6['tg_preview'] = tg_prev
+            except Exception:
+                stage6 = translation_result.get('stage6_telegram') or {}
+
             update_payload = {
                 'title_ru': title_ru,
                 'description_ru': description_ru,
@@ -570,7 +601,7 @@ class ArticleGenerator:
                 'publish_flags': translation_result.get('publish_flags'),
                 'telegram_preview': translation_result.get('tg_preview'),
                 'telegram_flags': translation_result.get('tg_flags'),
-                'telegram_final': translation_result.get('stage6_telegram'),
+                'telegram_final': stage6,
                 'status': 'TRANSLATED',
                 'translated_at': datetime.now(timezone.utc).isoformat(),
                 'updated_at': datetime.now(timezone.utc).isoformat(),
