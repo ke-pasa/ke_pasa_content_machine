@@ -183,6 +183,9 @@ class CategorizationWorker:
                         short_note = None
                         category_field = None
                         comment_field = None
+                        publish_on_site = None
+                        publish_on_social = None
+                        newsletter_field = None
 
                         if isinstance(interest_result, dict):
                             total_score = interest_result.get('total_score') or interest_result.get('total')
@@ -190,6 +193,10 @@ class CategorizationWorker:
                             short_note = interest_result.get('short_analysis') or interest_result.get('short_note')
                             category_field = interest_result.get('category')
                             comment_field = interest_result.get('comment') or interest_result.get('commentary')
+                            # New publishing fields (optional in LLM output)
+                            publish_on_site = interest_result.get('publish_on_site')
+                            publish_on_social = interest_result.get('publish_on_social')
+                            newsletter_field = interest_result.get('newsletter')
 
                         record_end = time.perf_counter()
                         processing_time_ms = int((record_end - record_start) * 1000)
@@ -216,6 +223,9 @@ class CategorizationWorker:
                             'short_note': short_note,
                             'category': category_field,
                             'comment': comment_field,
+                            'publish_on_site': publish_on_site,
+                            'publish_on_social': publish_on_social,
+                            'newsletter': newsletter_field,
                             'categorized_at': datetime.now(timezone.utc).isoformat(),
                             'updated_at': datetime.now(timezone.utc).isoformat(),
                         }
