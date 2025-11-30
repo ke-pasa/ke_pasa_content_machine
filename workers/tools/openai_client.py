@@ -52,7 +52,7 @@ def get_openai_client() -> Optional[object]:
 
 
 def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
-                    max_tokens: int = 600, temperature: float = 0.0) -> Optional[str]:
+                    max_tokens: int = 6000, temperature: float = 0.0) -> Optional[str]:
     """Perform a chat completion and return the text content or None on error.
 
     This wraps the common call-site used across workers. It does not attempt
@@ -155,12 +155,41 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             # Support both newer structured responses and older text fields
             try:
                 content = resp.choices[0].message.content
-                if content is None:
-                    logger.warning('OpenAI response content is None; response may be refusal or filtered')
+                # Treat None or empty/whitespace-only strings as empty responses
+                if content is None or (isinstance(content, str) and content.strip() == ''):
+                    # Attempt to serialize useful parts of the response for debugging
+                    try:
+                        if hasattr(resp, 'to_dict'):
+                            serial = resp.to_dict()
+                        else:
+                            # Fallback: try to capture common attributes or fallback to repr
+                            serial = {}
+                            try:
+                                serial['choices'] = [getattr(c, '__dict__', str(c)) for c in getattr(resp, 'choices', [])]
+                            except Exception:
+                                serial['choices'] = str(getattr(resp, 'choices', None))
+                            try:
+                                serial['raw'] = getattr(resp, 'text', None) or getattr(resp, 'body', None) or str(resp)
+                            except Exception:
+                                serial['raw'] = str(resp)
+                        try:
+                            logger.warning('OpenAI response empty content; full response: %s', json.dumps(serial, ensure_ascii=False)[:20000])
+                        except Exception:
+                            logger.warning('OpenAI response empty content; resp repr: %s', repr(serial))
+                    except Exception:
+                        logger.exception('Failed to log full OpenAI response for empty content: %s', repr(resp))
+
+                    logger.warning('OpenAI response content is None or empty; response may be refusal or filtered')
                     return None
                 return content.strip()
             except Exception as e:
                 logger.warning('Failed to extract content from response: %s', e)
+                try:
+                    txt = getattr(resp.choices[0], 'text', '')
+                    if txt and isinstance(txt, str) and txt.strip():
+                        return txt.strip()
+                except Exception:
+                    pass
                 return getattr(resp.choices[0], 'text', '').strip()
 
         except Exception as e:
@@ -288,8 +317,26 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         )
         # Support both newer structured responses and older text fields
         try:
-            return resp.choices[0].message.content.strip()
+            content = resp.choices[0].message.content
+            if content is None or (isinstance(content, str) and content.strip() == ''):
+                # Log full resp for debugging
+                try:
+                    if hasattr(resp, 'to_dict'):
+                        logger.warning('Final OpenAI response empty; full response: %s', json.dumps(resp.to_dict(), ensure_ascii=False)[:20000])
+                    else:
+                        logger.warning('Final OpenAI response empty; resp repr: %s', repr(resp))
+                except Exception:
+                    logger.exception('Failed to log final OpenAI response for empty content')
+                logger.warning('Final OpenAI response content empty; returning None')
+                return None
+            return content.strip()
         except Exception:
+            try:
+                txt = getattr(resp.choices[0], 'text', '')
+                if txt and isinstance(txt, str) and txt.strip():
+                    return txt.strip()
+            except Exception:
+                pass
             return getattr(resp.choices[0], 'text', '').strip()
     except Exception as e:
         # Log helpful, non-sensitive diagnostics to aid debugging in CI.

@@ -35,7 +35,7 @@ def _get_openai_client():
     return _go()
 
 
-def _chat_completion(client, model, messages, max_tokens=1200, temperature=0):
+def _chat_completion(client, model, messages, max_tokens=6000, temperature=0):
     try:
         import importlib
         worker_mod = importlib.import_module('workers.article_generator.worker')
@@ -99,10 +99,10 @@ class ArticleTranslator:
     def __init__(
         self,
         client=None,
-        model: str = 'gpt-4o-mini',  # Changed from gpt-5-mini due to reasoning token issue
-        stage1_max_tokens: int = 1600,
-        stage2_max_tokens: int = 1600,
-        stage3_max_tokens: int = 1600,
+        model: str = 'gpt-5-mini',  # Default model
+        stage1_max_tokens: int = 8000,
+        stage2_max_tokens: int = 8000,
+        stage3_max_tokens: int = 8000,
         stage1_temperature: float = 0.2,
         stage2_temperature: float = 0.4,
         stage3_temperature: float = 1.0,

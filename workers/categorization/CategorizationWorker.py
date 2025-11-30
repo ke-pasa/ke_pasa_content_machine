@@ -120,7 +120,7 @@ class CategorizationWorker:
                 if not docs:
                     break
 
-                model = 'gpt-4o-mini'
+                model = 'gpt-5-mini'
                 client = _get_openai_client()
                 # Process docs in parallel within this chunk
                 try:
@@ -193,7 +193,7 @@ class CategorizationWorker:
                             short_note = interest_result.get('short_analysis') or interest_result.get('short_note')
                             category_field = interest_result.get('category')
                             comment_field = interest_result.get('comment') or interest_result.get('commentary')
-                            # New publishing fields (optional in LLM output)
+
                             publish_on_site = interest_result.get('publish_on_site')
                             publish_on_social = interest_result.get('publish_on_social')
                             newsletter_field = interest_result.get('newsletter')
@@ -201,7 +201,6 @@ class CategorizationWorker:
                         record_end = time.perf_counter()
                         processing_time_ms = int((record_end - record_start) * 1000)
 
-                        # Determine status: SKIPPED if clearly low-interest
                         status_field = 'CATEGORIZED'
                         try:
                             if total_score is not None:

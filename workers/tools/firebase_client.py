@@ -132,65 +132,8 @@ class FirebaseClient:
         If the Firestore client is not available, messages are printed to
         stdout/stderr as a fallback.
         """
-        try:
-            if os.getenv('FIREBASE_LOG_DISABLED', '0') == '1':
-                return
-        except Exception:
-            pass
-        if not self.db:
-            print(f"[{level.upper()}] {message}")
-            return
-        
-        try:
-            log_data = {
-                'message': message,
-                'level': level,
-                'timestamp': datetime.now().isoformat(),
-                'created_at': firestore_types.SERVER_TIMESTAMP
-            }
-            
-            self.db.collection(COLLECTIONS['LOG']).add(log_data)
-            
-        except Exception as e:
-            print(f"Logging error: {e}")
-            print(f"[{level.upper()}] {message}")
-    
-    def save_cluster(self, cluster: Dict[str, Any]) -> bool:
-        """
-        Save a cluster document into Firestore.
+        pass
 
-        Args:
-            cluster: Dictionary containing cluster data. Expected to include
-                required fields such as 'cluster_id' and 'topic_summary'.
-
-        Returns:
-            True when the save succeeded, False otherwise.
-        """
-        if not self.db:
-            self._log_event("Firebase is not initialized", "error")
-            return False
-        
-        try:
-            # Check required fields
-            required_fields = ['cluster_id', 'topic_summary', 'sources']
-            for field in required_fields:
-                if field not in cluster:
-                    raise ValueError(f"Missing required field: {field}")
-            
-            # Add timestamps
-            cluster['created_at'] = firestore_types.SERVER_TIMESTAMP
-            cluster['updated_at'] = firestore_types.SERVER_TIMESTAMP
-            
-            # Save to the clusters collection
-            doc_ref = self.db.collection(COLLECTIONS['CLUSTERS']).document(cluster['cluster_id'])
-            doc_ref.set(cluster, merge=True)
-            
-            self._log_event(f"Cluster saved: {cluster['cluster_id']}", "info")
-            return True
-            
-        except Exception as e:
-            self._log_event(f"Error saving cluster: {e}", "error")
-            return False
     
     def get_unpublished_clusters(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -225,29 +168,6 @@ class FirebaseClient:
             self._log_event(f"Error fetching clusters: {e}", "error")
             return []
 
-
-    def mark_cluster_as_published(self, cluster_id: str) -> bool:
-        if not self.db:
-            self._log_event("Firebase is not initialized", "error")
-            return False
-        try:
-            cluster_ref = self.db.collection(COLLECTIONS['CLUSTERS']).document(cluster_id)
-            cluster_ref.update({
-                'published': True,
-                'published_at': firestore_types.SERVER_TIMESTAMP,
-                'updated_at': firestore_types.SERVER_TIMESTAMP
-            })
-            published_data = {
-                'cluster_id': cluster_id,
-                'published_at': firestore_types.SERVER_TIMESTAMP,
-                'created_at': firestore_types.SERVER_TIMESTAMP
-            }
-            self.db.collection(COLLECTIONS['PUBLISHED']).add(published_data)
-            self._log_event(f"Cluster marked as published: {cluster_id}", "info")
-            return True
-        except Exception as e:
-            self._log_event(f"Error marking cluster as published: {e}", "error")
-            return False
 
     def is_duplicate_source(self, link: str) -> bool:
         """Return True if a source document with the given link already exists."""
@@ -385,7 +305,7 @@ class FirebaseClient:
             if not doc.exists:
                 default_settings = {
                     'cluster_batch_size': 20,
-                    'llm_model': 'gpt-4o-mini',
+                    'llm_model': 'gpt-5-mini',
                     'publishing_times': ['09:00', '14:00', '20:00'],
                     'publishing_windows': [
                         {"start": "09:00", "end": "11:00"},
