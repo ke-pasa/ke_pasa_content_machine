@@ -45,9 +45,9 @@ class ArticleGenerator:
         self.db = _get_firebase_client().db
         self.instance_id = str(uuid.uuid4())[:8]
         self.translator = translator or ArticleTranslator(
-            stage1_max_tokens=2000,
-            stage2_max_tokens=2000,
-            stage3_max_tokens=2000
+            stage1_max_tokens=8000,
+            stage2_max_tokens=8000,
+            stage3_max_tokens=8000
         )
         self.logger = logging.getLogger('workers.article_generator')
         if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
