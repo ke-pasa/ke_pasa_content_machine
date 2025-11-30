@@ -1,24 +1,21 @@
 import uuid
 import json
-from datetime import datetime, timezone, timedelta
 import time
 import math
-from pathlib import Path
+import re
 import logging
 import threading
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import re
-from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
 try:
     from readability import Document
-except Exception:
-    try:
-        from readability.readability import Document
-    except Exception:
-        Document = None
+except ImportError:
+    Document = None
 
 from .translator import ArticleTranslator
 
@@ -38,7 +35,6 @@ def _get_firebase_client():
 class ArticleGenerator:
 
     def __init__(self, translator: ArticleTranslator | None = None, batch_size: int | None = None):
-        # This worker processes all matching articles by default (no batching)
         try:
             self.batch_size = int(batch_size) if batch_size is not None else None
             if self.batch_size is not None and self.batch_size < 0:
@@ -54,97 +50,63 @@ class ArticleGenerator:
             stage3_max_tokens=2000
         )
         self.logger = logging.getLogger('workers.article_generator')
-        # Ensure console output for the worker during local runs / CI
-        try:
-            if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
-                ch = logging.StreamHandler()
-                ch.setLevel(logging.DEBUG)
-                fmt = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
-                ch.setFormatter(fmt)
-                self.logger.addHandler(ch)
-        except Exception:
-            pass
+        if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.DEBUG)
+            ch.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+            self.logger.addHandler(ch)
 
     def _get_total_score(self, data: dict) -> float:
-        """Extract a float total_score from article data.
-
-        Tries top-level 'total_score', then nested interest.total_score or interest.total.
-        Returns 0.0 on missing/unparseable values.
-        """
+        """Extract float total_score from article data."""
         try:
-            maybe = data.get('total_score')
-            if maybe is None:
+            score = data.get('total_score')
+            if score is None:
                 interest = data.get('interest') or {}
-                maybe = interest.get('total_score') or interest.get('total')
-            if maybe is None:
-                return 0.0
-            return float(maybe)
+                score = interest.get('total_score') or interest.get('total')
+            return float(score) if score is not None else 0.0
         except Exception:
             return 0.0
 
     def _save_generated_article(self, doc_id: str, source: dict, total_score: float = 0.0,
                                 translation_result: dict | None = None, status: str = 'UNKNOWN', metadata: dict | None = None) -> None:
-        """Persist generated article and metadata into `articles_ru` collection.
-
-        Uses the original doc id so it's easy to join with `articles` collection.
-        Stores stage outputs, combined flags, model and worker info.
-        """
+        """Persist generated article and metadata into articles_ru collection."""
         now = datetime.now(timezone.utc).isoformat()
-        metadata = metadata or {}
         tr = translation_result or {}
 
-        # Best-effort RU fields
-        title_ru = tr.get('title_ru') or None
-        description_ru = tr.get('description_ru') or None
-        content_ru = tr.get('content_ru') or tr.get('translation_ru') or None
+        title_ru = tr.get('title_ru')
+        description_ru = tr.get('description_ru')
+        content_ru = tr.get('content_ru') or tr.get('translation_ru')
 
-        # Stage outputs from editorial_result
         editorial_result = tr.get('editorial_result') or {}
         stage1 = editorial_result.get('stage1') or {}
         stage2 = editorial_result.get('stage2') or {}
         stage3 = editorial_result.get('stage3') or {}
         stage4 = editorial_result.get('stage4') or {}
         
-        # Stage5 (markdown) and Stage6 (telegram) from top level
         publish_md = tr.get('publish_md')
         tg_preview = tr.get('tg_preview')
         stage6_telegram = tr.get('stage6_telegram') or {}
-        # Ensure canonical telegram_final contains tg_preview so publisher can rely on it
-        try:
-            if tg_preview:
-                if not isinstance(stage6_telegram, dict):
-                    stage6_telegram = {'tg_preview': tg_preview}
-                else:
-                    # Only fill missing preview value; preserve any existing fields
-                    if not stage6_telegram.get('tg_preview'):
-                        stage6_telegram['tg_preview'] = tg_preview
-        except Exception:
-            # Best-effort: if anything goes wrong, leave stage6_telegram as-is
-            pass
+        
+        if tg_preview and not stage6_telegram.get('tg_preview'):
+            stage6_telegram = {**stage6_telegram, 'tg_preview': tg_preview}
 
-        # Combine flags from various sources
         combined_flags = []
-        for f in (tr.get('flags') or [], tr.get('publish_flags') or [], tr.get('tg_flags') or []):
-            combined_flags.extend([x for x in (f or []) if isinstance(x, str)])
+        for flag_list in (tr.get('flags') or [], tr.get('publish_flags') or [], tr.get('tg_flags') or []):
+            combined_flags.extend(f for f in (flag_list or []) if isinstance(f, str))
 
         payload = {
             'article_id': doc_id,
             'source_url': source.get('link') or source.get('url'),
-            'source_link': source.get('link') or source.get('url'),  # alias for compatibility
+            'source_link': source.get('link') or source.get('url'),
             'source_name': source.get('source') or source.get('source_name'),
-            'source_published_at': source.get('published_at') or source.get('pub_date') or None,
-            'image_url': source.get('image') or source.get('image_url') or None,
+            'source_published_at': source.get('published_at') or source.get('pub_date'),
+            'image_url': source.get('image') or source.get('image_url'),
             'status': status,
             'total_score': total_score,
             'title_ru': title_ru,
             'description_ru': description_ru,
             'content_ru': content_ru,
-            'stages': {
-                'stage1': stage1,
-                'stage2': stage2,
-                'stage3': stage3,
-                'stage4': stage4,
-            },
+            'stages': {'stage1': stage1, 'stage2': stage2, 'stage3': stage3, 'stage4': stage4},
             'publish_md': publish_md,
             'publish_flags': tr.get('publish_flags') or [],
             'telegram_preview': tg_preview,
@@ -158,132 +120,74 @@ class ArticleGenerator:
         try:
             doc_ref = self.db.collection('articles_ru').document(doc_id)
             doc_ref.set(payload, merge=True)
-            # verify write by reading back a small snapshot
-            try:
-                read_back = doc_ref.get()
-                if getattr(read_back, 'exists', False):
-                    try:
-                        rb = read_back.to_dict() or {}
-                        # log a concise confirmation with key fields
-                        self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)',
-                                         doc_id,
-                                         len((rb.get('title_ru') or '') if isinstance(rb.get('title_ru', ''), str) else str(rb.get('title_ru'))),
-                                         len((rb.get('content_ru') or '') if isinstance(rb.get('content_ru', ''), str) else str(rb.get('content_ru'))))
-                    except Exception:
-                        self.logger.info('Saved articles_ru %s (read-back succeeded)', doc_id)
-                    # Also save publish markdown locally when available
-                    try:
-                        if tr.get('publish_md'):
-                            try:
-                                # Build minimal article_metadata for markdown save
-                                article_metadata = {'image_url': source.get('image') or source.get('image_url')}
-                                self._save_publish_markdown(doc_id, source, article_metadata, tr)
-                            except Exception:
-                                self.logger.exception('Failed to save publish markdown after articles_ru write for %s', doc_id)
-                    except Exception:
-                        pass
-                else:
-                    self.logger.warning('Write appeared to succeed but articles_ru doc %s does not exist after write', doc_id)
-            except Exception:
-                self.logger.exception('Failed to verify write for articles_ru %s', doc_id)
+            read_back = doc_ref.get()
+            if getattr(read_back, 'exists', False):
+                rb = read_back.to_dict() or {}
+                self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)',
+                               doc_id, len(str(rb.get('title_ru', ''))), len(str(rb.get('content_ru', ''))))
+                if tr.get('publish_md'):
+                    article_metadata = {'image_url': source.get('image') or source.get('image_url')}
+                    self._save_publish_markdown(doc_id, source, article_metadata, tr)
+            else:
+                self.logger.warning('Write succeeded but articles_ru doc %s does not exist', doc_id)
         except Exception:
-            logging.exception("Failed to write generated article %s to articles_ru", doc_id)
+            self.logger.exception('Failed to write generated article %s to articles_ru', doc_id)
 
     def _fetch_article_content(self, url: str) -> Optional[str]:
-        """
-        Fetch full article text from URL.
-        
-        Uses BeautifulSoup and readability-lxml to extract main content from web pages.
-        
-        Args:
-            url: Article URL
-            
-        Returns:
-            Full article text or None if extraction failed
-        """
+        """Fetch full article text from URL using BeautifulSoup and readability."""
         if not url:
             return None
             
         try:
-            # Download page
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             
-            # Fix encoding if needed
             if response.encoding == 'ISO-8859-1':
                 response.encoding = response.apparent_encoding
             
-            # Parse HTML
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Remove unwanted elements
             for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
                 element.decompose()
             
-            # Remove ad blocks
-            ad_selectors = [
-                '[class*="ad"]', '[class*="advertisement"]', '[class*="banner"]',
-                '[id*="ad"]', '[id*="advertisement"]', '[id*="banner"]',
-                '[class*="social"]', '[class*="share"]', '[class*="comment"]'
-            ]
+            ad_selectors = ['[class*="ad"]', '[class*="advertisement"]', '[class*="banner"]',
+                          '[id*="ad"]', '[id*="advertisement"]', '[id*="banner"]',
+                          '[class*="social"]', '[class*="share"]', '[class*="comment"]']
             for selector in ad_selectors:
                 for element in soup.select(selector):
                     element.decompose()
             
-            # Try to find main content using BeautifulSoup
-            content_selectors = [
-                'article',
-                '[class*="content"]',
-                '[class*="article"]',
-                '[class*="post"]',
-                '[class*="entry"]',
-                '.main-content',
-                '.article-content',
-                '.post-content',
-                '.entry-content',
-                '#content',
-                '#article',
-                '#post'
-            ]
+            content_selectors = ['article', '[class*="content"]', '[class*="article"]',
+                               '[class*="post"]', '[class*="entry"]', '.main-content',
+                               '.article-content', '.post-content', '.entry-content',
+                               '#content', '#article', '#post']
             
             content = None
             for selector in content_selectors:
-                elements = soup.select(selector)
-                if elements:
-                    # Select the largest element
-                    largest_element = max(elements, key=lambda x: len(x.get_text()))
-                    if len(largest_element.get_text().strip()) > 100:
-                        content = largest_element
+                if elements := soup.select(selector):
+                    largest = max(elements, key=lambda x: len(x.get_text()))
+                    if len(largest.get_text().strip()) > 100:
+                        content = largest
                         break
             
-            # If BeautifulSoup didn't find content, use readability-lxml
-            if not content:
+            if not content and Document:
                 try:
                     doc = Document(response.text)
-                    content_html = doc.summary()
-                    content_soup = BeautifulSoup(content_html, 'html.parser')
-                    content = content_soup
+                    content = BeautifulSoup(doc.summary(), 'html.parser')
                 except Exception as e:
-                    self.logger.debug('readability-lxml failed to extract text from %s: %s', url, e)
+                    self.logger.debug('readability failed for %s: %s', url, e)
                     return None
             
             if not content:
                 return None
             
-            # Extract text
             text = content.get_text(separator=' ', strip=True)
+            text = re.sub(r'\s+', ' ', text)
+            text = re.sub(r'\n\s*\n', '\n', text).strip()
             
-            # Clean text
-            text = re.sub(r'\s+', ' ', text)  # Remove extra spaces
-            text = re.sub(r'\n\s*\n', '\n', text)  # Remove empty lines
-            text = text.strip()
-            
-            # Check if text is long enough
             if len(text) < 50:
-                self.logger.debug('Extracted text too short from %s: %d chars', url, len(text))
+                self.logger.debug('Text too short from %s: %d chars', url, len(text))
                 return None
             
             self.logger.info('Successfully fetched article content from %s: %d chars', url, len(text))
@@ -294,45 +198,21 @@ class ArticleGenerator:
             return None
 
     def _phase1_prescan_and_skip(self) -> int:
-        """
-        Phase 1: Pre-scan and skip low-quality articles.
-        
-        Mark all currently CATEGORIZED articles with total_score < 60 or older than 5 days as SKIPPED.
-        This filtering step runs BEFORE translation to avoid wasting resources on low-quality content.
-        
-        Returns:
-            int: Number of articles marked as SKIPPED
-        """
+        """Mark CATEGORIZED articles with score < 60 or age > 3 days as SKIPPED."""
         low_score_count = 0
-        skipped_ids = []
-        db = self.db
         page_size = 500
         last_snapshot = None
         page_index = 0
         
         try:
             while True:
-                try:
-                    query = db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(page_size)
-                    if last_snapshot is not None:
-                        try:
-                            query = query.start_after(last_snapshot)
-                        except Exception:
-                            # some test fakes may not support start_after
-                            pass
+                query = self.db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(page_size)
+                if last_snapshot is not None:
+                    query = query.start_after(last_snapshot)
 
-                    self.logger.info('Pre-scan page %d: querying articles (after=%s)', page_index, getattr(last_snapshot, 'id', None))
-                    docs = list(query.stream())
-                    self.logger.info('Pre-scan page %d: fetched %d docs', page_index, len(docs))
-                except Exception as exc:
-                    # retry once after a short backoff for transient issues
-                    self.logger.exception('Pre-scan query failed, retrying once: %s', exc)
-                    try:
-                        time.sleep(1)
-                        docs = list(query.stream())
-                    except Exception as exc2:
-                        self.logger.exception('Pre-scan retry failed: %s', exc2)
-                        break
+                self.logger.info('Pre-scan page %d: querying articles', page_index)
+                docs = list(query.stream())
+                self.logger.info('Pre-scan page %d: fetched %d docs', page_index, len(docs))
 
                 if not docs:
                     break
@@ -341,59 +221,42 @@ class ArticleGenerator:
                     try:
                         data = d.to_dict() or {}
                         total_score = self._get_total_score(data)
-                        
-
                         skip_reason = None
                         age_days = None
                         
                         if total_score < 60:
                             skip_reason = 'low_score'
                         else:
-                            # Check article age - use published_at or fallback to created_at
                             date_field = data.get('published_at') or data.get('published') or data.get('pub_date') or data.get('created_at')
                             if date_field:
                                 try:
-                                    # Parse ISO format timestamp or Firestore timestamp
-                                    if isinstance(date_field, str):
-                                        pub_dt = datetime.fromisoformat(date_field.replace('Z', '+00:00'))
-                                    else:
-                                        # Firestore timestamp object
-                                        pub_dt = date_field
-                                    
-                                    now_utc = datetime.now(timezone.utc)
-                                    age_days = (now_utc - pub_dt).total_seconds() / 86400
-                                    
+                                    pub_dt = datetime.fromisoformat(date_field.replace('Z', '+00:00')) if isinstance(date_field, str) else date_field
+                                    age_days = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 86400
                                     if age_days > 3:
                                         skip_reason = 'too_old'
-                                except Exception as parse_err:
-                                    self.logger.debug('Failed to parse date for %s: %s', d.id, parse_err)
+                                except Exception:
+                                    pass
 
                         if skip_reason:
-                            try:
-                                db.collection('articles').document(d.id).set({
-                                    'status': 'SKIPPED',
-                                    'skipped_reason': skip_reason,
-                                    'total_score': total_score,
-                                    'skipped_at': datetime.now(timezone.utc).isoformat(),
-                                    'updated_at': datetime.now(timezone.utc).isoformat(),
-                                }, merge=True)
-                                
-                                if skip_reason == 'low_score':
-                                    self.logger.info('pre-scan: marked %s SKIPPED (low_score=%.1f)', d.id, float(total_score))
-                                else:
-                                    self.logger.info('pre-scan: marked %s SKIPPED (too_old, age=%.1f days)', d.id, age_days)
-                                
-                                skipped_ids.append(d.id)
-                                low_score_count += 1
-                            except Exception:
-                                self.logger.exception('Failed to mark article %s as SKIPPED', d.id)
+                            self.db.collection('articles').document(d.id).set({
+                                'status': 'SKIPPED',
+                                'skipped_reason': skip_reason,
+                                'total_score': total_score,
+                                'skipped_at': datetime.now(timezone.utc).isoformat(),
+                                'updated_at': datetime.now(timezone.utc).isoformat(),
+                            }, merge=True)
+                            
+                            log_msg = f'pre-scan: marked {d.id} SKIPPED ({skip_reason}'
+                            if skip_reason == 'low_score':
+                                self.logger.info(log_msg + f', score={total_score:.1f})')
+                            else:
+                                self.logger.info(log_msg + f', age={age_days:.1f} days)')
+                            low_score_count += 1
                     except Exception:
-                        # protect the sweep from single-doc failures
-                        self.logger.exception('Error while evaluating score for document %s', getattr(d, 'id', '?'))
+                        self.logger.exception('Error evaluating document %s', getattr(d, 'id', '?'))
 
                 last_snapshot = docs[-1]
                 page_index += 1
-                # if we received fewer docs than page_size, we've reached the end
                 if len(docs) < page_size:
                     break
             
@@ -401,59 +264,42 @@ class ArticleGenerator:
             return low_score_count
             
         except Exception:
-            # If pre-scan fails, log and return 0
-            logging.exception('Pre-scan for low-score articles failed')
+            self.logger.exception('Pre-scan for low-score articles failed')
             return 0
 
-    def _prepare_article_content(self, doc_id: str, data: dict) -> tuple[str, str, str, str, str, float]:
-        """
-        Extract and prepare article content for translation.
-        
-        Returns:
-            tuple: (title, description, content, article_url, content_source, total_score)
-        """
+    def _prepare_article_content(self, doc_id: str, data: dict) -> Tuple[str, str, str, Optional[str], str, float]:
+        """Extract and prepare article content for translation."""
         title = data.get('title', '') or ''
         description = data.get('description', '') or ''
         content = data.get('content', '') or ''
         article_url = data.get('link') or data.get('url')
         content_source = 'stored'
         
-        # Try to fetch full article content from URL
         if article_url:
             fetched_content = self._fetch_article_content(article_url)
-            # If full fetched content available, persist a copy to logs for auditing
-            try:
-                if fetched_content:
+            if fetched_content:
+                try:
                     logs_dir = Path(__file__).resolve().parent.parent.parent / 'logs' / 'fetched_articles'
                     logs_dir.mkdir(parents=True, exist_ok=True)
-                    fetched_file = logs_dir / f"{doc_id}_fetched.txt"
-                    with open(fetched_file, 'w', encoding='utf-8') as fh:
-                        fh.write(fetched_content)
-                    self.logger.info('Wrote fetched content to %s', fetched_file)
-            except Exception as wf_err:
-                self.logger.exception('Failed to write fetched content for %s: %s', doc_id, wf_err)
+                    (logs_dir / f"{doc_id}_fetched.txt").write_text(fetched_content, encoding='utf-8')
+                    self.logger.info('Wrote fetched content to logs')
+                except Exception:
+                    pass
             
             if fetched_content and len(fetched_content) > len(content):
                 self.logger.info('Using fetched content for %s (fetched: %d chars, stored: %d chars)', 
                                doc_id, len(fetched_content), len(content))
                 content = fetched_content
                 content_source = 'fetched'
-            elif fetched_content:
-                self.logger.debug('Fetched content shorter than stored for %s, using stored content', doc_id)
-            else:
-                self.logger.debug('Failed to fetch content for %s, using stored content', doc_id)
-        else:
-            self.logger.debug('No URL available for %s, using stored content', doc_id)
         
-        total_score = self._get_total_score(data)
-        return title, description, content, article_url, content_source, total_score
+        return title, description, content, article_url, content_source, self._get_total_score(data)
 
-    def _build_article_metadata(self, doc_id: str, data: dict, article_url: str, fetched_content: str, 
+    def _build_article_metadata(self, doc_id: str, data: dict, article_url: Optional[str], fetched_content: Optional[str], 
                                 content_source: str, total_score: float) -> dict:
         """Build metadata dictionary for translation."""
         return {
             'url': article_url,
-            'image_url': data.get('image') or data.get('image_url') or None,
+            'image_url': data.get('image') or data.get('image_url'),
             'source': data.get('source') or data.get('source_name'),
             'published_at': data.get('published_at') or data.get('published') or data.get('pub_date'),
             'total_score': total_score,
@@ -462,21 +308,21 @@ class ArticleGenerator:
             'content_source': content_source,
         }
 
-    def _log_translation_stages(self, doc_id: str, translation_result: dict, trans_duration: float) -> None:
-        """Log concise JSON-structured stage completion information."""
+    def _log_translation_stages(self, doc_id: str, translation_result: Optional[dict], trans_duration: float) -> None:
+        """Log stage completion information."""
         tr = translation_result or {}
         translation_ru = tr.get('translation_ru') or tr.get('content_ru') or ''
-        translation_len = len(translation_ru) if isinstance(translation_ru, str) else 0
+        editorial = tr.get('editorial_result', {})
 
         stage_log = {
             'doc_id': doc_id,
-            'stage1': bool(tr.get('editorial_result', {}).get('stage1')),
-            'stage2': bool(tr.get('editorial_result', {}).get('stage2')),
-            'stage3': bool(tr.get('editorial_result', {}).get('stage3')),
-            'stage4': bool(tr.get('editorial_result', {}).get('stage4')),
+            'stage1': bool(editorial.get('stage1')),
+            'stage2': bool(editorial.get('stage2')),
+            'stage3': bool(editorial.get('stage3')),
+            'stage4': bool(editorial.get('stage4')),
             'publish_md': bool(tr.get('publish_md')),
             'telegram': bool(tr.get('tg_preview')),
-            'translation_len': translation_len,
+            'translation_len': len(translation_ru) if isinstance(translation_ru, str) else 0,
             'flags': [str(x) for x in (tr.get('flags') or [])][:20],
             'translator_seconds': round(trans_duration, 3),
         }
@@ -804,8 +650,6 @@ class ArticleGenerator:
             new_fm_lines = [f'title: "{esc_title2}"', f'description: "{esc_desc2}"', f'slug: {slug}', f'image: {image_val or ""}']
             new_md = '---\n' + '\n'.join(new_fm_lines) + '\n---\n\n' + md
 
-        # Do not insert inline image markdown; images are kept in frontmatter only.
-
         repo_root = Path(__file__).resolve().parent.parent.parent
         articles_dir = repo_root / 'articles'
         articles_dir.mkdir(parents=True, exist_ok=True)
@@ -898,19 +742,11 @@ class ArticleGenerator:
 
         return results
 
-    def process_articles(self) -> dict:
-        """
-        Two-phase article processing pipeline:
-        1. Pre-scan: Mark low-quality articles (total_score < 60) as SKIPPED
-        2. Translation: Translate high-quality articles to Russian and save to articles_ru
-        
-        Returns dict with counts: processed, skipped, translated, errors
-        """
-
+    def process_articles(self) -> dict[str, any]:
+        """Two-phase pipeline: 1) Mark low-quality as SKIPPED, 2) Translate high-quality to Russian."""
         results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
 
         try:
-            # startup log for CI visibility
             self.logger.info('ArticleGenerator starting; instance=%s batch_size=%s', self.instance_id, self.batch_size)
 
             # Respect configured batch_size when provided, otherwise process all available documents
