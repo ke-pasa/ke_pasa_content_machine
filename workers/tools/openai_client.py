@@ -170,7 +170,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             req_kwargs = {
                 'model': model,
                 'input': messages,
-                'max_tokens': max_tokens,  # Responses API uses max_tokens, not max_completion_tokens
+                'max_output_tokens': max_tokens,  # Responses API uses max_output_tokens
                 'temperature': temperature,
                 'stream': False,
             }
