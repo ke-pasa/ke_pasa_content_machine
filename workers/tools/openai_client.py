@@ -191,11 +191,34 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             status = _extract_status(e)
             resp_text = _extract_response_text(e)
 
-            # If status is a 4xx, do not retry — it's a client error
+            # If status is a 4xx, check if it's unsupported parameter error
             if status is not None and 400 <= status < 500:
                 logger.warning('OpenAI request failed with client error status=%s; not retrying', status)
                 if resp_text:
                     logger.warning('Response snippet: %s', resp_text[:500])
+                
+                # Check if error is about unsupported parameter
+                if resp_text:
+                    resp_lower = resp_text.lower()
+                    # Try without temperature if it's unsupported
+                    if 'temperature' in resp_lower and ('unsupported' in resp_lower or 'not supported' in resp_lower):
+                        logger.warning('Temperature not supported for model=%s; retrying without it', model)
+                        try:
+                            retry_kwargs = {
+                                'model': model,
+                                'input': messages,
+                                'max_output_tokens': max_tokens,
+                                'stream': False,
+                            }
+                            if reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
+                                retry_kwargs['reasoning'] = {'effort': reasoning_effort.lower()}
+                            resp2 = client.responses.create(**retry_kwargs)
+                            content2 = _extract_content(resp2)
+                            if content2:
+                                return content2
+                        except Exception as retry_err:
+                            logger.warning('Retry without temperature failed: %s', retry_err)
+                
                 return None
 
             # Server errors (5xx) or unknown: retry with backoff
