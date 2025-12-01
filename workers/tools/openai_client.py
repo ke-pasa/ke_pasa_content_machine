@@ -170,10 +170,13 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             req_kwargs = {
                 'model': model,
                 'input': messages,
-                'max_output_tokens': max_tokens,  # Responses API uses max_output_tokens
-                'temperature': temperature,
+                'max_output_tokens': max_tokens,
                 'stream': False,
             }
+            
+            # GPT-5 models don't support temperature
+            if not model.startswith('gpt-5'):
+                req_kwargs['temperature'] = temperature
             
             # Add reasoning parameter if specified
             if reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
@@ -191,33 +194,9 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             status = _extract_status(e)
             resp_text = _extract_response_text(e)
 
-            # If status is a 4xx, check if it's unsupported parameter error
+            # If status is a 4xx, it's a client error - don't retry
             if status is not None and 400 <= status < 500:
-                # Check if error is about unsupported parameter (check before logging)
-                error_str = str(e).lower()
-                if resp_text:
-                    error_str = (error_str + '\n' + resp_text).lower()
-                
-                # Try without temperature if it's unsupported
-                if 'temperature' in error_str and ('unsupported' in error_str or 'not supported' in error_str):
-                    logger.warning('Temperature not supported for model=%s; retrying without it', model)
-                    try:
-                        retry_kwargs = {
-                            'model': model,
-                            'input': messages,
-                            'max_output_tokens': max_tokens,
-                            'stream': False,
-                        }
-                        if reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
-                            retry_kwargs['reasoning'] = {'effort': reasoning_effort.lower()}
-                        resp2 = client.responses.create(**retry_kwargs)
-                        content2 = _extract_content(resp2)
-                        if content2:
-                            return content2
-                    except Exception as retry_err:
-                        logger.warning('Retry without temperature failed: %s', retry_err)
-                
-                logger.warning('OpenAI request failed with client error status=%s; not retrying', status)
+                logger.warning('OpenAI request failed with client error status=%s', status)
                 if resp_text:
                     logger.warning('Response snippet: %s', resp_text[:500])
                 return None
