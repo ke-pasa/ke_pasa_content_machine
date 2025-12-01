@@ -115,6 +115,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
 
     max_attempts = 3
     UNSUPPORTED_TEMPERATURE_MODELS = {'gpt-5-mini'}
+    REASONING_MODELS = {'o1-preview', 'o1-mini', 'o1'}  # Models that support reasoning tokens
 
     def _extract_content(resp) -> Optional[str]:
         """Extract content from OpenAI response, with logging for empty responses."""
@@ -177,9 +178,16 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 'model': model,
                 'messages': messages,
                 'max_completion_tokens': max_tokens,
-                'max_reasoning_tokens': 0,  # Disable chain-of-thought reasoning
                 'stream': False,
             }
+            
+            # Only include max_reasoning_tokens for models that support it
+            try:
+                if model in REASONING_MODELS:
+                    req_kwargs['max_reasoning_tokens'] = 0  # Disable reasoning for consistency
+            except Exception:
+                pass
+            
             # Only include temperature when the model is known to accept it and a value was provided
             try:
                 if temperature is not None and model not in UNSUPPORTED_TEMPERATURE_MODELS:
@@ -218,13 +226,15 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     if 'temperature' in combined and ('unsupported' in combined or 'does not support' in combined):
                         logger.warning('Detected unsupported temperature for model=%s; retrying without temperature', model)
                         try:
-                            resp2 = client.chat.completions.create(
-                                model=model,
-                                messages=messages,
-                                max_completion_tokens=max_tokens,
-                                max_reasoning_tokens=0,
-                                stream=False
-                            )
+                            retry_kwargs = {
+                                'model': model,
+                                'messages': messages,
+                                'max_completion_tokens': max_tokens,
+                                'stream': False
+                            }
+                            if model in REASONING_MODELS:
+                                retry_kwargs['max_reasoning_tokens'] = 0
+                            resp2 = client.chat.completions.create(**retry_kwargs)
                             return _extract_content(resp2)
                         except Exception:
                             logger.exception('Retry without temperature also failed')
