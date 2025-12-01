@@ -72,8 +72,6 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
 
     logger.debug('OpenAI request: model=%s messages=%d max_tokens=%d', model, msg_count, max_tokens)
 
-    # Build a safe, truncated payload snippet for logging to aid debugging without
-    # dumping possibly huge or sensitive content. Each message content is truncated.
     try:
         snippet_messages = []
         if isinstance(messages, list):
@@ -93,7 +91,6 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         except Exception:
             logger.debug('OpenAI payload snippet available but failed to serialize details')
     except Exception:
-        # Don't fail on logging preparations
         pass
 
     # Simple payload size guard to catch accidentally huge inputs (helps avoid 400s)
@@ -117,10 +114,62 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         pass
 
     max_attempts = 3
-    # Models that do not accept a non-default temperature parameter.
-    # Add model names here if you encounter similar 400 errors for other models.
-    # Note: gpt-5-mini has reasoning token issue (uses all tokens for internal reasoning, returns empty content)
     UNSUPPORTED_TEMPERATURE_MODELS = {'gpt-5-mini'}
+
+    def _extract_content(resp) -> Optional[str]:
+        """Extract content from OpenAI response, with logging for empty responses."""
+        try:
+            content = resp.choices[0].message.content
+            if content is None or (isinstance(content, str) and content.strip() == ''):
+                try:
+                    if hasattr(resp, 'to_dict'):
+                        serial = resp.to_dict()
+                    else:
+                        serial = {'choices': [getattr(c, '__dict__', str(c)) for c in getattr(resp, 'choices', [])]}
+                    logger.warning('OpenAI response empty content; full response: %s', json.dumps(serial, ensure_ascii=False)[:20000])
+                except Exception:
+                    logger.warning('OpenAI response empty content; resp repr: %s', repr(resp))
+                return None
+            return content.strip()
+        except Exception:
+            try:
+                txt = getattr(resp.choices[0], 'text', '')
+                if txt and isinstance(txt, str) and txt.strip():
+                    return txt.strip()
+            except Exception:
+                pass
+        return None
+
+    def _extract_status(e: Exception) -> Optional[int]:
+        """Extract HTTP status code from exception."""
+        try:
+            if hasattr(e, 'response') and getattr(e.response, 'status_code', None) is not None:
+                return int(getattr(e.response, 'status_code'))
+            elif hasattr(e, 'status_code'):
+                return int(getattr(e, 'status_code'))
+            elif hasattr(e, 'http_status'):
+                return int(getattr(e, 'http_status'))
+            elif hasattr(e, 'code'):
+                try:
+                    return int(getattr(e, 'code'))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return None
+
+    def _extract_response_text(e: Exception) -> Optional[str]:
+        """Extract response body text from exception for logging."""
+        try:
+            if hasattr(e, 'response'):
+                resp = getattr(e, 'response')
+                return getattr(resp, 'text', None) or getattr(resp, 'body', None)
+            if hasattr(e, 'response_text'):
+                return getattr(e, 'response_text')
+        except Exception:
+            pass
+        return None
+
     for attempt in range(1, max_attempts + 1):
         try:
             # Build kwargs conditionally to avoid sending parameters unsupported by some models
@@ -128,6 +177,8 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 'model': model,
                 'messages': messages,
                 'max_completion_tokens': max_tokens,
+                'max_reasoning_tokens': 0,  # Disable chain-of-thought reasoning
+                'stream': False,
             }
             # Only include temperature when the model is known to accept it and a value was provided
             try:
@@ -138,239 +189,69 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 pass
 
             resp = client.chat.completions.create(**req_kwargs)
-            # Log full response for debugging when content extraction fails
-            try:
-                logger.debug('OpenAI response received: choices=%d finish_reason=%s', 
-                           len(resp.choices) if hasattr(resp, 'choices') else 0,
-                           resp.choices[0].finish_reason if (hasattr(resp, 'choices') and resp.choices) else 'N/A')
-                if hasattr(resp, 'choices') and resp.choices:
-                    choice = resp.choices[0]
-                    logger.debug('Choice 0: message=%s content_type=%s content_len=%s',
-                               type(choice.message) if hasattr(choice, 'message') else 'N/A',
-                               type(choice.message.content) if (hasattr(choice, 'message') and hasattr(choice.message, 'content')) else 'N/A',
-                               len(choice.message.content) if (hasattr(choice, 'message') and hasattr(choice.message, 'content') and choice.message.content) else 0)
-            except Exception:
-                pass
-            
-            # Support both newer structured responses and older text fields
-            try:
-                content = resp.choices[0].message.content
-                # Treat None or empty/whitespace-only strings as empty responses
-                if content is None or (isinstance(content, str) and content.strip() == ''):
-                    # Attempt to serialize useful parts of the response for debugging
-                    try:
-                        if hasattr(resp, 'to_dict'):
-                            serial = resp.to_dict()
-                        else:
-                            # Fallback: try to capture common attributes or fallback to repr
-                            serial = {}
-                            try:
-                                serial['choices'] = [getattr(c, '__dict__', str(c)) for c in getattr(resp, 'choices', [])]
-                            except Exception:
-                                serial['choices'] = str(getattr(resp, 'choices', None))
-                            try:
-                                serial['raw'] = getattr(resp, 'text', None) or getattr(resp, 'body', None) or str(resp)
-                            except Exception:
-                                serial['raw'] = str(resp)
-                        try:
-                            logger.warning('OpenAI response empty content; full response: %s', json.dumps(serial, ensure_ascii=False)[:20000])
-                        except Exception:
-                            logger.warning('OpenAI response empty content; resp repr: %s', repr(serial))
-                    except Exception:
-                        logger.exception('Failed to log full OpenAI response for empty content: %s', repr(resp))
-
-                    logger.warning('OpenAI response content is None or empty; response may be refusal or filtered')
-                    return None
-                return content.strip()
-            except Exception as e:
-                logger.warning('Failed to extract content from response: %s', e)
-                try:
-                    txt = getattr(resp.choices[0], 'text', '')
-                    if txt and isinstance(txt, str) and txt.strip():
-                        return txt.strip()
-                except Exception:
-                    pass
-                return getattr(resp.choices[0], 'text', '').strip()
+            content = _extract_content(resp)
+            if content is not None:
+                return content
+            # Empty content is treated as non-recoverable
+            logger.warning('OpenAI returned empty content (attempt %d/%d); not retrying', attempt, max_attempts)
+            return None
 
         except Exception as e:
-            # Determine if this is a transient (5xx) error; if so, retry a few times with backoff.
-            status = None
-            try:
-                if hasattr(e, 'response') and getattr(e.response, 'status_code', None) is not None:
-                    status = int(getattr(e.response, 'status_code'))
-                elif hasattr(e, 'status_code'):
-                    status = int(getattr(e, 'status_code'))
-                elif hasattr(e, 'http_status'):
-                    status = int(getattr(e, 'http_status'))
-                elif hasattr(e, 'code'):
-                    # some libs put code strings here; ignore for numeric check
-                    try:
-                        status = int(getattr(e, 'code'))
-                    except Exception:
-                        status = None
-            except Exception:
-                status = None
+            status = _extract_status(e)
+            resp_text = _extract_response_text(e)
 
             # If status is a 4xx, do not retry — it's a client error
             if status is not None and 400 <= status < 500:
                 logger.warning('OpenAI request failed with client error status=%s; not retrying (attempt %d/%d)', status, attempt, max_attempts)
                 try:
                     details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
-                    # Attempt to extract HTTP-like response body/text for diagnostics
-                    resp_text = None
-                    try:
-                        if hasattr(e, 'response'):
-                            resp = getattr(e, 'response')
-                            resp_text = getattr(resp, 'text', None) or getattr(resp, 'body', None)
-                        # Some SDK exceptions include a raw 'response_text' or similar
-                        if not resp_text and hasattr(e, 'response_text'):
-                            resp_text = getattr(e, 'response_text')
-                    except Exception:
-                        resp_text = None
-
                     if resp_text:
-                        try:
-                            details['response_text_snippet'] = (resp_text[:1000] + '...') if len(resp_text) > 1000 else resp_text
-                        except Exception:
-                            details['response_text_snippet'] = '<<failed to capture response text>>'
-
-                    # If the exception carries headers or request id, include them for tracing
-                    try:
-                        hdrs = getattr(e, 'headers', None) or getattr(getattr(e, 'response', None), 'headers', None)
-                        if hdrs:
-                            # include a couple of useful headers when present
-                            for h in ('x-request-id', 'x-request-id', 'x-openai-request-id', 'x-request-id'):
-                                if isinstance(h, str) and h in hdrs:
-                                    details.setdefault('headers', {})[h] = hdrs.get(h)
-                    except Exception:
-                        pass
-
+                        details['response_text_snippet'] = (resp_text[:1000] + '...') if len(resp_text) > 1000 else resp_text
                     logger.exception('OpenAI chat completion failed (client error): %s; details=%s', str(e), details)
                 except Exception:
                     logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
-                try:
-                    logger.error('OpenAI exception (raw): %s', repr(e))
-                    logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
-                except Exception:
-                    pass
-                # If the server complains about the 'temperature' value being unsupported,
-                # try one fallback: resend the request without the temperature kwarg.
+
+                # Fallback: retry without temperature if error mentions it
                 try:
                     lowered = '' if resp_text is None else str(resp_text)
-                    errstr = str(e)
-                    combined = (lowered + '\n' + errstr).lower()
+                    combined = (lowered + '\n' + str(e)).lower()
                     if 'temperature' in combined and ('unsupported' in combined or 'does not support' in combined):
-                        logger.warning('Detected unsupported temperature for model=%s; retrying request without temperature', model)
+                        logger.warning('Detected unsupported temperature for model=%s; retrying without temperature', model)
                         try:
-                            # retry once without temperature
-                            resp2_kwargs = {
-                                'model': model,
-                                'messages': messages,
-                                'max_completion_tokens': max_tokens,
-                            }
-                            resp2 = client.chat.completions.create(**resp2_kwargs)
-                            try:
-                                return resp2.choices[0].message.content.strip()
-                            except Exception:
-                                return getattr(resp2.choices[0], 'text', '').strip()
-                        except Exception as e2:
-                            logger.exception('Retry without temperature also failed: %s', e2)
+                            resp2 = client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                max_completion_tokens=max_tokens,
+                                max_reasoning_tokens=0,
+                                stream=False
+                            )
+                            return _extract_content(resp2)
+                        except Exception:
+                            logger.exception('Retry without temperature also failed')
                 except Exception:
                     pass
 
                 return None
 
-            # For 5xx or unknown status, retry up to max_attempts
+            # Server errors (5xx) or unknown: retry with backoff
             if attempt < max_attempts:
                 backoff = 0.5 * attempt
                 logger.warning('OpenAI request failed (attempt %d/%d) status=%s; retrying in %.1fs', attempt, max_attempts, status, backoff)
                 time.sleep(backoff)
                 continue
 
-            # final attempt failed — log full details and return None
+            # Final attempt failed
             try:
                 details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
-                if hasattr(e, 'response'):
-                    try:
-                        text = getattr(e.response, 'text', None)
-                        if text:
-                            details['response_text_snippet'] = (text[:400] + '...') if len(text) > 400 else text
-                    except Exception:
-                        pass
+                if resp_text:
+                    details['response_text_snippet'] = (resp_text[:400] + '...') if len(resp_text) > 400 else resp_text
                 logger.exception('OpenAI chat completion failed after retries: %s; details=%s', str(e), details)
             except Exception:
                 logger.exception('OpenAI chat completion final failure and logging failed: %s', e)
 
-            try:
-                logger.error('OpenAI exception (raw): %s', repr(e))
-                logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
-            except Exception:
-                pass
-
             return None
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_completion_tokens=max_tokens,
-            temperature=temperature
-        )
-        # Support both newer structured responses and older text fields
-        try:
-            content = resp.choices[0].message.content
-            if content is None or (isinstance(content, str) and content.strip() == ''):
-                # Log full resp for debugging
-                try:
-                    if hasattr(resp, 'to_dict'):
-                        logger.warning('Final OpenAI response empty; full response: %s', json.dumps(resp.to_dict(), ensure_ascii=False)[:20000])
-                    else:
-                        logger.warning('Final OpenAI response empty; resp repr: %s', repr(resp))
-                except Exception:
-                    logger.exception('Failed to log final OpenAI response for empty content')
-                logger.warning('Final OpenAI response content empty; returning None')
-                return None
-            return content.strip()
-        except Exception:
-            try:
-                txt = getattr(resp.choices[0], 'text', '')
-                if txt and isinstance(txt, str) and txt.strip():
-                    return txt.strip()
-            except Exception:
-                pass
-            return getattr(resp.choices[0], 'text', '').strip()
-    except Exception as e:
-        # Log helpful, non-sensitive diagnostics to aid debugging in CI.
-        try:
-            details = {'model': model, 'messages_count': len(messages) if messages is not None else 0}
-            # capture any HTTP/status-like attributes if available
-            for attr in ('http_status', 'status_code', 'code'):
-                if hasattr(e, attr):
-                    try:
-                        details[attr] = getattr(e, attr)
-                    except Exception:
-                        pass
 
-            # some client exceptions expose a response with text
-            if hasattr(e, 'response'):
-                try:
-                    resp_obj = getattr(e, 'response')
-                    text = getattr(resp_obj, 'text', None)
-                    if text:
-                        details['response_text_snippet'] = (text[:400] + '...') if len(text) > 400 else text
-                except Exception:
-                    pass
-
-            logger.exception('OpenAI chat completion failed: %s; details=%s', str(e), details)
-            # Also emit the raw exception repr and attributes for full debugging visibility
-            try:
-                logger.error('OpenAI exception (raw): %s', repr(e))
-                logger.error('OpenAI exception attrs: %s', getattr(e, '__dict__', {}))
-            except Exception:
-                pass
-        except Exception:
-            # Ensure we never raise while trying to log an error
-            logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
-        return None
+    return None
 
 
 def parse_json_from_text(text: str) -> Optional[dict]:
