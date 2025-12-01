@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import importlib
 
 from .news_filter_prompt import get_news_filter_prompt
 from workers.tools.openai_client import parse_json_from_text
@@ -15,7 +16,6 @@ from workers.tools.openai_client import parse_json_from_text
 # Helpers that prefer test-time monkeypatching via the thin worker module.
 def _get_firebase_client():
     try:
-        import importlib
         worker_mod = importlib.import_module('workers.categorization.worker')
         if hasattr(worker_mod, 'get_firebase_client') and worker_mod.get_firebase_client:
             return worker_mod.get_firebase_client()
@@ -27,7 +27,6 @@ def _get_firebase_client():
 
 def _get_openai_client():
     try:
-        import importlib
         worker_mod = importlib.import_module('workers.categorization.worker')
         if hasattr(worker_mod, 'get_openai_client'):
             return worker_mod.get_openai_client()
@@ -39,7 +38,6 @@ def _get_openai_client():
 
 def _chat_completion(client, model, messages, max_tokens=600, temperature=0):
     try:
-        import importlib
         worker_mod = importlib.import_module('workers.categorization.worker')
         if hasattr(worker_mod, 'chat_completion'):
             return worker_mod.chat_completion(client, model, messages, max_tokens=max_tokens, temperature=temperature)
@@ -51,7 +49,6 @@ def _chat_completion(client, model, messages, max_tokens=600, temperature=0):
 
 def _parse_json_from_text(text: str):
     try:
-        import importlib
         worker_mod = importlib.import_module('workers.categorization.worker')
         if hasattr(worker_mod, 'parse_json_from_text'):
             return worker_mod.parse_json_from_text(text)
@@ -110,7 +107,6 @@ class CategorizationWorker:
                         try:
                             query = query.start_after(last_snapshot)
                         except Exception:
-                            # fake DBs used in tests may not support start_after
                             pass
 
                     docs = list(query.stream())
@@ -122,13 +118,12 @@ class CategorizationWorker:
 
                 model = 'gpt-5-mini'
                 client = _get_openai_client()
-                # Process docs in parallel within this chunk
+
                 try:
                     max_workers = int(getattr(self.config, 'parallelism', None) or 0) or int(__import__('os').environ.get('CATEGORIZATION_PARALLELISM', '4'))
                 except Exception:
                     max_workers = 4
 
-                # Thread-safe accumulator for this chunk
                 chunk_results = {'processed': 0, 'errors': []}
                 lock = threading.Lock()
 
@@ -152,13 +147,12 @@ class CategorizationWorker:
 
                         if client:
                             try:
-                                # Use the provided system and user prompts from get_news_filter_prompt
                                 messages = [
                                     {"role": "system", "content": system_prompt},
                                     {"role": "user", "content": user_prompt}
                                 ]
 
-                                text = _chat_completion(client, model, messages, max_tokens=600, temperature=0)
+                                text = _chat_completion(client, model, messages, max_tokens=6000, temperature=0)
                                 parsed = _parse_json_from_text(text or '')
 
                                 if parsed:
@@ -177,7 +171,6 @@ class CategorizationWorker:
                             logging.getLogger('workers.categorization').warning(
                                 'No LLM client available for article %s; skipping local heuristic', doc_id)
 
-                        # extract fields
                         total_score = None
                         rating = None
                         short_note = None
