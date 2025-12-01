@@ -52,11 +52,19 @@ def get_openai_client() -> Optional[object]:
 
 
 def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
-                    max_tokens: int = 6000, temperature: float = 0.0) -> Optional[str]:
-    """Perform a chat completion and return the text content or None on error.
+                    max_tokens: int = 6000, temperature: float = 0.0,
+                    reasoning_effort: Optional[str] = 'low') -> Optional[str]:
+    """Perform a response generation and return the text content or None on error.
 
-    This wraps the common call-site used across workers. It does not attempt
-    to interpret the response; callers should parse JSON if needed.
+    Uses the modern Responses API (client.responses.create).
+    
+    Args:
+        client: OpenAI client instance.
+        model: Model name to use.
+        messages: List of message dicts with 'role' and 'content' keys.
+        max_tokens: Maximum tokens to generate.
+        temperature: Sampling temperature (0.0-2.0).
+        reasoning_effort: Controls reasoning depth. Valid values: 'low', 'medium', 'high'. Default is 'low'.
     """
     logger = logging.getLogger('workers.tools.openai_client')
     # Basic validation and sanitization of inputs to surface obvious issues early
@@ -114,32 +122,18 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         pass
 
     max_attempts = 3
-    UNSUPPORTED_TEMPERATURE_MODELS = {'gpt-5-mini'}
-    REASONING_MODELS = {'o1-preview', 'o1-mini', 'o1'}  # Models that support reasoning tokens
 
     def _extract_content(resp) -> Optional[str]:
-        """Extract content from OpenAI response, with logging for empty responses."""
+        """Extract content from OpenAI Responses API response."""
         try:
-            content = resp.choices[0].message.content
-            if content is None or (isinstance(content, str) and content.strip() == ''):
-                try:
-                    if hasattr(resp, 'to_dict'):
-                        serial = resp.to_dict()
-                    else:
-                        serial = {'choices': [getattr(c, '__dict__', str(c)) for c in getattr(resp, 'choices', [])]}
-                    logger.warning('OpenAI response empty content; full response: %s', json.dumps(serial, ensure_ascii=False)[:20000])
-                except Exception:
-                    logger.warning('OpenAI response empty content; resp repr: %s', repr(resp))
-                return None
-            return content.strip()
-        except Exception:
-            try:
-                txt = getattr(resp.choices[0], 'text', '')
-                if txt and isinstance(txt, str) and txt.strip():
-                    return txt.strip()
-            except Exception:
-                pass
-        return None
+            content = getattr(resp, 'output_text', None)
+            if content and isinstance(content, str):
+                return content.strip()
+            logger.warning('OpenAI returned empty or missing output_text')
+            return None
+        except Exception as e:
+            logger.exception('Failed to extract content from response: %s', e)
+            return None
 
     def _extract_status(e: Exception) -> Optional[int]:
         """Extract HTTP status code from exception."""
@@ -173,30 +167,19 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
 
     for attempt in range(1, max_attempts + 1):
         try:
-            # Build kwargs conditionally to avoid sending parameters unsupported by some models
             req_kwargs = {
                 'model': model,
-                'messages': messages,
+                'input': messages,
                 'max_completion_tokens': max_tokens,
+                'temperature': temperature,
                 'stream': False,
             }
             
-            # Only include max_reasoning_tokens for models that support it
-            try:
-                if model in REASONING_MODELS:
-                    req_kwargs['max_reasoning_tokens'] = 0  # Disable reasoning for consistency
-            except Exception:
-                pass
-            
-            # Only include temperature when the model is known to accept it and a value was provided
-            try:
-                if temperature is not None and model not in UNSUPPORTED_TEMPERATURE_MODELS:
-                    req_kwargs['temperature'] = temperature
-            except Exception:
-                # If anything goes wrong determining support, omit the temperature to be safe
-                pass
+            # Add reasoning parameter if specified
+            if reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
+                req_kwargs['reasoning'] = {'effort': reasoning_effort.lower()}
 
-            resp = client.chat.completions.create(**req_kwargs)
+            resp = client.responses.create(**req_kwargs)
             content = _extract_content(resp)
             if content is not None:
                 return content
@@ -210,55 +193,21 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
 
             # If status is a 4xx, do not retry — it's a client error
             if status is not None and 400 <= status < 500:
-                logger.warning('OpenAI request failed with client error status=%s; not retrying (attempt %d/%d)', status, attempt, max_attempts)
-                try:
-                    details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
-                    if resp_text:
-                        details['response_text_snippet'] = (resp_text[:1000] + '...') if len(resp_text) > 1000 else resp_text
-                    logger.exception('OpenAI chat completion failed (client error): %s; details=%s', str(e), details)
-                except Exception:
-                    logger.exception('OpenAI chat completion failed and error logging failed: %s', e)
-
-                # Fallback: retry without temperature if error mentions it
-                try:
-                    lowered = '' if resp_text is None else str(resp_text)
-                    combined = (lowered + '\n' + str(e)).lower()
-                    if 'temperature' in combined and ('unsupported' in combined or 'does not support' in combined):
-                        logger.warning('Detected unsupported temperature for model=%s; retrying without temperature', model)
-                        try:
-                            retry_kwargs = {
-                                'model': model,
-                                'messages': messages,
-                                'max_completion_tokens': max_tokens,
-                                'stream': False
-                            }
-                            if model in REASONING_MODELS:
-                                retry_kwargs['max_reasoning_tokens'] = 0
-                            resp2 = client.chat.completions.create(**retry_kwargs)
-                            return _extract_content(resp2)
-                        except Exception:
-                            logger.exception('Retry without temperature also failed')
-                except Exception:
-                    pass
-
+                logger.warning('OpenAI request failed with client error status=%s; not retrying', status)
+                if resp_text:
+                    logger.warning('Response snippet: %s', resp_text[:500])
                 return None
 
             # Server errors (5xx) or unknown: retry with backoff
             if attempt < max_attempts:
                 backoff = 0.5 * attempt
-                logger.warning('OpenAI request failed (attempt %d/%d) status=%s; retrying in %.1fs', attempt, max_attempts, status, backoff)
+                logger.warning('OpenAI request failed (attempt %d/%d) status=%s; retrying in %.1fs', 
+                             attempt, max_attempts, status, backoff)
                 time.sleep(backoff)
                 continue
 
             # Final attempt failed
-            try:
-                details = {'model': model, 'messages_count': len(messages) if messages is not None else 0, 'status': status}
-                if resp_text:
-                    details['response_text_snippet'] = (resp_text[:400] + '...') if len(resp_text) > 400 else resp_text
-                logger.exception('OpenAI chat completion failed after retries: %s; details=%s', str(e), details)
-            except Exception:
-                logger.exception('OpenAI chat completion final failure and logging failed: %s', e)
-
+            logger.exception('OpenAI request failed after %d attempts: %s', max_attempts, str(e))
             return None
 
     return None
