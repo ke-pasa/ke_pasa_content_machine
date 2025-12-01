@@ -1,7 +1,7 @@
 # Minimal requirements for workers/article_generator
 # Keep this file focused on packages used by the article_generator worker
 
-openai>=1.87.0,<2.0.0
+openai==2.8.1
 firebase-admin>=6.4.0,<7.0.0
 google-cloud-firestore>=2.14.0,<3.0.0
 python-dotenv>=1.0.0,<2.0.0
