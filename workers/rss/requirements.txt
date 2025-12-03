@@ -23,7 +23,8 @@ python-slugify>=8.0.0,<9.0.0
 python-dotenv>=1.0.0,<2.0.0
 
 # HTML parsing (alternative parser) - required by readability-lxml
-lxml>=4.9.0,<5.0.0
+# Allow lxml 5.3+ which provides wheels for newer Python versions
+lxml>=5.3.0,<6.0.0
 
 # Type hints support for older Python versions
 typing-extensions>=4.9.0,<5.0.0
