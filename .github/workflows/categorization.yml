@@ -45,18 +45,11 @@ jobs:
 
       - name: Prepare Postgres
         if: env.POSTGRES_URL != ''
-        run: |
-          echo "Using POSTGRES_URL from secrets"
-          # Optionally validate connection string format
-          python - <<'PY'
-import os
-u = os.getenv('POSTGRES_URL')
-if not u:
-    raise SystemExit('POSTGRES_URL is empty')
-print('POSTGRES_URL present')
-PY
         env:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+        run: |
+          echo "Using POSTGRES_URL from secrets"
+          python -c "import os; u = os.getenv('POSTGRES_URL'); exit('POSTGRES_URL is empty') if not u else print('POSTGRES_URL present')"
 
 
       - name: Run categorization CLI (manual dispatch)
