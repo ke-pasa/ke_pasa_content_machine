@@ -4,7 +4,7 @@ Worker for automated RSS feed parsing from news sources with automatic feed vali
 
 ## 📋 Description
 
-RSS Worker reads RSS feeds from `feeds.txt`, validates each feed, and loads news into Firebase. 
+RSS Worker reads RSS feeds from `feeds.txt`, validates each feed, and loads news into Postgres. 
 
 **Key features:**
 - 🔍 **Automatic feed validation**: checks if feeds are working
@@ -12,7 +12,7 @@ RSS Worker reads RSS feeds from `feeds.txt`, validates each feed, and loads news
 - 🧹 **Auto-cleanup**: maintains clean `feeds.txt` with only valid feeds
 - 📝 **Problem tracking**: saves non-working and outdated feeds to separate files
 - 🎯 **Content extraction**: extracts full text from articles (AI filtering currently disabled)
-- 🔄 **Deduplication**: checks for duplicates by link, title hash, and content
+- 🔄 **Deduplication**: checks for duplicates by normalized link
 - 📰 **Full-text extraction**: gets complete article content from source websites
 
 ## � Installation
@@ -124,10 +124,7 @@ For each feed in `feeds.txt`:
 
 ## 🔒 Locking
 
-Worker uses Firebase locks to prevent concurrent execution:
-- Document: `locks/rss_worker`
-- Automatic stale lock cleanup (>15 minutes)
-- Configurable lease time
+Locking is disabled in this build; the RSS worker does not use Firebase locks. If you need distributed locking, add a locking mechanism (DB row, Redis, or external coordinator).
 
 ## 📊 Output
 
@@ -205,7 +202,7 @@ print(status)
 - Feed validation: ~1-2 seconds per feed
 - Parallel content loading where possible
 - Automatic retry on errors
-- Caching of processed articles in Firebase
+-- Caching of processed articles in Postgres (prefetch helper available)
 
 ## 🚀 GitHub Actions
 
@@ -213,16 +210,13 @@ print(status)
 
 1. **Dependencies optimized** for GitHub Actions in `requirements.txt`
 2. **Workflow file**: `.github/workflows/rss-worker.yml`
-3. **Firebase Setup**: 
-   - Create a Firebase service account JSON key file
-   - Add the entire JSON content as a repository secret named `FIREBASE_SERVICE_ACCOUNT` in GitHub Settings > Secrets and variables > Actions
-   - The workflow will automatically write this to `firebase_key.json` and set `GOOGLE_APPLICATION_CREDENTIALS`
-   <!-- - `OPENAI_API_KEY` (not needed - LLM filtering disabled) -->
+3. **Postgres Setup**:
+   - Provide a `POSTGRES_URL` environment variable (libpq style or URL) for the CI runner
+   - Ensure the database user has permission to create/alter the `public.articles` table or run migrations prior to the job
 
 ### CI Features:
 - Runs every 2 hours on schedule
-- Testing on Python 3.9, 3.10, 3.11
-- Increased lock lease time (30 min)
+- Testing on Python 3.11
 - Limited items per feed (10)
 - Automatic logs and artifacts saving
 

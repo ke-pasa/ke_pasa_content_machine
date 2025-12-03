@@ -1,5 +1,5 @@
 # RSS feeds - Automatically cleaned
-# Updated: 2025-11-04 16:32:49
+# Updated: 2025-12-03 15:30:41
 #
 
 https://www.20minutos.es/rss/
@@ -20,8 +20,6 @@ https://www.abc.es/rss/feeds/abc_Economia.xml
 https://www.abc.es/rss/feeds/abc_Cultura.xml
 https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/
 https://www.lasexta.com/rss/351410.xml
-https://www.elespanol.com/rss/espana
-https://www.elespanol.com/rss/sociedad
 https://www.laopiniondemalaga.es/rss/section/16503
 https://www.laopiniondemalaga.es/rss/section/16517
 https://www.laopiniondemalaga.es/rss/section/16607
@@ -42,7 +40,6 @@ https://www.surinenglish.com/rss/2.0/?section=malaga
 https://www.meneame.net/rss
 https://www.infolibre.es/rss/
 https://www.eldiario.es/rss
-http://rss.libertaddigital.com/libertaddigital/portada
 https://okdiario.com/espana/feed
 https://periodicoclm.publico.es/rss/
 https://periodicoclm.publico.es/rss/region/

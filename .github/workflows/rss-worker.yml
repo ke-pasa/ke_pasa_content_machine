@@ -4,10 +4,6 @@ on:
   schedule:
     - cron: '0 */8 * * *'
   workflow_dispatch:
-  push:
-    paths:
-      - 'workers/rss/**'
-      - '.github/workflows/rss-worker.yml'
 
 jobs:
   rss-worker:
@@ -31,7 +27,15 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libxml2-dev libxslt-dev
+        sudo apt-get install -y libxml2-dev libxslt-dev libpq-dev netcat
+
+    - name: Require POSTGRES_URL secret
+      run: |
+        if [ -z "${{ secrets.POSTGRES_URL }}" ]; then
+          echo "ERROR: secret POSTGRES_URL is not set. Set it in repository Secrets." >&2
+          exit 1
+        fi
+        echo "POSTGRES_URL=${{ secrets.POSTGRES_URL }}" >> $GITHUB_ENV
         
     - name: Install Python dependencies
       run: |
@@ -70,6 +74,8 @@ jobs:
         RSS_LOCK_LEASE_SEC: 1800
         RSS_MAX_ITEMS_PER_FEED: 50
         RSS_PARALLEL_FEEDS: 6
+        POSTGRES_URL: ${{ env.POSTGRES_URL }}
+        RSS_PURGE_DAYS: ${{ secrets.RSS_PURGE_DAYS }}
       run: |
         echo "Starting full RSS Worker"
         python -m workers.rss.worker
