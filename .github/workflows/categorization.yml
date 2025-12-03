@@ -53,7 +53,7 @@ jobs:
 
 
       - name: Run categorization CLI (manual dispatch)
-        if: github.event_name == 'workflow_dispatch't_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch'
         run: |
           python -m workers.categorization.worker --action categorize --batch-size ${{ github.event.inputs.batch_size || '10' }}
 
