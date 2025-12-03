@@ -40,11 +40,7 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        if [ -f workers/rss/requirements.txt ]; then
-          pip install -r workers/rss/requirements.txt
-        else
-          echo "No workers/rss/requirements.txt found, skipping."
-        fi
+        pip install -r workers/rss/requirements.txt
         
     - name: Verify installation
       run: |
@@ -52,33 +48,18 @@ jobs:
         python -c "import requests; print('requests:', requests.__version__)"
         python -c "import bs4; print('beautifulsoup4:', bs4.__version__)"
     
-    - name: Write Firebase service account key (optional)
-      env:
-        FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      run: |
-        if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
-          echo "Writing firebase_key.json from FIREBASE_SERVICE_ACCOUNT secret"
-          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > firebase_key.json
-          ls -l firebase_key.json || true
-          # Export GOOGLE_APPLICATION_CREDENTIALS so Firebase SDKs pick it up
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/firebase_key.json" >> $GITHUB_ENV
-        else
-          echo "FIREBASE_SERVICE_ACCOUNT not set — skipping firebase_key.json write"
-        fi
+    
 
     - name: Run RSS Worker (full)
-      # Always run the RSS Worker when this job is executed
       env:
-        FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         RSS_FEEDS_FILE: workers/rss/feeds.txt
-        RSS_LOCK_LEASE_SEC: 1800
-        RSS_MAX_ITEMS_PER_FEED: 50
         RSS_PARALLEL_FEEDS: 6
         POSTGRES_URL: ${{ env.POSTGRES_URL }}
-        RSS_PURGE_DAYS: ${{ secrets.RSS_PURGE_DAYS }}
+        RSS_PURGE_DAYS: 15
       run: |
-        echo "Starting full RSS Worker"
+        echo "Starting full RSS Worker (running on Python ${{ matrix.python-version }})"
         python -m workers.rss.worker
+    
         
     - name: Upload artifacts on failure
       if: failure()
