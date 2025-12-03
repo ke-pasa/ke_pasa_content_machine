@@ -25,6 +25,9 @@ class PGClient:
     def __init__(self):
         self._conn = None
         self._cursor = None
+        self._pool = None
+        self._pool_min = 1
+        self._pool_max = 10
 
     def _connect(self):
         if self._conn:
@@ -32,6 +35,7 @@ class PGClient:
         try:
             import psycopg2
             from psycopg2.extras import RealDictCursor
+            from psycopg2.pool import ThreadedConnectionPool
         except Exception as e:
             raise RuntimeError(f"psycopg2 is required for PostgreSQL support: {e}")
 
@@ -90,8 +94,47 @@ class PGClient:
                 except Exception:
                     pass
 
-            # Finally connect using keyword args to avoid DSN parsing
-            self._conn = psycopg2.connect(**connect_kwargs)
+            # Initialize a threaded connection pool using the same kwargs
+            try:
+                self._pool = ThreadedConnectionPool(self._pool_min, self._pool_max, **connect_kwargs)
+                # pre-warm a single connection for table creation (run DDL inline to avoid recursion)
+                conn = self._pool.getconn()
+                conn.autocommit = True
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                    CREATE TABLE IF NOT EXISTS public.articles (
+                        id character varying(32) PRIMARY KEY,
+                        title character varying(512),
+                        summary text,
+                        content text,
+                        link character varying(1024),
+                        image character varying(1024),
+                        categories jsonb,
+                        published_date date,
+                        source_feed character varying(255),
+                        source_link character varying(1024),
+                        status character varying(32) DEFAULT 'NEW',
+                        published boolean DEFAULT false,
+                        created_at timestamptz DEFAULT now(),
+                        updated_at timestamptz DEFAULT now()
+                    )
+                    """)
+                    try:
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_published_date ON public.articles USING btree (published_date)")
+                        cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_created_at ON public.articles USING btree (created_at)")
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    self._pool.putconn(conn)
+                return
+            except Exception:
+                # Fallback to single connection if pool creation fails
+                self._conn = psycopg2.connect(**connect_kwargs)
         else:
             # Fall back to previous behavior: accept full DSN string or build
             # connection kwargs from individual PG_* variables.
@@ -121,17 +164,120 @@ class PGClient:
                     except Exception:
                         pass
 
-                self._conn = psycopg2.connect(**connect_kwargs)
+                try:
+                    self._pool = ThreadedConnectionPool(self._pool_min, self._pool_max, **connect_kwargs)
+                    conn = self._pool.getconn()
+                    conn.autocommit = True
+                    cur = conn.cursor()
+                    try:
+                        cur.execute("""
+                        CREATE TABLE IF NOT EXISTS public.articles (
+                            id character varying(32) PRIMARY KEY,
+                            title character varying(512),
+                            summary text,
+                            content text,
+                            link character varying(1024),
+                            image character varying(1024),
+                            categories jsonb,
+                            published_date date,
+                            source_feed character varying(255),
+                            source_link character varying(1024),
+                            status character varying(32) DEFAULT 'NEW',
+                            published boolean DEFAULT false,
+                            created_at timestamptz DEFAULT now(),
+                            updated_at timestamptz DEFAULT now()
+                        )
+                        """)
+                        try:
+                            cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_published_date ON public.articles USING btree (published_date)")
+                            cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_created_at ON public.articles USING btree (created_at)")
+                        except Exception:
+                            pass
+                    finally:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                        self._pool.putconn(conn)
+                    return
+                except Exception:
+                    self._conn = psycopg2.connect(**connect_kwargs)
             else:
                 # DSN provided as generic libpq string; rely on libpq resolution.
-                self._conn = psycopg2.connect(dsn)
+                # DSN provided as generic libpq string; rely on libpq resolution.
+                try:
+                    self._pool = ThreadedConnectionPool(self._pool_min, self._pool_max, dsn)
+                    conn = self._pool.getconn()
+                    conn.autocommit = True
+                    cur = conn.cursor()
+                    try:
+                        cur.execute("""
+                        CREATE TABLE IF NOT EXISTS public.articles (
+                            id character varying(32) PRIMARY KEY,
+                            title character varying(512),
+                            summary text,
+                            content text,
+                            link character varying(1024),
+                            image character varying(1024),
+                            categories jsonb,
+                            published_date date,
+                            source_feed character varying(255),
+                            source_link character varying(1024),
+                            status character varying(32) DEFAULT 'NEW',
+                            published boolean DEFAULT false,
+                            created_at timestamptz DEFAULT now(),
+                            updated_at timestamptz DEFAULT now()
+                        )
+                        """)
+                        try:
+                            cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_published_date ON public.articles USING btree (published_date)")
+                            cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_created_at ON public.articles USING btree (created_at)")
+                        except Exception:
+                            pass
+                    finally:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                        self._pool.putconn(conn)
+                    return
+                except Exception:
+                    self._conn = psycopg2.connect(dsn)
+
         self._conn.autocommit = True
         # Use a simple cursor; callers only use basic execute/fetch operations
         self._cursor = self._conn.cursor()
         self._ensure_table()
 
+    def _get_conn(self):
+        """Acquire a connection. Returns (conn, returned_to_pool_flag).
+
+        If a pool is configured the returned flag will be True (caller should putconn).
+        If using single connection the flag will be False and caller must not close/put it.
+        """
+        self._connect()
+        if self._pool:
+            conn = self._pool.getconn()
+            try:
+                conn.autocommit = True
+            except Exception:
+                pass
+            return conn, True
+        else:
+            return self._conn, False
+
+    def _put_conn(self, conn, returned: bool):
+        if returned and self._pool:
+            try:
+                self._pool.putconn(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
     def _ensure_table(self):
-        # Create articles table matching provided schema
+        # Create articles table matching provided schema. Use a per-call connection/cursor.
         create_sql = """
         CREATE TABLE IF NOT EXISTS public.articles (
             id character varying(32) PRIMARY KEY,
@@ -150,14 +296,21 @@ class PGClient:
             updated_at timestamptz DEFAULT now()
         )
         """
-        self._cursor.execute(create_sql)
-
-        # Create indexes if not exist (safe to run repeatedly)
+        conn, pooled = self._get_conn()
+        cur = conn.cursor()
         try:
-            self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_articles_published_date ON public.articles USING btree (published_date)")
-            self._cursor.execute("CREATE INDEX IF NOT EXISTS idx_articles_created_at ON public.articles USING btree (created_at)")
-        except Exception:
-            pass
+            cur.execute(create_sql)
+            try:
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_published_date ON public.articles USING btree (published_date)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_created_at ON public.articles USING btree (created_at)")
+            except Exception:
+                pass
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
 
     def save_article(self, article: Dict[str, Any]) -> str:
         try:
@@ -199,18 +352,24 @@ class PGClient:
                 article.get('published') if 'published' in article else None,
                 article.get('created_at')
             )
-            self._cursor.execute(insert_sql, params)
-            # If a row was inserted, rowcount == 1; if conflict DO NOTHING, rowcount == 0
+            conn, pooled = self._get_conn()
+            cur = conn.cursor()
             try:
-                inserted = self._cursor.rowcount == 1
-            except Exception:
-                inserted = True
-
-            if inserted:
-                return 'inserted'
-            else:
-                # Existing row (no-op)
-                return 'exists'
+                cur.execute(insert_sql, params)
+                try:
+                    inserted = cur.rowcount == 1
+                except Exception:
+                    inserted = True
+                if inserted:
+                    return 'inserted'
+                else:
+                    return 'exists'
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self._put_conn(conn, pooled)
         except Exception as e:
             try:
                 article_id = article.get('id') or article.get('article_id')
@@ -231,8 +390,17 @@ class PGClient:
                     link_norm = link or ''
                 else:
                     link_norm = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/') if parsed.path and parsed.path != '/' else parsed.path}"
-            self._cursor.execute('SELECT 1 FROM public.articles WHERE link = %s LIMIT 1', (link_norm,))
-            return self._cursor.fetchone() is not None
+            conn, pooled = self._get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute('SELECT 1 FROM public.articles WHERE link = %s LIMIT 1', (link_norm,))
+                return cur.fetchone() is not None
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self._put_conn(conn, pooled)
         except Exception:
             return False
 
@@ -250,25 +418,34 @@ class PGClient:
 
         try:
             cutoff = datetime.utcnow() - timedelta(hours=hours)
-            self._cursor.execute('SELECT link FROM public.articles WHERE created_at >= %s', (cutoff,))
-            rows = self._cursor.fetchall()
-            for row in rows:
-                try:
-                    link = row[0]
-                    if not link:
-                        continue
-                    # Normalize link using existing helper if available
+            conn, pooled = self._get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute('SELECT link FROM public.articles WHERE created_at >= %s', (cutoff,))
+                rows = cur.fetchall()
+                for row in rows:
                     try:
-                        norm = normalize_link(link)
+                        link = row[0]
+                        if not link:
+                            continue
+                        try:
+                            norm = normalize_link(link)
+                        except Exception:
+                            parsed = urlparse(link)
+                            if not parsed.scheme or not parsed.netloc:
+                                norm = link
+                            else:
+                                norm = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/') if parsed.path and parsed.path != '/' else parsed.path}"
+                        results.add(norm)
                     except Exception:
-                        parsed = urlparse(link)
-                        if not parsed.scheme or not parsed.netloc:
-                            norm = link
-                        else:
-                            norm = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/') if parsed.path and parsed.path != '/' else parsed.path}"
-                    results.add(norm)
+                        continue
+            finally:
+                try:
+                    cur.close()
                 except Exception:
-                    continue
+                    pass
+                self._put_conn(conn, pooled)
+
         except Exception:
             return results
 
@@ -283,17 +460,249 @@ class PGClient:
         try:
             self._connect()
             cutoff = datetime.utcnow() - timedelta(days=days)
-            # Use parameterized query with a Python cutoff timestamp
-            self._cursor.execute('DELETE FROM public.articles WHERE created_at < %s', (cutoff,))
+            conn, pooled = self._get_conn()
+            cur = conn.cursor()
             try:
-                deleted = self._cursor.rowcount
-            except Exception:
-                deleted = -1
-            return deleted
+                cur.execute('DELETE FROM public.articles WHERE created_at < %s', (cutoff,))
+                try:
+                    deleted = cur.rowcount
+                except Exception:
+                    deleted = -1
+                return deleted
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self._put_conn(conn, pooled)
         except Exception as e:
             print(f"    ⚠️  Failed to purge old articles: {e}")
             traceback.print_exc()
             return -1
+
+    def fetch_articles_new(self, limit: int = 30, last_cursor: dict = None, status: str = 'NEW'):
+        """
+        Fetch up to `limit` articles with given `status` ordered by (created_at, id) ascending.
+
+        `last_cursor` expected shape: {'created_at': <ISO string or datetime>, 'id': <str>}
+        Returns list of dict rows normalized to keys used by the worker (includes 'id',
+        'title', 'description', 'content', 'tags', 'source', 'pub_date', 'feed_name',
+        'region_hint', 'created_at', 'interest').
+        """
+        try:
+            self._connect()
+        except Exception:
+            return []
+
+        try:
+            from psycopg2.extras import RealDictCursor
+            conn, pooled = self._get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            sql = [
+                "SELECT id, title, summary AS description, content, categories, link AS source,",
+                "published_date AS pub_date, source_feed AS feed_name, status, created_at, updated_at, interest",
+                "FROM public.articles",
+                "WHERE status = %s"
+            ]
+            params = [status]
+            if last_cursor:
+                # Accept either ISO string or datetime for created_at
+                cursor_created = last_cursor.get('created_at')
+                cursor_id = last_cursor.get('id')
+                sql.append("AND (created_at, id) > (%s::timestamptz, %s)")
+                params.extend([cursor_created, cursor_id])
+
+            sql.append("ORDER BY created_at ASC, id ASC")
+            sql.append("LIMIT %s")
+            params.append(limit)
+
+            query = '\n'.join(sql)
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+            results = []
+            for r in rows:
+                try:
+                    # Normalize categories (jsonb) -> tags list
+                    tags = r.get('categories') if r.get('categories') is not None else []
+                    # `interest` may be stored as text; try to parse JSON
+                    interest_raw = r.get('interest')
+                    interest = None
+                    if interest_raw is not None:
+                        if isinstance(interest_raw, (str, bytes)):
+                            try:
+                                interest = json.loads(interest_raw)
+                            except Exception:
+                                interest = None
+                        elif isinstance(interest_raw, dict):
+                            interest = interest_raw
+
+                    # pub_date -> ISO string when present
+                    pub_date = r.get('pub_date')
+                    if hasattr(pub_date, 'isoformat'):
+                        pub_date_val = pub_date.isoformat()
+                    else:
+                        pub_date_val = pub_date
+
+                    normalized = {
+                        'id': r.get('id'),
+                        'title': r.get('title'),
+                        'description': r.get('description'),
+                        'content': r.get('content'),
+                        'tags': tags or [],
+                        'source': r.get('source'),
+                        'pub_date': pub_date_val,
+                        'feed_name': r.get('feed_name'),
+                        'region_hint': None,
+                        'created_at': r.get('created_at'),
+                        'updated_at': r.get('updated_at'),
+                        'interest': interest
+                    }
+                    results.append(normalized)
+                except Exception:
+                    continue
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+            return results
+        except Exception as e:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+            print(f"    ⚠️  Postgres fetch_articles_new exception: {e}")
+            traceback.print_exc()
+            return []
+
+    def fetch_article_by_id(self, article_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch a single article by id and return normalized dict (same shape as fetch_articles_new rows).
+        Returns None if not found or on error.
+        """
+        try:
+            self._connect()
+        except Exception:
+            return None
+
+        try:
+            from psycopg2.extras import RealDictCursor
+            conn, pooled = self._get_conn()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur.execute("SELECT id, title, summary AS description, content, categories, link AS source, published_date AS pub_date, source_feed AS feed_name, status, created_at, updated_at, interest FROM public.articles WHERE id = %s LIMIT 1", (article_id,))
+                r = cur.fetchone()
+                if not r:
+                    return None
+
+                # Normalize like fetch_articles_new
+                tags = r.get('categories') if r.get('categories') is not None else []
+                interest_raw = r.get('interest')
+                interest = None
+                if interest_raw is not None:
+                    if isinstance(interest_raw, (str, bytes)):
+                        try:
+                            interest = json.loads(interest_raw)
+                        except Exception:
+                            interest = None
+                    elif isinstance(interest_raw, dict):
+                        interest = interest_raw
+
+                pub_date = r.get('pub_date')
+                if hasattr(pub_date, 'isoformat'):
+                    pub_date_val = pub_date.isoformat()
+                else:
+                    pub_date_val = pub_date
+
+                normalized = {
+                    'id': r.get('id'),
+                    'title': r.get('title'),
+                    'description': r.get('description'),
+                    'content': r.get('content'),
+                    'tags': tags or [],
+                    'source': r.get('source'),
+                    'pub_date': pub_date_val,
+                    'feed_name': r.get('feed_name'),
+                    'region_hint': None,
+                    'created_at': r.get('created_at'),
+                    'updated_at': r.get('updated_at'),
+                    'interest': interest
+                }
+                return normalized
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self._put_conn(conn, pooled)
+        except Exception:
+            return None
+
+    def save_article_categorization(self, article_id: str, payload: Dict[str, Any]) -> bool:
+        """
+        Upsert categorization fields for article with `article_id`.
+
+        Expected payload keys (any subset): `interest` (dict), `status`, `total_score`,
+        `rating`, `short_note`, `category`, `comment`, `publish_on_site`, `publish_on_social`,
+        `newsletter`, `categorized_at`, `updated_at`.
+        """
+        try:
+            self._connect()
+            # Prepare interest as text (table column is text)
+            interest_val = None
+            if 'interest' in payload and payload.get('interest') is not None:
+                try:
+                    interest_val = json.dumps(payload.get('interest'), ensure_ascii=False)
+                except Exception:
+                    interest_val = str(payload.get('interest'))
+
+            # Perform UPDATE only (assume the article row already exists)
+
+            update_sql = '''
+            UPDATE public.articles SET
+                interest = COALESCE(%s, interest),
+                status = COALESCE(%s, status),
+                total_score = COALESCE(%s, total_score),
+                rating = COALESCE(%s, rating),
+                category = COALESCE(%s, category),
+                publish_on_site = COALESCE(%s, publish_on_site),
+                publish_on_social = COALESCE(%s, publish_on_social),
+                categorized_at = now(),
+                updated_at = now()
+            WHERE id = %s
+            '''
+
+            params = (
+                interest_val,
+                payload.get('status'),
+                payload.get('total_score'),
+                payload.get('rating'),
+                payload.get('category'),
+                payload.get('publish_on_site'),
+                payload.get('publish_on_social'),
+                article_id,
+            )
+
+            conn, pooled = self._get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(update_sql, params)
+                try:
+                    updated = cur.rowcount and cur.rowcount > 0
+                except Exception:
+                    updated = False
+                return bool(updated)
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self._put_conn(conn, pooled)
+        except Exception as e:
+            print(f"    ⚠️  Postgres save categorization exception for {article_id}: {e}")
+            traceback.print_exc()
+            return False
 
 
 _client = None

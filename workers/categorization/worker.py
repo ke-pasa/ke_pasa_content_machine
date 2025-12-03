@@ -26,6 +26,7 @@ from .CategorizationWorker import CategorizationWorker
 def main() -> None:
     parser = argparse.ArgumentParser(description='Categorization worker CLI')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size for categorization (default: config or 10)')
+    parser.add_argument('--article-id', type=str, default=None, help='Process a single article by id')
     parser.add_argument('--action', choices=['categorize', 'prioritize', 'stats'], default='categorize')
     args = parser.parse_args()
 
@@ -33,7 +34,10 @@ def main() -> None:
     worker = CategorizationWorker(config=config, batch_size=args.batch_size)
 
     if args.action == 'categorize':
-        result = worker.categorize_new_articles()
+        if args.article_id:
+            result = worker.categorize_article_by_id(args.article_id)
+        else:
+            result = worker.categorize_new_articles()
         print(result)
     elif args.action == 'stats':
         result = worker.get_statistics()
