@@ -19,7 +19,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
 
     steps:
       - name: Checkout
@@ -44,11 +44,6 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f workers/article_generator/requirements.txt ]; then pip install -r workers/article_generator/requirements.txt; fi
 
-      - name: Write Firebase service account key
-        if: env.FIREBASE_SERVICE_ACCOUNT != ''
-        run: |
-          echo "${FIREBASE_SERVICE_ACCOUNT}" > ${GITHUB_WORKSPACE}/firebase_key.json
-
       - name: Run article generator
         run: |
           if [ -n "${{ github.event.inputs.batch_size }}" ]; then
@@ -62,8 +57,8 @@ jobs:
             python -m workers.article_generator.worker
           fi
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/firebase_key.json
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           # (no ARTICLE_GENERATOR_FAIL_ON_ERRORS) - strict failure on collected errors by default
 
       - name: Push generated articles to external repo

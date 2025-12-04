@@ -10,12 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
-from bs4 import BeautifulSoup
-try:
-    from readability import Document
-except ImportError:
-    Document = None
+# Note: external HTML fetching/parsing was removed; avoid importing fetching libraries here.
 
 from .translator import ArticleTranslator
 from workers.tools.pg_client import get_pg_client
@@ -146,69 +141,10 @@ class ArticleGenerator:
         except Exception:
             self.logger.exception('Failed to write generated article %s to articles_ru', doc_id)
 
-    def _fetch_article_content(self, url: str) -> Optional[str]:
-        """Fetch full article text from URL using BeautifulSoup and readability."""
-        if not url:
-            return None
-            
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            if response.encoding == 'ISO-8859-1':
-                response.encoding = response.apparent_encoding
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-                element.decompose()
-            
-            ad_selectors = ['[class*="ad"]', '[class*="advertisement"]', '[class*="banner"]',
-                          '[id*="ad"]', '[id*="advertisement"]', '[id*="banner"]',
-                          '[class*="social"]', '[class*="share"]', '[class*="comment"]']
-            for selector in ad_selectors:
-                for element in soup.select(selector):
-                    element.decompose()
-            
-            content_selectors = ['article', '[class*="content"]', '[class*="article"]',
-                               '[class*="post"]', '[class*="entry"]', '.main-content',
-                               '.article-content', '.post-content', '.entry-content',
-                               '#content', '#article', '#post']
-            
-            content = None
-            for selector in content_selectors:
-                if elements := soup.select(selector):
-                    largest = max(elements, key=lambda x: len(x.get_text()))
-                    if len(largest.get_text().strip()) > 100:
-                        content = largest
-                        break
-            
-            if not content and Document:
-                try:
-                    doc = Document(response.text)
-                    content = BeautifulSoup(doc.summary(), 'html.parser')
-                except Exception as e:
-                    self.logger.debug('readability failed for %s: %s', url, e)
-                    return None
-            
-            if not content:
-                return None
-            
-            text = content.get_text(separator=' ', strip=True)
-            text = re.sub(r'\s+', ' ', text)
-            text = re.sub(r'\n\s*\n', '\n', text).strip()
-            
-            if len(text) < 50:
-                self.logger.debug('Text too short from %s: %d chars', url, len(text))
-                return None
-            
-            self.logger.info('Successfully fetched article content from %s: %d chars', url, len(text))
-            return text
-            
-        except Exception as e:
-            self.logger.warning('Failed to fetch article content from %s: %s', url, e)
-            return None
+    # _fetch_article_content removed: we no longer fetch remote HTML during preparation.
+    # Fetching/parsing of external URLs was intentionally removed to rely on stored
+    # article content only. If you need to re-enable fetching later, restore the
+    # original implementation above.
 
     def _phase1_prescan_and_skip(self) -> int:
         """Mark CATEGORIZED articles with score < 60 or age > 3 days as SKIPPED."""
@@ -300,23 +236,6 @@ class ArticleGenerator:
         content = data.get('content', '') or ''
         article_url = data.get('link') or data.get('url')
         content_source = 'stored'
-        
-        if article_url:
-            fetched_content = self._fetch_article_content(article_url)
-            if fetched_content:
-                try:
-                    logs_dir = Path(__file__).resolve().parent.parent.parent / 'logs' / 'fetched_articles'
-                    logs_dir.mkdir(parents=True, exist_ok=True)
-                    (logs_dir / f"{doc_id}_fetched.txt").write_text(fetched_content, encoding='utf-8')
-                    self.logger.info('Wrote fetched content to logs')
-                except Exception:
-                    pass
-            
-            if fetched_content and len(fetched_content) > len(content):
-                self.logger.info('Using fetched content for %s (fetched: %d chars, stored: %d chars)', 
-                               doc_id, len(fetched_content), len(content))
-                content = fetched_content
-                content_source = 'fetched'
         
         return title, description, content, article_url, content_source, self._get_total_score(data)
 

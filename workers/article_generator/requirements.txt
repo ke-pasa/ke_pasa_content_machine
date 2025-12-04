@@ -2,16 +2,13 @@
 # Keep this file focused on packages used by the article_generator worker
 
 openai==2.8.1
-firebase-admin>=6.4.0,<7.0.0
-google-cloud-firestore>=2.14.0,<3.0.0
 python-dotenv>=1.0.0,<2.0.0
 
-# Article content fetching
-requests>=2.31.0,<3.0.0
-beautifulsoup4>=4.12.0,<5.0.0
-readability-lxml>=0.8.1,<1.0.0
-lxml>=4.9.0,<6.0.0
 
 # Optional (useful in CI or local):
 # typing-extensions can help with older Python versions
 typing-extensions>=4.9.0,<5.0.0
+
+# Postgres driver and HTTP client used by workers
+psycopg2-binary>=2.9.7,<3.0.0
+httpx>=0.24.0,<1.0.0
