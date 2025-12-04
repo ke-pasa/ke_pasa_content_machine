@@ -1,0 +1,89 @@
+name: Build and deploy workers
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+  SERVICES: article_generator,categorization,publisher,rss
+
+jobs:
+  build-and-push:
+    name: Build and push ${{ matrix.service }} image
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [article_generator, categorization, publisher, rss]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            SERVICE=${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    name: Deploy ${{ matrix.service }}
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [article_generator, categorization, publisher, rss]
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || '22' }}
+          script: |
+            set -euo pipefail
+            REGISTRY="${{ env.REGISTRY }}"
+            IMAGE_NAME="${{ env.IMAGE_PREFIX }}-${{ matrix.service }}"
+            SHA_IMAGE="$REGISTRY/$IMAGE_NAME:${{ github.sha }}"
+            LATEST_IMAGE="$REGISTRY/$IMAGE_NAME:latest"
+
+            echo "Logging into registry $REGISTRY"
+            echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login "$REGISTRY" -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+
+            echo "Pulling $SHA_IMAGE and syncing latest tag"
+            docker pull "$SHA_IMAGE"
+            docker pull "$LATEST_IMAGE" || true
+            docker tag "$SHA_IMAGE" "$LATEST_IMAGE"
+
+            cd "${{ secrets.DEPLOY_PATH }}"
+            docker compose up -d "${{ matrix.service }}"
