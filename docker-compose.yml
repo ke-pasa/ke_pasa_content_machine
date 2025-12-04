@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  publisher:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - ./logs:/app/logs
+    command: >
+      bash -lc "mkdir -p logs && \
+      pip install --no-cache-dir -r requirements.txt && \
+      python -m workers.publisher.worker >> logs/publisher_run.log 2>&1"
+    environment:
+      - PUBLISHER_LOG_PATH=logs/publisher_run.log
+    restart: on-failure
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  exit-notifier:
+    build:
+      context: ./monitoring/exit-notifier
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALERT_EMAIL=${ALERT_EMAIL:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
+    depends_on:
+      - publisher
+    logging:
+      driver: "journald"
+    restart: unless-stopped
+
+  logrotate:
+    build:
+      context: ./ops/logrotate
+    volumes:
+      - ./logs:/var/log/app
+    logging:
+      driver: "journald"
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    pid: host
+    network_mode: host
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+    logging:
+      driver: "journald"
+    restart: unless-stopped
