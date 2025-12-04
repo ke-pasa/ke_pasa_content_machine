@@ -38,17 +38,6 @@ def main() -> None:
     worker = ArticleGenerator(batch_size=args.batch_size)
     result = worker.process_articles()
 
-    # Persist machine-readable result so CI can assert on it reliably
-    try:
-        log_dir = Path(__file__).parent.parent.parent / 'logs'
-        log_dir.mkdir(parents=True, exist_ok=True)
-        result_file = log_dir / 'article_generator_result.json'
-        with result_file.open('w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False)
-    except Exception:
-        # best-effort write; continue to print the result
-        pass
-
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
     # Treat any non-success status or any collected errors as a failure for CI

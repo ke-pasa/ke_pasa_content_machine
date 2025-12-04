@@ -14,7 +14,7 @@ from typing import List, Dict, Any
 # Добавляем текущую директорию в путь
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from workers.tools.firebase_client import get_firebase_client
+from workers.tools.pg_client import get_pg_client
 from publication_scheduler import create_publication_scheduler
 
 
@@ -100,12 +100,13 @@ def demonstrate_publication_scheduler():
     print("=" * 60)
     
     try:
-        # Инициализируем Firebase клиент
-        firebase_client = get_firebase_client()
-        print("✅ Firebase клиент инициализирован")
+        # Initialize Postgres-backed client (used by the scheduler for settings)
+        pg_client = get_pg_client()
+        print("✅ Postgres client initialized")
         
-        # Создаем планировщик
-        scheduler = create_publication_scheduler(firebase_client)
+        # Create scheduler that expects a Firestore-like client; the scheduler
+        # uses only get_settings/save operations which PG client implements.
+        scheduler = create_publication_scheduler(pg_client)
         print("✅ Планировщик публикаций создан")
         
         # Получаем настройки
@@ -194,8 +195,8 @@ def demonstrate_cluster_filtering():
     print("-" * 40)
     
     try:
-        firebase_client = get_firebase_client()
-        scheduler = create_publication_scheduler(firebase_client)
+        pg_client = get_pg_client()
+        scheduler = create_publication_scheduler(pg_client)
         settings = scheduler.get_settings()
         
         sample_clusters = create_sample_clusters()
@@ -226,8 +227,8 @@ def demonstrate_slot_creation():
     print("-" * 40)
     
     try:
-        firebase_client = get_firebase_client()
-        scheduler = create_publication_scheduler(firebase_client)
+        pg_client = get_pg_client()
+        scheduler = create_publication_scheduler(pg_client)
         settings = scheduler.get_settings()
         
         # Создаем слоты на завтра

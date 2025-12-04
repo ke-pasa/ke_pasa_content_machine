@@ -5,6 +5,7 @@ Publisher Worker - handles article publication to Telegram
 import sys
 import os
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict
@@ -16,7 +17,7 @@ sys.path.insert(0, str(root_dir))
 
 load_dotenv()
 
-from workers.tools.firebase_client import get_firebase_client
+from workers.tools.pg_client import get_pg_client
 import html
 from workers.tools.telegram_helper import send_message, send_photo
 from .config import PublisherConfig
@@ -33,7 +34,12 @@ class PublisherWorker:
             config: Worker configuration
         """
         self.config = config or PublisherConfig.from_env()
-        self.db = get_firebase_client().db
+        try:
+            self.pg = get_pg_client()
+        except Exception:
+            raise RuntimeError('Postgres client is required for PublisherWorker')
+        # Keep legacy db attribute for rare fallback usage
+        self.db = None
         self.instance_id = str(uuid.uuid4())[:8]
         # Telegram bot token (we'll use HTTP requests for sync sends)
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN') or None
@@ -109,10 +115,12 @@ class PublisherWorker:
         try:
             if self.telegram_chat_id:
                 return self.telegram_chat_id
-            # Try to get from settings in Firebase
-            from workers.tools.firebase_client import get_firebase_client
-            client = get_firebase_client()
-            settings = client.get_settings()
+            # Try to get from settings via PG client helper
+            settings = {}
+            try:
+                settings = self.pg.get_settings() if hasattr(self.pg, 'get_settings') else {}
+            except Exception:
+                settings = {}
             return settings.get('telegram_chat_id')
         except Exception:
             return None
@@ -149,48 +157,117 @@ class PublisherWorker:
                 return None
 
             try:
-                coll.document(doc.id).set({'telegram_emb': emb, 'telegram_emb_computed_at': datetime.utcnow().isoformat()}, merge=True)
+                # Prefer PG write
+                try:
+                    pg = self.pg
+                except Exception:
+                    pg = None
+
+                if pg and getattr(doc, 'id', None):
+                    try:
+                        tf = (doc.to_dict() or {}).get('telegram_final') or {}
+                        if not isinstance(tf, dict):
+                            try:
+                                tf = json.loads(tf)
+                            except Exception:
+                                tf = {}
+                        tf['telegram_emb'] = emb
+                        tf['telegram_emb_computed_at'] = datetime.utcnow().isoformat()
+                        pg.save_generated_article(doc.id, {'telegram_final': tf, 'updated_at': datetime.utcnow().isoformat()})
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        coll.document(doc.id).set({'telegram_emb': emb, 'telegram_emb_computed_at': datetime.utcnow().isoformat()}, merge=True)
+                    except Exception:
+                        pass
+                return emb
             except Exception:
-                pass
-            return emb
+                return None
         except Exception:
             return None
 
-    def _fetch_recent_published_embeddings(self, coll, days: int):
+    def _fetch_recent_published_embeddings(self, days: int):
         """Return list of (doc_id, embedding) for articles published in the last `days` days."""
         try:
             cutoff = datetime.utcnow() - timedelta(days=days)
-            # Support different casing used in the DB: 'PUBLISHED' and 'published'
-            docs = list(coll.where('telegram_emb', '!=', None).stream())
-            # Filter locally by status to avoid complex OR queries
-            docs = [d for d in docs if ((d.to_dict() or {}).get('status') or '').lower() == 'published']
             out = []
-            for d in docs:
+            # Prefer Postgres when available
+            try:
+                pg = self.pg
+            except Exception:
+                pg = None
+
+            if pg:
                 try:
-                    data = d.to_dict() or {}
-                    ts = data.get('telegram_emb_computed_at')
-                    # If timestamp is a string, attempt simple parse; otherwise include
-                    include = True
-                    if ts:
+                    rows = pg.fetch_translated_for_publish(limit=1000, min_score=0)
+                    for r in rows:
                         try:
-                            # Accept string ISO format
-                            if isinstance(ts, str):
-                                t = datetime.fromisoformat(ts)
+                            data = r
+                            tf = data.get('telegram_final')
+                            if isinstance(tf, (str, bytes)):
+                                try:
+                                    tf = json.loads(tf)
+                                except Exception:
+                                    tf = None
+                            emb = None
+                            ts = None
+                            if tf and isinstance(tf, dict):
+                                emb = tf.get('telegram_emb')
+                                ts = tf.get('telegram_emb_computed_at')
                             else:
-                                t = ts
-                            if hasattr(t, 'tzinfo') and t.tzinfo is None:
-                                # naive -> assume UTC
-                                t = t
-                            include = (t >= cutoff)
-                        except Exception:
+                                emb = data.get('telegram_emb')
+                                ts = data.get('telegram_emb_computed_at')
+
+                            if not emb:
+                                continue
                             include = True
-                    if include:
-                        emb = data.get('telegram_emb')
-                        if emb:
-                            out.append((d.id, emb))
+                            if ts:
+                                try:
+                                    t = datetime.fromisoformat(ts) if isinstance(ts, str) else ts
+                                    include = (t >= cutoff)
+                                except Exception:
+                                    include = True
+                            if include:
+                                out.append((data.get('article_id') or data.get('id'), emb))
+                        except Exception:
+                            continue
                 except Exception:
-                    continue
-            return out
+                    return []
+                return out
+            else:
+                cutoff = datetime.utcnow() - timedelta(days=days)
+                # Support different casing used in the DB: 'PUBLISHED' and 'published'
+                docs = list(coll.where('telegram_emb', '!=', None).stream())
+                # Filter locally by status to avoid complex OR queries
+                docs = [d for d in docs if ((d.to_dict() or {}).get('status') or '').lower() == 'published']
+                out = []
+                for d in docs:
+                    try:
+                        data = d.to_dict() or {}
+                        ts = data.get('telegram_emb_computed_at')
+                        # If timestamp is a string, attempt simple parse; otherwise include
+                        include = True
+                        if ts:
+                            try:
+                                # Accept string ISO format
+                                if isinstance(ts, str):
+                                    t = datetime.fromisoformat(ts)
+                                else:
+                                    t = ts
+                                if hasattr(t, 'tzinfo') and t.tzinfo is None:
+                                    # naive -> assume UTC
+                                    t = t
+                                include = (t >= cutoff)
+                            except Exception:
+                                include = True
+                        if include:
+                            emb = data.get('telegram_emb')
+                            if emb:
+                                out.append((d.id, emb))
+                    except Exception:
+                        continue
+                return out
         except Exception:
             return []
 
@@ -223,7 +300,7 @@ class PublisherWorker:
                 return False
             cfg_days = int(getattr(self.config, 'duplicate_check_days', 3) or 3)
             threshold = float(getattr(self.config, 'similarity_threshold', 0.8))
-            recent = self._fetch_recent_published_embeddings(self.db.collection('articles_ru'), cfg_days)
+            recent = self._fetch_recent_published_embeddings(cfg_days)
             for rid, emb in recent:
                 sim = self._cosine_similarity(candidate_emb, emb)
                 if sim >= threshold:
@@ -278,16 +355,35 @@ class PublisherWorker:
         return message[:max_caption-3] + '...'
 
     def _record_post(self, article_id: str, telegram_result, chat_id: str):
+        post_record = {
+            'article_id': article_id,
+            'telegram_message': telegram_result.to_dict() if hasattr(telegram_result, 'to_dict') else None,
+            'chat_id': chat_id,
+            'created_at': datetime.utcnow().isoformat(),
+        }
+
+        pg = getattr(self, 'pg', None)
+        if not pg:
+            raise RuntimeError('Postgres client not available to record telegram post')
+
+        # Record publication flag in articles_ru (no telegram_posts table used)
+        conn, pooled = pg._get_conn()
+        cur = conn.cursor()
         try:
-            post_record = {
-                'article_id': article_id,
-                'telegram_message': telegram_result.to_dict() if hasattr(telegram_result, 'to_dict') else None,
-                'chat_id': chat_id,
-                'created_at': datetime.utcnow().isoformat(),
-            }
-            self.db.collection('telegram_posts').add(post_record)
-        except Exception as e:
-            print(f"[publisher] ⚠️ Failed to record telegram_posts for {article_id}: {e}")
+            cur.execute(
+                "UPDATE public.articles_ru SET status = %s, published_to_telegram = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
+                ('PUBLISHED', True, datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), article_id),
+            )
+            conn.commit()
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            try:
+                pg._put_conn(conn, pooled)
+            except Exception:
+                pass
 
     def _mark_article_published(self, coll, doc_id: str, sent_message, error_str: str | None = None):
         try:
@@ -297,7 +393,39 @@ class PublisherWorker:
                 'published_to_telegram_at': datetime.utcnow().isoformat(),
                 'telegram_publish_error': error_str,
             }
-            coll.document(doc_id).set(update_fields, merge=True)
+            # Prefer PG update when possible
+            try:
+                pg = self.pg
+            except Exception:
+                pg = None
+
+            if pg:
+                try:
+                    conn, pooled = pg._get_conn()
+                    cur = conn.cursor()
+                    try:
+                        cur.execute("UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
+                                    (update_fields['status'], update_fields['published_to_telegram_at'], update_fields['published_to_telegram_at'], doc_id))
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                    finally:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                        pg._put_conn(conn, pooled)
+                except Exception:
+                    try:
+                        coll.document(doc_id).set(update_fields, merge=True)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    coll.document(doc_id).set(update_fields, merge=True)
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[publisher] ⚠️ Failed to update article doc {doc_id}: {e}")
 
@@ -353,12 +481,26 @@ class PublisherWorker:
             return results
 
         try:
-            coll = self.db.collection('articles_ru')
-            # Expand initial candidate pool so that if some items are skipped as duplicates
-            # we still have extra candidates to try during the same run.
+            # Prefer Postgres for articles_ru queries when available
+            try:
+                from workers.tools.pg_client import get_pg_client
+                pg = get_pg_client()
+            except Exception:
+                pg = None
+
             pool_limit = max(self.config.max_articles_per_run * 10, 50)
-            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(pool_limit)
-            docs = list(query.stream())
+
+            # Always use Postgres to fetch candidate translated articles
+            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=80)
+            docs = []
+            for r in rows:
+                class RowWrapper:
+                    def __init__(self, data):
+                        self._d = data
+                        self.id = data.get('article_id') or data.get('id')
+                    def to_dict(self):
+                        return self._d
+                docs.append(RowWrapper(r))
 
             filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
 
@@ -458,17 +600,23 @@ class PublisherWorker:
             return results
 
         try:
-            coll = self.db.collection('articles_ru')
             pool_limit = 200
-            query = coll.where('status', '==', 'TRANSLATED').where('total_score', '>', 80).order_by('created_at').limit(pool_limit)
-            docs = list(query.stream())
+            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=80)
+            docs = []
+            for r in rows:
+                class RowWrapper:
+                    def __init__(self, data):
+                        self._d = data
+                        self.id = data.get('article_id') or data.get('id')
+                    def to_dict(self):
+                        return self._d
+                docs.append(RowWrapper(r))
 
             candidates = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
             candidates = sorted(candidates, key=lambda d: ((d.to_dict() or {}).get('created_at') and str((d.to_dict() or {}).get('created_at'))) or '')
-            # Keep expanded candidate list; we'll try until we publish one or exhaust the list
             docs = candidates
         except Exception as e:
-            err = f'Firestore query error: {e}'
+            err = f'PG query error: {e}'
             print(f"[publisher] ❌ {err}")
             results['errors'].append(err)
             return results

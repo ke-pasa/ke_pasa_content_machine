@@ -4,12 +4,7 @@ from datetime import datetime, timezone, timedelta
 import re
 import unicodedata
 
-try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-except Exception as e:
-    print('Missing firebase_admin package. Install with: pip install firebase-admin')
-    raise
+from workers.tools.pg_client import get_pg_client
 
 
 def slugify_title(title: str, maxlen: int = 100) -> str:
@@ -108,16 +103,11 @@ def main(key_path: str = 'firebase_key.json', out_dir: str = 'articles'):
         print(f'Key file not found: {key_file.resolve()}')
         sys.exit(2)
 
+    # Initialize Postgres client (key file not required for Postgres; kept for CLI compatibility)
     try:
-        cred = credentials.Certificate(str(key_file))
-        try:
-            firebase_admin.initialize_app(cred)
-        except Exception:
-            # app may already be initialized in some environments
-            pass
-        db = firestore.client()
+        pg = get_pg_client()
     except Exception as e:
-        print('Failed to initialize Firestore client:', e)
+        print('Failed to initialize Postgres client:', e)
         raise
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=1)
@@ -130,22 +120,20 @@ def main(key_path: str = 'firebase_key.json', out_dir: str = 'articles'):
     # Prefer server-side filtering for performance. Many records use ISO8601 strings for created_at,
     # so compare as strings. If that fails (e.g., field type mismatch or missing index), fall back to
     # streaming the collection and applying the cutoff locally.
-    cutoff_iso = cutoff.isoformat()
+    # Fetch candidate translated/generated articles from Postgres and filter locally by timestamp
     try:
-        query = db.collection('articles_ru').where('total_score', '>=', 60).where('created_at', '>=', cutoff_iso)
-        docs = list(query.stream())
+        # fetch up to 1000 translated rows with total_score >= 60
+        docs = pg.fetch_translated_for_publish(limit=1000, min_score=60)
     except Exception as e:
-        print('Server-side filtered query failed, falling back to client-side filter:', e)
-        try:
-            docs = list(db.collection('articles_ru').stream())
-        except Exception as e2:
-            print('Failed to stream articles_ru collection:', e2)
-            raise
+        print('Failed to fetch articles_ru from Postgres:', e)
+        raise
 
     for doc in docs:
         total_seen += 1
-        data = doc.to_dict() or {}
-        created = data.get('created_at') or data.get('updated_at')
+        # `docs` are dict rows returned by PG client
+        data = doc or {}
+        # prefer updated_at or published_at as a proxy for created_at
+        created = data.get('updated_at') or data.get('published_at')
         created_dt = None
         if isinstance(created, str):
             try:
@@ -255,7 +243,7 @@ def main(key_path: str = 'firebase_key.json', out_dir: str = 'articles'):
         except Exception:
             pass
 
-        filename = f"{slug}_{doc.id}.md"
+        filename = f"{slug}_{data.get('id')}.md"
         fp = out_path / filename
         try:
             with open(fp, 'w', encoding='utf-8') as fh:

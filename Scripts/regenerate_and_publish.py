@@ -23,16 +23,28 @@ repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from workers.tools.firebase_client import get_firebase_client
+from workers.tools.pg_client import get_pg_client
 from workers.article_generator.translator import ArticleTranslator
 from workers.publisher.worker import PublisherWorker
 
 
-def load_article(db, article_id: str):
-    # Try articles_ru first
-    doc = db.collection('articles_ru').document(article_id).get()
-    if getattr(doc, 'exists', False):
-        return doc.to_dict() or {}, 'articles_ru', article_id
+def load_article(pg, article_id: str):
+    # Try articles_ru in Postgres
+    try:
+        rows = pg.fetch_translated_for_publish(limit=1, min_score=0)
+        for r in rows:
+            if r.get('article_id') == article_id or str(r.get('id')) == str(article_id):
+                return r, 'articles_ru', article_id
+    except Exception:
+        pass
+
+    # Fallback: try articles table
+    try:
+        rec = pg.fetch_article_by_id(article_id)
+        if rec:
+            return rec, 'articles', article_id
+    except Exception:
+        pass
 
     return None, None, None
 
@@ -105,11 +117,10 @@ def main(article_id: str):
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger('regenerate_and_publish')
 
-    fb = get_firebase_client()
-    db = fb.db
+    pg = get_pg_client()
 
     # Load article data
-    data, which, doc_id = load_article(db, article_id)
+    data, which, doc_id = load_article(pg, article_id)
     if data is None:
         logger.error('Article %s not found in articles_ru or articles', article_id)
         return 2
@@ -135,12 +146,10 @@ def main(article_id: str):
         return 4
 
     # Save stage6 result back to articles_ru (do not touch updated_at)
-    update_payload = {
-        'telegram_preview': tg_preview,
-        'telegram_flags': tg_flags,
-        'telegram_final': tg_result,
-    }
-    db.collection('articles_ru').document(article_id).set(update_payload, merge=True)
+    try:
+        pg.save_generated_article(article_id, {'telegram_preview': tg_preview, 'telegram_flags': tg_flags, 'telegram_final': tg_result, 'updated_at': datetime.utcnow().isoformat()})
+    except Exception:
+        pass
 
     saved_token = os.environ.get('TELEGRAM_BOT_TOKEN')
     try:
@@ -173,7 +182,34 @@ def main(article_id: str):
             'chat_id': pub._get_chat_id(),
             'created_at': datetime.utcnow().isoformat(),
         }
-        db.collection('telegram_posts').add(post_record)
+        try:
+            conn, pooled = pg._get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS public.telegram_posts (
+                    id serial PRIMARY KEY,
+                    article_id text,
+                    telegram_message jsonb,
+                    chat_id text,
+                    created_at timestamptz
+                )
+                """)
+                cur.execute("INSERT INTO public.telegram_posts (article_id, telegram_message, chat_id, created_at) VALUES (%s, %s::jsonb, %s, %s)", (
+                    post_record.get('article_id'), json.dumps(post_record.get('telegram_message')), post_record.get('chat_id'), post_record.get('created_at')
+                ))
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                pg._put_conn(conn, pooled)
+        except Exception:
+            pass
     except Exception:
         logger.exception('Failed to record telegram_posts for %s', article_id)
 
@@ -206,14 +242,48 @@ def main(article_id: str):
         print(f'TELEGRAM_MESSAGE_URL={message_url}')
 
     try:
-        db.collection('articles_ru').document(article_id).set({'published_to_telegram': True, 'published_to_telegram_at': datetime.utcnow().isoformat(), 'status': 'PUBLISHED'}, merge=True)
+        pg._connect()
+        conn, pooled = pg._get_conn()
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE public.articles_ru SET published_to_telegram = %s, published_at = %s, status = %s, updated_at = %s WHERE article_id = %s", (True, datetime.utcnow().isoformat(), 'PUBLISHED', datetime.utcnow().isoformat(), article_id))
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+        finally:
+            pg._put_conn(conn, pooled)
     except Exception:
         logger.exception('Failed to mark articles_ru %s as published', article_id)
 
     try:
-        art_doc = db.collection('articles').document(article_id)
-        if art_doc.get().exists:
-            db.collection('articles').document(article_id).set({'status': 'PUBLISHED'}, merge=True)
+        try:
+            rec = pg.fetch_article_by_id(article_id)
+            if rec:
+                conn, pooled = pg._get_conn()
+                try:
+                    cur = conn.cursor()
+                    try:
+                        cur.execute("UPDATE public.articles SET status = %s WHERE id = %s", ('PUBLISHED', article_id))
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                    finally:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                finally:
+                    pg._put_conn(conn, pooled)
+        except Exception:
+            pass
     except Exception:
         logger.exception('Failed to update articles %s status', article_id)
 
