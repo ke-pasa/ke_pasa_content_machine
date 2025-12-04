@@ -50,30 +50,18 @@ jobs:
             echo "No workers/publisher/requirements.txt found, skipping."
           fi
 
-      - name: Write Firebase service account key (optional)
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
-            echo "Writing firebase_key.json from FIREBASE_SERVICE_ACCOUNT secret"
-            printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > firebase_key.json
-            ls -l firebase_key.json || true
-            echo "GOOGLE_APPLICATION_CREDENTIALS=$PWD/firebase_key.json" >> $GITHUB_ENV
-          else
-            echo "FIREBASE_SERVICE_ACCOUNT not set — skipping firebase_key.json write"
-          fi
-
       - name: Export env vars
         run: |
           echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> $GITHUB_ENV
           echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" >> $GITHUB_ENV
-          if [ -f "$GITHUB_WORKSPACE/firebase_key.json" ]; then echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/firebase_key.json" >> $GITHUB_ENV; fi
+          # If you use Postgres in CI, set POSTGRES_URL secret; otherwise worker should fallback to configured DB
+          echo "POSTGRES_URL=${{ secrets.POSTGRES_URL }}" >> $GITHUB_ENV
 
       - name: Run publisher worker (full)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           LIMIT: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.limit != '' && github.event.inputs.limit) || '3' }}
         run: |
           echo "Starting publisher worker (LIMIT=$LIMIT)"

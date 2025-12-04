@@ -20,17 +20,8 @@ try:
 except ImportError:
     pass  # dotenv is optional, variables can be set by system
 
-# Project imports
-# Firebase client is optional when running without Firebase (CI/test).
-try:
-    from workers.tools.firebase_client import get_firebase_client
-except Exception:
-    # Provide a dummy fallback so the worker can be instantiated without firebase_admin
-    def get_firebase_client():
-        class _Dummy:
-            db = None
-        return _Dummy()
 from .config import RSSConfig
+import traceback
 
 
 class RSSWorker:
@@ -44,16 +35,21 @@ class RSSWorker:
             config: Worker configuration
         """
         self.config = config or RSSConfig.from_env()
-        self.db = get_firebase_client().db
         self.instance_id = str(uuid.uuid4())[:8]
-        
+
+        self.db = None
+        self.pg = None
+
+        try:
+            from workers.tools.pg_client import get_pg_client
+            self.pg = get_pg_client()
+            print("✅ Postgres client initialized for RSS worker (lazy)")
+        except Exception:
+            self.pg = None
+
         print(f"[rss-worker] Starting worker id={self.instance_id}")
         print(f"[rss-worker] Feeds file: {self.config.feeds_file}")
-    print(f"[rss-worker] Locking disabled (running without Firebase locks)")
-
-    # Locking via Firebase has been disabled. The worker will run without
-    # acquiring or releasing a global lock. This simplifies CI runs but
-    # may allow concurrent workers to process the same feeds.
+        print(f"[rss-worker] Locking disabled (running without Firebase locks)")
 
     def process_feeds(self) -> dict:
         """
@@ -62,8 +58,6 @@ class RSSWorker:
         Returns:
             Dictionary with processing results
         """
-        # Locking disabled: proceed immediately.
-        
         try:
             # Check if file exists
             if not os.path.exists(self.config.feeds_file):
@@ -131,6 +125,7 @@ class RSSWorker:
                     
                 except Exception as e:
                     print(f"[rss-worker] ❌ Feed check error: {e}")
+                    traceback.print_exc()
                     not_working_feeds.append(feed_url)
                     continue
             
@@ -161,8 +156,19 @@ class RSSWorker:
                     for feed in valid_feeds:
                         f.write(feed + '\n')
                 
-                # Process temp file
-                result = parser.process_multiple_feeds(temp_feeds_file)
+                # Prefetch uploaded links once and pass to parser to avoid repeated DB calls
+                shared_uploaded_links = set()
+                try:
+                    if self.pg and hasattr(self.pg, 'get_recent_article_links'):
+                        shared_uploaded_links = set(self.pg.get_recent_article_links(24) or set())
+                        if shared_uploaded_links:
+                            print(f"[rss-worker] ℹ️ Prefetched {len(shared_uploaded_links)} recent links from Postgres")
+                except Exception as e:
+                    print(f"[rss-worker] ⚠️ Could not prefetch recent links: {e}")
+                    traceback.print_exc()
+
+                # Process temp file with shared uploaded-links cache
+                result = parser.process_multiple_feeds(temp_feeds_file, shared_uploaded_links=shared_uploaded_links)
                 
                 # Delete temp file
                 if os.path.exists(temp_feeds_file):
@@ -189,7 +195,6 @@ class RSSWorker:
                 'message': str(e)
             }
         finally:
-            # No lock to release when locking is disabled
             print(f"[rss-worker] Locking disabled — no lock to release")
     
     def _update_feeds_file(self, filepath: str, valid_feeds: list):

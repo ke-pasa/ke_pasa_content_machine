@@ -46,13 +46,10 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
         run: |
           source .venv/bin/activate
-          # If Firebase credentials are provided as JSON string, write to file
-          if [ -n "$FIREBASE_CREDENTIALS" ]; then
-            echo "$FIREBASE_CREDENTIALS" > firebase_key.json
-          fi
+          # If you need to provide Firebase credentials, re-enable writing firebase_key.json
 
       - name: Run full generate and publish
         env:

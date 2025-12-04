@@ -16,7 +16,9 @@ import json
 import time
 import requests
 import threading
+from workers.tools.url_utils import compute_article_id
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import traceback
 from datetime import datetime
 from dateutil import parser as date_parser
 from urllib.parse import urlparse
@@ -101,10 +103,25 @@ class ImprovedFeedParser:
                 except Exception:
                     _feedparser = None
 
-                if _feedparser:
-                    feed = _feedparser.parse(feed_url)
-                else:
-                    feed = None
+                feed = None
+                # Fetch the URL ourselves first to get consistent behavior and
+                # to be able to inspect headers/content when parsing fails.
+                try:
+                    resp = self.session.get(feed_url, timeout=20)
+                    resp.raise_for_status()
+                    content_type = resp.headers.get('content-type')
+                    content_bytes = resp.content
+                    if _feedparser:
+                        try:
+                            feed = _feedparser.parse(content_bytes)
+                        except Exception as e:
+                            feed = None
+                            print(f"⚠️  feedparser.parse raised while parsing bytes: {e}")
+                except Exception as e:
+                    # If fetching fails, fall back to letting feedparser fetch itself
+                    print(f"⚠️  HTTP fetch failed for {feed_url}: {e}")
+                    content_type = None
+                    content_bytes = None
                 
                 if not feed.bozo and feed.entries:
                     return feed
@@ -178,7 +195,6 @@ class ImprovedFeedParser:
         # Remove div elements embedded in RSS
         xml_content = re.sub(r'<div[^>]*>.*?</div>', '', xml_content, flags=re.DOTALL)
         
-        # Remove HTML comments
         xml_content = re.sub(r'<!--.*?-->', '', xml_content, flags=re.DOTALL)
         
         # Collapse excessive whitespace and newlines
@@ -336,7 +352,10 @@ def get_full_text(link: str) -> Optional[str]:
             for element in soup.select(selector):
                 element.decompose()
 
-        # Try to find the main content using BeautifulSoup
+        # Try to find the main content using BeautifulSoup heuristics first
+        content = None
+
+        # Candidate selectors to inspect for main content
         content_selectors = [
             'article',
             '[class*="content"]',
@@ -349,20 +368,35 @@ def get_full_text(link: str) -> Optional[str]:
             '.entry-content',
             '#content',
             '#article',
-            '#post'
+            '#post',
+            'div'
         ]
 
-        content = None
+        candidates = []
         for selector in content_selectors:
-            elements = soup.select(selector)
-            if elements:
-                # Choose the largest element by text length
-                largest_element = max(elements, key=lambda x: len(x.get_text()))
-                if len(largest_element.get_text().strip()) > 100:
-                    content = largest_element
-                    break
+            try:
+                elems = soup.select(selector)
+            except Exception:
+                elems = []
+            for el in elems:
+                text = el.get_text(separator=' ', strip=True)
+                if not text:
+                    continue
+                # score candidate by length and tag density (text / total length)
+                text_len = len(text)
+                html_len = len(str(el))
+                density = float(text_len) / max(1, html_len)
+                score = text_len * (0.5 + density)
+                candidates.append((score, text_len, density, el))
 
-        # If BeautifulSoup didn't find content, fall back to readability-lxml (if available)
+        if candidates:
+            # choose best candidate by score
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best = candidates[0]
+            if best[1] > 150 or best[2] > 0.15:
+                content = best[3]
+
+        # If BeautifulSoup heuristics didn't find good content, fall back to readability-lxml
         if not content:
             try:
                 try:
@@ -407,7 +441,7 @@ def get_full_text(link: str) -> Optional[str]:
 class RSSParser:
     """RSS parser class that extracts content and performs basic filtering."""
     
-    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_lock: threading.Lock = None, shared_recent_links: set = None):
+    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_lock: threading.Lock = None, shared_uploaded_links: set = None):
         # Load environment variables from .env file
         load_env_file()
         self.session = requests.Session()
@@ -419,7 +453,7 @@ class RSSParser:
         self._host_last_time = shared_host_last_time if shared_host_last_time is not None else {}
         # Shared lock to protect host timing and runtime sets when used concurrently
         self._lock = shared_lock or threading.Lock()
-        # Flag to bypass Firebase cache (duplicates/skips) for a single run
+
         self._bypass_db_cache = os.getenv('BYPASS_DB_CACHE', '0') == '1'
         try:
             self._per_host_delay_ms = int(os.getenv('RSS_PER_HOST_DELAY_MS', '1500'))
@@ -431,34 +465,12 @@ class RSSParser:
         self._lm_cache = load_json_cache(self._lm_cache_path)
 
         self.db = None
+        self.pg = None
 
         self.processed_articles = shared_processed_articles if shared_processed_articles is not None else set()
         self._seen_links_runtime = shared_seen_links_runtime if shared_seen_links_runtime is not None else set()
 
-        self._recent_links_24h = shared_recent_links if shared_recent_links is not None else set()
-        if not self._recent_links_24h:
-            try:
-                if not self._bypass_db_cache:
-                    from workers.tools.firebase_client import get_firebase_client, normalize_link
-                    client = get_firebase_client()
-                    try:
-                        recent = client.get_recent_article_links(24) or set()
-                        # Normalize recent links as well to match parser-side normalization
-                        self._recent_links_24h = set(normalize_link(l) for l in recent if l)
-                        if self._recent_links_24h:
-                            print(f"ℹ️  Prefetched {len(self._recent_links_24h)} recent links from Firebase")
-                    except Exception as e:
-                        # Non-fatal: continue without recent-links optimization
-                        print(f"⚠️  Could not fetch recent links: {e}")
-            except Exception:
-                # If Firebase import or init fails, leave the set empty
-                self._recent_links_24h = set()
-
-        # Always use direct requests (batch system removed)
-        self.use_batch = False
-
-        # (LLM feature flag removed from this parser — LLM-related logic
-        # is not controlled here.)
+        self._uploaded_links = shared_uploaded_links if shared_uploaded_links is not None else set()
 
 
     def _respect_per_host_delay(self, feed_url: str):
@@ -549,85 +561,66 @@ class RSSParser:
         Returns:
             Created article ID or None on error
         """
-    # Ensure Firebase client is available (lazy init). If initialization
-        # fails we must fail fast and raise so callers (CI) notice.
-        if not self.db:
-            try:
-                from workers.tools.firebase_client import get_firebase_client
-                self.db = get_firebase_client()
-                print("✅ Firebase connected successfully (lazy init)")
-            except Exception as e:
-                # Fail fast: require Firebase to be initialized when persisting here
-                raise RuntimeError(f"Firebase client is not initialized; cannot persist article: {e}")
-
-        # Create deterministic ID from link+title using centralized helper
+        # Postgres-only save path
+        # Create deterministic ID and prepare article_data
         link = article.get('link', '')
         title = article.get('title', '')
-        try:
-            # import lazily to avoid heavy firebase admin initialization at module import
-            from workers.tools.firebase_client import compute_article_id
-            article_id = compute_article_id(link, title)
-        except Exception:
-            # Fallback: local md5 if helper cannot be imported
-            import hashlib
-            article_id = hashlib.md5(f"{link}{title}".encode()).hexdigest()
+        # Deterministic id (centralized helper)
+        article_id = compute_article_id(link or '', title or '')[:32]
 
-        # Prepare data for saving (minimal base record)
         article_data = {
             'article_id': article_id,
+            'id': article_id,
             'title': title,
             'summary': article.get('summary', ''),
             'content': article.get('content', ''),
             'link': link,
+            'published_date': article.get('published', None),
             'image': article.get('image', ''),
             'categories': article.get('categories', []),
-            'published_date': article.get('published', ''),
             'source_feed': article.get('feed_title', ''),
             'source_link': link,
-            'created_at': datetime.now().isoformat(),
-            # lifecycle/status field: NEW when first saved by RSS parser
+            'created_at': article.get('created_at') or datetime.now().isoformat(),
+            'updated_at': article.get('updated_at') or datetime.now().isoformat(),
             'status': article.get('status', 'NEW'),
-            'published': False,
-            'processed': False,
-            'is_clustered': False,
-            'urgent': article.get('urgent', False),
-            'priority_score': 0
+            'published': article.get('published_flag') if 'published_flag' in article else None
         }
 
-        # Use firebase client to save (client will use same md5 key internally)
-        # Verbose debug output (optional)
         try:
-            verbose = os.getenv('RSS_VERBOSE', '0') == '1'
-        except Exception:
-            verbose = False
+            if not self.pg:
+                from workers.tools.pg_client import get_pg_client
+                self.pg = get_pg_client()
+        except Exception as e:
+            print(f"    ⚠️  Could not initialize Postgres client: {e}")
+            traceback.print_exc()
+            self.pg = None
 
-        if verbose:
-            content_len = len(article_data.get('content') or '')
-            print(f"[RSS_VERBOSE] Preparing to save article id={article_id} link={link} title={title[:60]} content_len={content_len}")
-
-        saved = self.db.save_article(article_data)
-
-        if saved:
-            print(f"✅ Article saved to Firebase: {article_id[:8]}...")
-            if verbose:
-                try:
-                    # show a short sample of the saved doc (keys only) to avoid big prints
-                    doc = None
+        if self.pg:
+            try:
+                status = self.pg.save_article(article_data)
+                # status is one of: 'inserted', 'exists', 'error'
+                if status == 'inserted':
                     try:
-                        # attempt to use the canonical firebase client helper for inspection
-                        from workers.tools.firebase_client import get_firebase_client
-                        doc_client = get_firebase_client()
-                        sample = doc_client.get_article_doc(article_id)
-                        if sample:
-                            keys = ','.join(sorted(list(sample.keys())))[:200]
-                            print(f"[RSS_VERBOSE] Saved doc keys: {keys}")
+                        verbose = os.getenv('RSS_VERBOSE', '0')
+                        verbose = True if verbose.lower() in ('1', 'true', 'yes') else False
                     except Exception:
-                        pass
-                except Exception:
-                    pass
-            return article_id
+                        verbose = False
+                    if verbose:
+                        print(f"[RSS_VERBOSE] Article saved to Postgres: {article_id[:8]}")
+                    return article_id
+                elif status == 'exists':
+                    print(f"    🔁 Already in DB by id (Postgres): {article_id[:8]}")
+                    # Treat existing row as effectively saved for callers
+                    return article_id
+                else:
+                    print(f"    ⚠️  Postgres reported save failure for {article_id[:8]}")
+                    return None
+            except Exception as e:
+                print(f"    ⚠️  Postgres save error: {e}")
+                traceback.print_exc()
+                return None
         else:
-            print("❌ Firebase reported failure when saving article")
+            print("❌ No Postgres client available to save article")
             return None
 
     
@@ -675,14 +668,28 @@ class RSSParser:
                 # If standard parsing failed or feedparser missing, try improved parser
                 if (not feed) or getattr(feed, 'bozo', False) or len(getattr(feed, 'entries', [])) == 0:
                     print(f"⚠️  Standard parsing failed or feedparser missing, trying improved parser...")
-                    improved_parser = ImprovedFeedParser()
-                    improved_feed = improved_parser.parse_feed(feed_url)
+                    # Diagnostic dump when content_bytes available
+                    try:
+                        if content_bytes:
+                            snippet = content_bytes[:800].decode('utf-8', 'replace')
+                            print(f"⚠️  Response content-type={content_type}; snippet={snippet[:300].replace(chr(10),' ')}")
+                    except Exception:
+                        pass
 
-                    if improved_feed and improved_feed.get('entries'):
-                        print(f"✅ Improved parser succeeded: {len(improved_feed['entries'])} entries")
-                        feed = improved_feed
-                    else:
-                        print(f"❌ Improved parser also failed")
+                    # Try improved parser as a fallback which does manual XML parsing
+                    try:
+                        improved_parser = ImprovedFeedParser()
+                        improved_feed = improved_parser.parse_feed(feed_url)
+                        if improved_feed and improved_feed.get('entries'):
+                            print(f"✅ Improved parser succeeded: {len(improved_feed['entries'])} entries")
+                            feed = improved_feed
+                        else:
+                            print(f"❌ Improved parser also failed (no entries)")
+                            return None
+                    except Exception as e:
+                        print(f"❌ Improved parser exception: {e}")
+                        import traceback
+                        traceback.print_exc()
                         return None
 
             except Exception as parse_error:
@@ -744,6 +751,7 @@ class RSSParser:
 
         except Exception as e:
             print(f"❌ Error parsing RSS feed {feed_url}: {e}")
+            traceback.print_exc()
             return None
     
     def _parse_entry(self, entry) -> Optional[Dict[str, Any]]:
@@ -1050,50 +1058,42 @@ class RSSParser:
         saved_count = 0
         duplicate_count = 0
         
-        def _norm_link(u: str) -> str:
-            try:
-                pu = urlparse(u)
-                return f"{pu.scheme}://{pu.netloc}{pu.path}"
-            except Exception:
-                return u or ''
+        from workers.tools.url_utils import normalize_link as _norm_link
 
+        # De-duplicate only by normalized link within the incoming batch.
         unique = {}
-        for a in articles:
-            k = _norm_link(a.get('link', '')) or a.get('title', '')
-            if k and k not in unique:
+        for idx, a in enumerate(articles):
+            k = _norm_link(a.get('link', ''))
+            # If there's no link, treat each item as unique (don't collapse by title)
+            if not k:
+                k = f"__nolink__{idx}"
+            if k not in unique:
                 unique[k] = a
         articles = list(unique.values())
 
         for i, article in enumerate(articles, 1):
             print(f"  Checking article {i}/{len(articles)}: {article.get('title', '')[:50]}...")
             
-            # Check article uniqueness by link and title
+            # Check article uniqueness by normalized link only
             article_link = article.get('link', '')
             article_title = article.get('title', '')
-            article_key = (article_link, article_title)
+            article_link_norm = _norm_link(article_link) if article_link else ''
             stats['valid'] += 1
             
-            # Check processed_articles with lock when shared between threads
+            # Check processed_articles with lock when shared between threads (use normalized link)
             try:
                 with self._lock:
-                    if article_key in self.processed_articles:
+                    if article_link_norm and article_link_norm in self.processed_articles:
                         print(f"    ⚠️  Duplicate: {article_title[:30]}...")
                         stats['duplicates'] += 1
                         duplicate_count += 1
                         continue
             except Exception:
-                if article_key in self.processed_articles:
+                if article_link_norm and article_link_norm in self.processed_articles:
                     print(f"    ⚠️  Duplicate: {article_title[:30]}...")
                     stats['duplicates'] += 1
                     duplicate_count += 1
                     continue
-            
-            # Normalize link for runtime checks (if available)
-            try:
-                from workers.tools.firebase_client import normalize_link
-                article_link_norm = normalize_link(article_link) if article_link else article_link
-            except Exception:
-                article_link_norm = article_link
 
             # Local duplicate in current run (use normalized link)
             try:
@@ -1112,9 +1112,9 @@ class RSSParser:
                 if article_link_norm:
                     self._seen_links_runtime.add(article_link_norm)
 
-            # QUICK CHECK: if link was seen in the last 24 hours (prefetched from Firebase), skip
+            # QUICK CHECK: if link was seen in the last 24 hours (prefetched), skip
             try:
-                if article_link_norm and article_link_norm in getattr(self, '_recent_links_24h', set()):
+                if article_link_norm and article_link_norm in getattr(self, '_uploaded_links', set()):
                     print(f"    🔁 Recently processed within 24h, skipping")
                     duplicate_count += 1
                     continue
@@ -1122,50 +1122,33 @@ class RSSParser:
                 # Fail-safe: if something goes wrong with recent-links set, continue normally
                 pass
 
-            # Check duplicate in Firebase by link (can be disabled with BYPASS_DB_CACHE=1)
+            # Check duplicate by link using Postgres (if available)
             try:
-                is_dup_by_link = False
-                if self.db and (not self._bypass_db_cache) and hasattr(self.db, 'is_duplicate_by_link'):
-                    is_dup_by_link = self.db.is_duplicate_by_link(article_link)
-                elif (not self._bypass_db_cache):
-                    # Try obtaining the canonical firebase client and check there
+                if (not self._bypass_db_cache) and self.pg and hasattr(self.pg, 'is_duplicate_by_link'):
                     try:
-                        from workers.tools.firebase_client import get_firebase_client
-                        client = get_firebase_client()
-                        if hasattr(client, 'is_duplicate_by_link'):
-                            is_dup_by_link = client.is_duplicate_by_link(article_link)
-                    except Exception:
-                        is_dup_by_link = False
+                        if self.pg.is_duplicate_by_link(article_link):
+                            print(f"    🔁 Already in DB by link (Postgres), skipping")
+                            duplicate_count += 1
+                            continue
+                    except Exception as e:
+                        print(f"    ⚠️  Duplicate-by-link check error (Postgres): {e}")
+            except Exception:
+                pass
 
-                if is_dup_by_link:
-                    print(f"    🔁 Already in DB by link, skipping")
-                    duplicate_count += 1
-                    continue
-            except Exception as e:
-                print(f"    ⚠️  Duplicate-by-link check error: {e}")
-
-            # Check: recently skipped entries (can be disabled with BYPASS_DB_CACHE=1)
+            # Check: recently skipped entries (Postgres helper if available)
             try:
-                was_skipped = False
-                if self.db and (not self._bypass_db_cache) and hasattr(self.db, 'was_skipped_recently'):
-                    was_skipped = self.db.was_skipped_recently(article_link, article_title, article.get('summary', ''))
-                elif (not self._bypass_db_cache):
+                if (not self._bypass_db_cache) and self.pg and hasattr(self.pg, 'was_skipped_recently'):
                     try:
-                        from workers.tools.firebase_client import get_firebase_client
-                        client = get_firebase_client()
-                        if hasattr(client, 'was_skipped_recently'):
-                            was_skipped = client.was_skipped_recently(article_link, article_title, article.get('summary', ''))
-                    except Exception:
-                        was_skipped = False
+                        if self.pg.was_skipped_recently(article_link, article_title, article.get('summary', '')):
+                            print(f"    🔁 Previously skipped (SKIPPED cache), skipping")
+                            duplicate_count += 1
+                            continue
+                    except Exception as e:
+                        print(f"    ⚠️  SKIPPED check error (Postgres): {e}")
+            except Exception:
+                pass
 
-                if was_skipped:
-                    print(f"    🔁 Previously skipped (SKIPPED cache), skipping")
-                    duplicate_count += 1
-                    continue
-            except Exception as e:
-                print(f"    ⚠️  SKIPPED check error: {e}")
-
-            # Check duplicate in Firebase (combined), can be disabled with BYPASS_DB_CACHE=1
+            # Final duplicate check (Postgres-backed) — prefer link-only check
             if (not self._bypass_db_cache) and self.is_duplicate(article):
                 duplicate_count += 1
                 continue
@@ -1178,8 +1161,7 @@ class RSSParser:
                     article['content'] = full_text
                     print(f"    📄 Full text extracted ({len(full_text)} characters)")
                     stats['text_extracted'] += 1
-                    # Persist article to Firebase. Attempt to save unconditionally so
-                    # lazy initialization occurs and we fail-fast if Firebase is not available.
+
                     try:
                         article_id = self.save_article(article)
                         if article_id:
@@ -1187,9 +1169,8 @@ class RSSParser:
                             stats['saved'] += 1
                             saved_count += 1
                         else:
-                            print(f"    ⚠️  Failed to persist article to Firebase: {article.get('title','')[:40]}")
+                            print(f"    ⚠️  Failed to persist article to Postgres: {article.get('title','')[:40]}")
                     except RuntimeError:
-                        # Critical: Firebase initialization failed — re-raise to fail-fast
                         raise
                     except Exception as e:
                         # Non-initialization errors when saving should be logged but
@@ -1199,10 +1180,11 @@ class RSSParser:
                     # Mark as processed in this run and append to results (protected by lock)
                     try:
                         with self._lock:
-                            self.processed_articles.add(article_key)
+                            # store normalized link as processed key
+                            self.processed_articles.add(article_link_norm)
                             filtered_articles.append(article)
                     except Exception:
-                        self.processed_articles.add(article_key)
+                        self.processed_articles.add(article_link_norm)
                         filtered_articles.append(article)
                 else:
                     print(f"    ⚠️  Failed to extract full text")
@@ -1295,7 +1277,7 @@ class RSSParser:
             
             print()
     
-    def process_multiple_feeds(self, feeds_file: str = 'feeds.txt') -> List[Dict[str, Any]]:
+    def process_multiple_feeds(self, feeds_file: str = 'feeds.txt', shared_uploaded_links: set = None) -> List[Dict[str, Any]]:
         """
         Process multiple RSS feeds listed in a file.
 
@@ -1318,20 +1300,9 @@ class RSSParser:
         print(f"📋 Found {len(feeds)} RSS feeds to process")
         print("=" * 60)
 
-        shared_recent_links = set()
-        try:
-            if not os.getenv('BYPASS_DB_CACHE', '0') == '1':
-                try:
-                    from workers.tools.firebase_client import get_firebase_client, normalize_link
-                    client = get_firebase_client()
-                    recent = client.get_recent_article_links(24) or set()
-                    shared_recent_links = set(normalize_link(l) for l in recent if l)
-                    if shared_recent_links:
-                        print(f"ℹ️  Prefetched {len(shared_recent_links)} recent links from Firebase")
-                except Exception as e:
-                    print(f"⚠️  Could not prefetch recent links: {e}")
-        except Exception:
-            shared_recent_links = set()
+        # Allow caller to provide a prefetch set to avoid multiple DB queries.
+        if shared_uploaded_links is None:
+            shared_uploaded_links = set()
 
         shared_host_last_time = {}
         shared_processed_articles = set()
@@ -1356,7 +1327,7 @@ class RSSParser:
                                    shared_processed_articles=shared_processed_articles,
                                    shared_seen_links_runtime=shared_seen_links_runtime,
                                    shared_lock=shared_lock,
-                                   shared_recent_links=shared_recent_links)
+                                   shared_uploaded_links=shared_uploaded_links)
 
                 feed_data = parser.parse_feed(feed_url)
                 if not feed_data or not feed_data.get('entries'):
@@ -1448,6 +1419,20 @@ class RSSParser:
 
         print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
+        # Optional cleanup: purge old articles older than 15 days from Postgres
+        try:
+            if hasattr(self, 'pg') and self.pg:
+                try:
+                    deleted = self.pg.purge_older_than(15)
+                    if deleted >= 0:
+                        print(f"   🧹 Purged {deleted} articles older than 15 days from Postgres")
+                    else:
+                        print("   🧹 Purge executed but rowcount unknown")
+                except Exception as e:
+                    print(f"   ⚠️  Purge failed: {e}")
+        except Exception:
+            pass
+
         return all_articles
 
     def load_feeds_from_file(self, filename: str) -> List[str]:
@@ -1478,36 +1463,27 @@ class RSSParser:
         Returns:
             True if the article already exists in the DB, False if new
         """
-        # If no db is configured, we can't check duplicates
-        if not self.db:
-            return False
+        article_link = article.get('link', '')
+        article_title = article.get('title', '')
+
+        # Prefer Postgres duplicate checks
+        try:
+            if not self.pg:
+                from workers.tools.pg_client import get_pg_client
+                self.pg = get_pg_client()
+        except Exception:
+            self.pg = None
 
         try:
-            article_link = article.get('link', '')
-            article_title = article.get('title', '')
-
-            # Prefer the FirebaseClient method if available
-            if hasattr(self.db, 'is_duplicate_article'):
-                is_duplicate = self.db.is_duplicate_article(article_link, article_title)
-            else:
-                # Fall back to canonical firebase client instance
-                try:
-                    from workers.tools.firebase_client import get_firebase_client
-                    client = get_firebase_client()
-                    is_duplicate = getattr(client, 'is_duplicate_article', lambda l, t: False)(article_link, article_title)
-                except Exception:
-                    is_duplicate = False
-
-            if is_duplicate:
-                print(f"    🔁 Already published, skipping")
-                return True
-            else:
-                print(f"    ✅ New article, saving")
-                return False
-
+            if self.pg and hasattr(self.pg, 'is_duplicate_article'):
+                if self.pg.is_duplicate_article(article_link, article_title):
+                    print(f"    🔁 Already in Postgres, skipping")
+                    return True
         except Exception as e:
-            print(f"    ⚠️  Duplicate check error: {e}")
-            return False
+            print(f"    ⚠️  Duplicate check error (Postgres): {e}")
+
+        print(f"    ✅ New article, saving")
+        return False
 
 
 def main():

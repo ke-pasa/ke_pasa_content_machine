@@ -12,17 +12,7 @@ import importlib
 from .news_filter_prompt import get_news_filter_prompt
 from workers.tools.openai_client import parse_json_from_text
 
-
-# Helpers that prefer test-time monkeypatching via the thin worker module.
-def _get_firebase_client():
-    try:
-        worker_mod = importlib.import_module('workers.categorization.worker')
-        if hasattr(worker_mod, 'get_firebase_client') and worker_mod.get_firebase_client:
-            return worker_mod.get_firebase_client()
-    except Exception:
-        pass
-    from workers.tools.firebase_client import get_firebase_client as _gf
-    return _gf()
+# Firebase client removed — this worker uses Postgres via `workers.tools.pg_client`.
 
 
 def _get_openai_client():
@@ -61,7 +51,12 @@ from .config import CategorizationConfig
 
 
 class CategorizationWorker:
-    """Categorization worker with paginated reads from Firestore."""
+    """Categorization worker with paginated reads from Postgres via `workers.tools.pg_client`.
+
+    This worker was migrated away from Firestore and now uses the `PGClient` adapter
+    exposed by `workers.tools.pg_client.get_pg_client()`. The code still defensively
+    handles Firestore-like objects for backward compatibility, but reads/writes use Postgres.
+    """
 
     def __init__(self, config: CategorizationConfig = None, batch_size: int = None):
         self.config = config or CategorizationConfig.from_env()
@@ -74,13 +69,13 @@ class CategorizationWorker:
         else:
             self.config.batch_size = int(getattr(self.config, 'batch_size', 10) or 10)
 
-        self.db = _get_firebase_client().db
+        from workers.tools.pg_client import get_pg_client
+        self.pg = get_pg_client()
         self.instance_id = str(uuid.uuid4())[:8]
 
     def categorize_new_articles(self) -> Dict:
         results = {'processed': 0, 'errors': []}
 
-        # Per-run score buckets accumulator
         score_buckets = {
             '90+': 0,
             '80-90': 0,
@@ -102,14 +97,8 @@ class CategorizationWorker:
                 limit_for_query = min(chunk_size, requested_total - processed_total)
 
                 try:
-                    query = self.db.collection('articles').where('status', '==', 'NEW').order_by('created_at').limit(limit_for_query)
-                    if last_snapshot is not None:
-                        try:
-                            query = query.start_after(last_snapshot)
-                        except Exception:
-                            pass
-
-                    docs = list(query.stream())
+                    # last_snapshot is a cursor dict with 'created_at' and 'id'
+                    docs = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='NEW')
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
 
@@ -129,13 +118,24 @@ class CategorizationWorker:
 
                 def _process_doc(doc):
                     try:
-                        doc_id = doc.id
-                        data = doc.to_dict() or {}
+                        # Expect normalized row dicts from Postgres
+                        if isinstance(doc, dict):
+                            doc_id = doc.get('id')
+                            data = doc
+                        else:
+                            # Defensive fallback: try to handle Firestore-like objects
+                            try:
+                                doc_id = getattr(doc, 'id', None)
+                                data = doc.to_dict() or {}
+                            except Exception:
+                                doc_id = None
+                                data = {}
+
                         title = data.get('title', '')
                         description = data.get('description', '') or ''
                         content = data.get('content', '') or ''
-                        tags = data.get('tags', []) or []
-                        source = data.get('source', '') or ''
+                        tags = data.get('tags', []) or data.get('categories', []) or []
+                        source = data.get('source', '') or data.get('link', '') or ''
                         pub_date = data.get('pub_date', '') or ''
 
                         feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
@@ -223,13 +223,20 @@ class CategorizationWorker:
                         }
 
                         try:
-                            self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
-                            save_status = 'ok'
-                            result_line = f"[categorization] ✅ Article {doc_id} categorized"
-                            with lock:
-                                chunk_results['processed'] += 1
+                            ok = self.pg.save_article_categorization(doc_id, update_payload)
+                            if ok:
+                                save_status = 'ok'
+                                result_line = f"[categorization] ✅ Article {doc_id} categorized"
+                                with lock:
+                                    chunk_results['processed'] += 1
+                            else:
+                                err = f"Postgres save returned no rows updated for {doc_id}"
+                                save_status = {'error': err}
+                                result_line = f"[categorization] ❌ {err}"
+                                with lock:
+                                    chunk_results['errors'].append(err)
                         except Exception as e:
-                            err = f"Firebase save error for {doc_id}: {e}"
+                            err = f"Save error for {doc_id}: {e}"
                             save_status = {'error': str(e)}
                             result_line = f"[categorization] ❌ {err}"
                             with lock:
@@ -331,7 +338,12 @@ class CategorizationWorker:
                     break
 
                 try:
-                    last_snapshot = docs[-1]
+                    last_row = docs[-1]
+                    # pg.fetch_articles_new returns normalized rows with created_at and id
+                    if isinstance(last_row, dict):
+                        last_snapshot = {'created_at': last_row.get('created_at'), 'id': last_row.get('id')}
+                    else:
+                        last_snapshot = last_row
                 except Exception:
                     last_snapshot = None
 
@@ -357,61 +369,172 @@ class CategorizationWorker:
 
     def get_statistics(self) -> Dict:
         try:
-            articles = list(self.db.collection('articles').stream())
+            conn = self.pg._conn
+            cur = conn.cursor()
+
+            def column_exists(col_name: str) -> bool:
+                cur.execute("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='articles' AND column_name=%s)", (col_name,))
+                return bool(cur.fetchone()[0])
 
             stats = {
-                'total': len(articles),
+                'total': 0,
                 'urgent': 0,
                 'by_priority': {'high': 0, 'medium': 0, 'low': 0},
                 'by_category': {},
-                'score_buckets': {
-                    '90+': 0,
-                    '80-90': 0,
-                    '70-80': 0,
-                    '60-70': 0,
-                    '<60': 0
-                }
+                'score_buckets': {'90+': 0, '80-90': 0, '70-80': 0, '60-70': 0, '<60': 0}
             }
 
-            for doc in articles:
-                data = doc.to_dict() or {}
-                if data.get('urgent', False):
-                    stats['urgent'] += 1
-                priority = data.get('priority_score', 0)
-                if priority >= 8:
-                    stats['by_priority']['high'] += 1
-                elif priority >= 5:
-                    stats['by_priority']['medium'] += 1
-                else:
-                    stats['by_priority']['low'] += 1
-                for category in data.get('categories', []):
-                    stats['by_category'][category] = stats['by_category'].get(category, 0) + 1
+            # Total
+            cur.execute('SELECT COUNT(*) FROM public.articles')
+            stats['total'] = int(cur.fetchone()[0] or 0)
 
-                # Score buckets
+            # Urgent
+            if column_exists('urgent'):
+                cur.execute('SELECT COUNT(*) FROM public.articles WHERE urgent = TRUE')
+                stats['urgent'] = int(cur.fetchone()[0] or 0)
+
+            # Priority buckets (if priority_score column exists)
+            if column_exists('priority_score'):
+                cur.execute("SELECT SUM(CASE WHEN COALESCE(priority_score,0) >= 8 THEN 1 ELSE 0 END), SUM(CASE WHEN COALESCE(priority_score,0) >=5 AND COALESCE(priority_score,0) < 8 THEN 1 ELSE 0 END), SUM(CASE WHEN COALESCE(priority_score,0) < 5 THEN 1 ELSE 0 END) FROM public.articles")
+                row = cur.fetchone() or (0, 0, 0)
+                stats['by_priority']['high'] = int(row[0] or 0)
+                stats['by_priority']['medium'] = int(row[1] or 0)
+                stats['by_priority']['low'] = int(row[2] or 0)
+
+            # Categories aggregation
+            if column_exists('categories'):
                 try:
-                    ts = data.get('total_score')
-                    if ts is None and isinstance(data.get('interest'), dict):
-                        ts = data['interest'].get('total_score') or data['interest'].get('total')
-                    if ts is not None:
-                        try:
-                            val = float(ts)
-                        except Exception:
-                            val = None
-                        if val is not None:
-                            if val >= 90:
-                                stats['score_buckets']['90+'] += 1
-                            elif val >= 80:
-                                stats['score_buckets']['80-90'] += 1
-                            elif val >= 70:
-                                stats['score_buckets']['70-80'] += 1
-                            elif val >= 60:
-                                stats['score_buckets']['60-70'] += 1
-                            else:
-                                stats['score_buckets']['<60'] += 1
+                    cur.execute("SELECT elem, COUNT(*) FROM public.articles, jsonb_array_elements_text(COALESCE(categories, '[]'::jsonb)) AS elem GROUP BY elem")
+                    for cat, cnt in cur.fetchall():
+                        stats['by_category'][cat] = int(cnt or 0)
                 except Exception:
                     pass
 
-            return stats
+            # Score buckets based on total_score column (fallback to 0 when NULL)
+            if column_exists('total_score'):
+                cur.execute("SELECT SUM(CASE WHEN total_score >= 90 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=80 AND total_score < 90 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=70 AND total_score < 80 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=60 AND total_score < 70 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score < 60 THEN 1 ELSE 0 END) FROM public.articles WHERE total_score IS NOT NULL")
+                row = cur.fetchone() or (0, 0, 0, 0, 0)
+                stats['score_buckets']['90+'] = int(row[0] or 0)
+                stats['score_buckets']['80-90'] = int(row[1] or 0)
+                stats['score_buckets']['70-80'] = int(row[2] or 0)
+                stats['score_buckets']['60-70'] = int(row[3] or 0)
+                stats['score_buckets']['<60'] = int(row[4] or 0)
 
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+            return stats
         except Exception:
             return {}
+
+    def _process_single_doc(self, doc) -> Dict:
+        """
+        Process a single normalized row or Firestore-like doc and return a dict with result info.
+        This reuses the same logic as the threaded _process_doc but in a single-call form.
+        """
+        try:
+            # Expect normalized row dicts from Postgres
+            if isinstance(doc, dict):
+                doc_id = doc.get('id')
+                data = doc
+            else:
+                try:
+                    doc_id = getattr(doc, 'id', None)
+                    data = doc.to_dict() or {}
+                except Exception:
+                    doc_id = None
+                    data = {}
+
+            title = data.get('title', '')
+            description = data.get('description', '') or ''
+            content = data.get('content', '') or ''
+            tags = data.get('tags', []) or data.get('categories', []) or []
+            source = data.get('source', '') or data.get('link', '') or ''
+            pub_date = data.get('pub_date', '') or ''
+
+            feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
+            region_hint = data.get('region_hint', '') or ''
+            system_prompt, user_prompt = get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name=feed_name, region_hint=region_hint)
+
+            client = _get_openai_client()
+            model = 'gpt-5-mini'
+
+            interest_result = None
+            if client:
+                try:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ]
+                    text = _chat_completion(client, model, messages, max_tokens=6000, temperature=0)
+                    parsed = _parse_json_from_text(text or '')
+                    if parsed:
+                        interest_result = parsed
+                except Exception:
+                    interest_result = None
+
+            total_score = None
+            rating = None
+            short_note = None
+            category_field = None
+            comment_field = None
+            publish_on_site = None
+            publish_on_social = None
+            newsletter_field = None
+
+            if isinstance(interest_result, dict):
+                total_score = interest_result.get('total_score') or interest_result.get('total')
+                rating = interest_result.get('rating') or interest_result.get('recommendation')
+                short_note = interest_result.get('short_analysis') or interest_result.get('short_note')
+                category_field = interest_result.get('category')
+                comment_field = interest_result.get('comment') or interest_result.get('commentary')
+                publish_on_site = interest_result.get('publish_on_site')
+                publish_on_social = interest_result.get('publish_on_social')
+                newsletter_field = interest_result.get('newsletter')
+
+            status_field = 'CATEGORIZED'
+            try:
+                if total_score is not None:
+                    try:
+                        ts_val = float(total_score)
+                    except Exception:
+                        ts_val = None
+                    if ts_val is not None and ts_val < 60:
+                        status_field = 'SKIPPED'
+            except Exception:
+                pass
+
+            update_payload = {
+                'interest': interest_result,
+                'status': status_field,
+                'total_score': total_score,
+                'rating': rating,
+                'short_note': short_note,
+                'category': category_field,
+                'comment': comment_field,
+                'publish_on_site': publish_on_site,
+                'publish_on_social': publish_on_social,
+                'newsletter': newsletter_field,
+                'categorized_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+
+            ok = self.pg.save_article_categorization(doc_id, update_payload)
+            return {'doc_id': doc_id, 'ok': ok, 'payload': update_payload}
+        except Exception as e:
+            return {'doc_id': getattr(doc, 'id', None), 'ok': False, 'error': str(e)}
+
+    def categorize_article_by_id(self, article_id: str) -> Dict:
+        try:
+            row = self.pg.fetch_article_by_id(article_id)
+            if not row:
+                return {'status': 'error', 'message': f'Article {article_id} not found'}
+            res = self._process_single_doc(row)
+            if res.get('ok'):
+                return {'status': 'success', 'processed': 1, 'doc_id': article_id}
+            else:
+                return {'status': 'error', 'message': res.get('error', 'save_failed')}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}

@@ -12,7 +12,7 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from workers.tools.firebase_client import get_firebase_client
+from workers.tools.pg_client import get_pg_client
 
 
 def load_env_file() -> None:
@@ -36,15 +36,8 @@ def main() -> None:
     args = parser.parse_args()
 
     load_env_file()
-    db = get_firebase_client().db
-    db.collection('llm_batches').document(args.batch_id).set({
-        'batch_id': args.batch_id,
-        'status': 'submitted',
-        'endpoint': args.endpoint,
-        'created_at': datetime.utcnow().isoformat(),
-        'registered_manually': True
-    }, merge=True)
-    print('registered', args.batch_id, args.endpoint)
+    # Batch registration/remotes table removed. No-op.
+    print('Batch registration disabled (llm_batches removed).')
 
 
 if __name__ == '__main__':

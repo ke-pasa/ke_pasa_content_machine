@@ -10,26 +10,10 @@ from pathlib import Path
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
-from bs4 import BeautifulSoup
-try:
-    from readability import Document
-except ImportError:
-    Document = None
+# Note: external HTML fetching/parsing was removed; avoid importing fetching libraries here.
 
 from .translator import ArticleTranslator
-
-# Helpers that prefer test-time monkeypatching via the thin worker module.
-def _get_firebase_client():
-    try:
-        import importlib
-        worker_mod = importlib.import_module('workers.article_generator.worker')
-        if hasattr(worker_mod, 'get_firebase_client') and worker_mod.get_firebase_client:
-            return worker_mod.get_firebase_client()
-    except Exception:
-        pass
-    from workers.tools.firebase_client import get_firebase_client as _gf
-    return _gf()
+from workers.tools.pg_client import get_pg_client
 
 
 class ArticleGenerator:
@@ -42,7 +26,10 @@ class ArticleGenerator:
         except Exception:
             self.batch_size = None
 
-        self.db = _get_firebase_client().db
+        try:
+            self.pg = get_pg_client()
+        except Exception:
+            raise RuntimeError('Postgres client is required for ArticleGenerator')
         self.instance_id = str(uuid.uuid4())[:8]
         self.translator = translator or ArticleTranslator(
             stage1_max_tokens=8000,
@@ -77,12 +64,6 @@ class ArticleGenerator:
         description_ru = tr.get('description_ru')
         content_ru = tr.get('content_ru') or tr.get('translation_ru')
 
-        editorial_result = tr.get('editorial_result') or {}
-        stage1 = editorial_result.get('stage1') or {}
-        stage2 = editorial_result.get('stage2') or {}
-        stage3 = editorial_result.get('stage3') or {}
-        stage4 = editorial_result.get('stage4') or {}
-        
         publish_md = tr.get('publish_md')
         tg_preview = tr.get('tg_preview')
         stage6_telegram = tr.get('stage6_telegram') or {}
@@ -106,7 +87,6 @@ class ArticleGenerator:
             'title_ru': title_ru,
             'description_ru': description_ru,
             'content_ru': content_ru,
-            'stages': {'stage1': stage1, 'stage2': stage2, 'stage3': stage3, 'stage4': stage4},
             'publish_md': publish_md,
             'publish_flags': tr.get('publish_flags') or [],
             'telegram_preview': tg_preview,
@@ -118,84 +98,53 @@ class ArticleGenerator:
         }
 
         try:
-            doc_ref = self.db.collection('articles_ru').document(doc_id)
-            doc_ref.set(payload, merge=True)
-            read_back = doc_ref.get()
-            if getattr(read_back, 'exists', False):
-                rb = read_back.to_dict() or {}
-                self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)',
-                               doc_id, len(str(rb.get('title_ru', ''))), len(str(rb.get('content_ru', ''))))
-                if tr.get('publish_md'):
-                    article_metadata = {'image_url': source.get('image') or source.get('image_url')}
-                    self._save_publish_markdown(doc_id, source, article_metadata, tr)
+            # Prefer Postgres client when available (migration to Postgres)
+            try:
+                from workers.tools.pg_client import get_pg_client
+                pg = get_pg_client()
+            except Exception:
+                pg = None
+
+            if pg:
+                # Map fields to the articles_ru table
+                save_payload = {
+                    'source_url': payload.get('source_url'),
+                    'source_link': payload.get('source_link'),
+                    'source_name': payload.get('source_name'),
+                    'source_published_at': payload.get('source_published_at'),
+                    'image_url': payload.get('image_url'),
+                    'status': payload.get('status'),
+                    'total_score': payload.get('total_score'),
+                    'title_ru': payload.get('title_ru'),
+                    'description_ru': payload.get('description_ru'),
+                    'content_ru': payload.get('content_ru'),
+                    'publish_md': payload.get('publish_md'),
+                    'telegram_final': payload.get('telegram_final'),
+                    'published_at': payload.get('created_at'),
+                    'updated_at': payload.get('updated_at'),
+                }
+                ok = pg.save_generated_article(doc_id, save_payload)
+                if ok:
+                    self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)',
+                                   doc_id, len(str(save_payload.get('title_ru') or '')), len(str(save_payload.get('content_ru') or '')))
+                    if tr.get('publish_md'):
+                        article_metadata = {'image_url': source.get('image') or source.get('image_url')}
+                        try:
+                            self._save_publish_markdown(doc_id, source, article_metadata, tr)
+                        except Exception:
+                            self.logger.exception('Failed to save publish markdown for %s after pg save', doc_id)
+                else:
+                    self.logger.warning('Postgres save returned False for articles_ru %s', doc_id)
             else:
-                self.logger.warning('Write succeeded but articles_ru doc %s does not exist', doc_id)
+                # No Postgres client: warn and skip writing articles_ru
+                self.logger.warning('No Postgres client available; cannot save articles_ru %s', doc_id)
         except Exception:
             self.logger.exception('Failed to write generated article %s to articles_ru', doc_id)
 
-    def _fetch_article_content(self, url: str) -> Optional[str]:
-        """Fetch full article text from URL using BeautifulSoup and readability."""
-        if not url:
-            return None
-            
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            if response.encoding == 'ISO-8859-1':
-                response.encoding = response.apparent_encoding
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-                element.decompose()
-            
-            ad_selectors = ['[class*="ad"]', '[class*="advertisement"]', '[class*="banner"]',
-                          '[id*="ad"]', '[id*="advertisement"]', '[id*="banner"]',
-                          '[class*="social"]', '[class*="share"]', '[class*="comment"]']
-            for selector in ad_selectors:
-                for element in soup.select(selector):
-                    element.decompose()
-            
-            content_selectors = ['article', '[class*="content"]', '[class*="article"]',
-                               '[class*="post"]', '[class*="entry"]', '.main-content',
-                               '.article-content', '.post-content', '.entry-content',
-                               '#content', '#article', '#post']
-            
-            content = None
-            for selector in content_selectors:
-                if elements := soup.select(selector):
-                    largest = max(elements, key=lambda x: len(x.get_text()))
-                    if len(largest.get_text().strip()) > 100:
-                        content = largest
-                        break
-            
-            if not content and Document:
-                try:
-                    doc = Document(response.text)
-                    content = BeautifulSoup(doc.summary(), 'html.parser')
-                except Exception as e:
-                    self.logger.debug('readability failed for %s: %s', url, e)
-                    return None
-            
-            if not content:
-                return None
-            
-            text = content.get_text(separator=' ', strip=True)
-            text = re.sub(r'\s+', ' ', text)
-            text = re.sub(r'\n\s*\n', '\n', text).strip()
-            
-            if len(text) < 50:
-                self.logger.debug('Text too short from %s: %d chars', url, len(text))
-                return None
-            
-            self.logger.info('Successfully fetched article content from %s: %d chars', url, len(text))
-            return text
-            
-        except Exception as e:
-            self.logger.warning('Failed to fetch article content from %s: %s', url, e)
-            return None
+    # _fetch_article_content removed: we no longer fetch remote HTML during preparation.
+    # Fetching/parsing of external URLs was intentionally removed to rely on stored
+    # article content only. If you need to re-enable fetching later, restore the
+    # original implementation above.
 
     def _phase1_prescan_and_skip(self) -> int:
         """Mark CATEGORIZED articles with score < 60 or age > 3 days as SKIPPED."""
@@ -206,24 +155,19 @@ class ArticleGenerator:
         
         try:
             while True:
-                query = self.db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(page_size)
-                if last_snapshot is not None:
-                    query = query.start_after(last_snapshot)
+                rows = self.pg.fetch_articles_new(limit=page_size, last_cursor=last_snapshot, status='CATEGORIZED')
+                self.logger.info('Pre-scan page %d: fetched %d rows', page_index, len(rows))
 
-                self.logger.info('Pre-scan page %d: querying articles', page_index)
-                docs = list(query.stream())
-                self.logger.info('Pre-scan page %d: fetched %d docs', page_index, len(docs))
-
-                if not docs:
+                if not rows:
                     break
 
-                for d in docs:
+                for r in rows:
                     try:
-                        data = d.to_dict() or {}
+                        data = r or {}
                         total_score = self._get_total_score(data)
                         skip_reason = None
                         age_days = None
-                        
+
                         if total_score < 60:
                             skip_reason = 'low_score'
                         else:
@@ -238,26 +182,44 @@ class ArticleGenerator:
                                     pass
 
                         if skip_reason:
-                            self.db.collection('articles').document(d.id).set({
-                                'status': 'SKIPPED',
-                                'skipped_reason': skip_reason,
-                                'total_score': total_score,
-                                'skipped_at': datetime.now(timezone.utc).isoformat(),
-                                'updated_at': datetime.now(timezone.utc).isoformat(),
-                            }, merge=True)
-                            
-                            log_msg = f'pre-scan: marked {d.id} SKIPPED ({skip_reason}'
+                            try:
+                                conn, pooled = self.pg._get_conn()
+                                cur = conn.cursor()
+                                try:
+                                    cur.execute("""
+                                        UPDATE public.articles SET
+                                            status = %s,
+                                            total_score = %s,
+                                            updated_at = %s
+                                        WHERE id = %s
+                                    """, (
+                                        'SKIPPED', total_score, datetime.now(timezone.utc).isoformat(), r.get('id')
+                                    ))
+                                    try:
+                                        conn.commit()
+                                    except Exception:
+                                        pass
+                                finally:
+                                    try:
+                                        cur.close()
+                                    except Exception:
+                                        pass
+                                    self.pg._put_conn(conn, pooled)
+                            except Exception:
+                                self.logger.exception('Failed to mark skipped for %s', r.get('id'))
+
+                            log_msg = f'pre-scan: marked {r.get("id")} SKIPPED ({skip_reason}'
                             if skip_reason == 'low_score':
                                 self.logger.info(log_msg + f', score={total_score:.1f})')
                             else:
                                 self.logger.info(log_msg + f', age={age_days:.1f} days)')
                             low_score_count += 1
                     except Exception:
-                        self.logger.exception('Error evaluating document %s', getattr(d, 'id', '?'))
+                        self.logger.exception('Error evaluating row %s', getattr(r, 'id', '?'))
 
-                last_snapshot = docs[-1]
+                last_snapshot = rows[-1]
                 page_index += 1
-                if len(docs) < page_size:
+                if len(rows) < page_size:
                     break
             
             self.logger.info('Pre-scan complete: marked %d SKIPPED', low_score_count)
@@ -274,23 +236,6 @@ class ArticleGenerator:
         content = data.get('content', '') or ''
         article_url = data.get('link') or data.get('url')
         content_source = 'stored'
-        
-        if article_url:
-            fetched_content = self._fetch_article_content(article_url)
-            if fetched_content:
-                try:
-                    logs_dir = Path(__file__).resolve().parent.parent.parent / 'logs' / 'fetched_articles'
-                    logs_dir.mkdir(parents=True, exist_ok=True)
-                    (logs_dir / f"{doc_id}_fetched.txt").write_text(fetched_content, encoding='utf-8')
-                    self.logger.info('Wrote fetched content to logs')
-                except Exception:
-                    pass
-            
-            if fetched_content and len(fetched_content) > len(content):
-                self.logger.info('Using fetched content for %s (fetched: %d chars, stored: %d chars)', 
-                               doc_id, len(fetched_content), len(content))
-                content = fetched_content
-                content_source = 'fetched'
         
         return title, description, content, article_url, content_source, self._get_total_score(data)
 
@@ -354,7 +299,37 @@ class ArticleGenerator:
         }
         
         try:
-            self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+            try:
+                conn, pooled = self.pg._get_conn()
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        UPDATE public.articles SET
+                            title = COALESCE(%s, title),
+                            summary = COALESCE(%s, summary),
+                            content = COALESCE(%s, content),
+                            updated_at = %s
+                        WHERE id = %s
+                    """, (
+                        update_payload.get('title_ru'),
+                        update_payload.get('description_ru'),
+                        update_payload.get('content_ru'),
+                        update_payload.get('updated_at'),
+                        doc_id,
+                    ))
+                    try:
+                        conn.commit()
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    self.pg._put_conn(conn, pooled)
+            except Exception:
+                # best-effort: fall back to no-op if PG update fails
+                self.logger.exception('Failed to update articles row %s', doc_id)
 
             try:
                 raw_text = None
@@ -457,11 +432,36 @@ class ArticleGenerator:
             }
 
             try:
-                self.db.collection('articles').document(doc_id).set(update_payload, merge=True)
+                conn, pooled = self.pg._get_conn()
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        UPDATE public.articles SET
+                            title = COALESCE(%s, title),
+                            summary = COALESCE(%s, summary),
+                            content = COALESCE(%s, content),
+                            updated_at = %s
+                        WHERE id = %s
+                    """, (
+                        update_payload.get('title_ru'),
+                        update_payload.get('description_ru'),
+                        update_payload.get('content_ru'),
+                        update_payload.get('updated_at'),
+                        doc_id,
+                    ))
+                    conn.commit()
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    try:
+                        self.pg._put_conn(conn, pooled)
+                    except Exception:
+                        pass
             except Exception as save_err:
-                err = f"Firebase save error for {doc_id}: {save_err}"
                 with lock:
-                    chunk_results['errors'].append(err)
+                    chunk_results['errors'].append(f"Postgres save error for {doc_id}: {save_err}")
 
             with lock:
                 chunk_results['translated'] += 1
@@ -514,20 +514,27 @@ class ArticleGenerator:
         """
         try:
             proc_start = time.perf_counter()
-            doc_id = doc.id
-            data = doc.to_dict() or {}
+            # Support both Firestore-like document objects (with .id and .to_dict())
+            # and plain dict rows returned by Postgres client.
+            if isinstance(doc, dict):
+                doc_id = doc.get('id')
+                data = doc or {}
+            else:
+                doc_id = getattr(doc, 'id', None)
+                try:
+                    data = doc.to_dict() or {}
+                except Exception:
+                    # fallback if doc doesn't have to_dict
+                    data = {} if doc_id is None else {}
             
-            # Prepare article content
             title, description, content, article_url, content_source, total_score = self._prepare_article_content(doc_id, data)
             
-            # Build metadata for translation
             article_metadata = self._build_article_metadata(
                 doc_id, data, article_url, 
                 data.get('fetched_content') if content_source == 'fetched' else None,
                 content_source, total_score
             )
 
-            # Call translator and measure time
             trans_start = time.perf_counter()
             translation_result = self.translator.translate(title, description, content, metadata=article_metadata)
             trans_duration = time.perf_counter() - trans_start
@@ -536,19 +543,18 @@ class ArticleGenerator:
             if translation_result:
                 self._log_translation_stages(doc_id, translation_result, trans_duration)
 
-            # Detect parse errors
             is_parse_error = isinstance(translation_result, dict) and bool(translation_result.get('_parse_error') or translation_result.get('parse_error'))
             if (not translation_result) or is_parse_error:
                 self._handle_translation_failure(doc_id, translation_result, total_score, chunk_results, lock, proc_start)
                 return
 
-            # Save successful translation
             self._save_translation_success(doc_id, data, total_score, translation_result, article_metadata, 
                                           chunk_results, lock, proc_start, trans_duration)
 
         except Exception as proc_err:
             with lock:
                 chunk_results['errors'].append(f"Processing error for doc {getattr(doc, 'id', '?')}: {proc_err}")
+
 
     def _save_publish_markdown(self, doc_id: str, data: dict, article_metadata: dict, translation_result: dict) -> None:
         """Save generated publish_md into articles/<slug>_<doc_id>.md with frontmatter fixes."""
@@ -683,20 +689,16 @@ class ArticleGenerator:
 
         while processed_total < requested_total:
             limit_for_query = int(min(chunk_size, requested_total - processed_total))
-            try:
-                self.logger.info('Fetching translation batch %d: limit=%d processed_total=%d requested_total=%s', batch_index, limit_for_query, processed_total, requested_total)
-                query = self.db.collection('articles').where('status', '==', 'CATEGORIZED').order_by('created_at').limit(limit_for_query)
-                if last_snapshot is not None:
-                    try:
-                        query = query.start_after(last_snapshot)
-                    except Exception:
-                        pass
 
-                docs = list(query.stream())
-                self.logger.info('Translation batch %d: fetched %d docs', batch_index, len(docs))
+            self.logger.info('Fetching translation batch %d: limit=%d processed_total=%d requested_total=%s', batch_index, limit_for_query, processed_total, requested_total)
+            try:
+                rows = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='CATEGORIZED')
             except Exception as e:
-                results['errors'].append(f'Query error: {str(e)}')
+                results['errors'].append(f'PG query error: {e}')
                 return results
+
+            docs = rows
+            self.logger.info('Translation batch %d: fetched %d rows', batch_index, len(docs))
 
             if not docs:
                 break
