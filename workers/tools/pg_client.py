@@ -217,7 +217,7 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
-    def purge_older_than(self, days: int = 15) -> int:
+    def purge_older_than(self, days: int = 7) -> int:
         try:
             self._connect()
         except Exception:
@@ -226,8 +226,15 @@ class PGClient:
         conn, pooled = self._get_conn()
         cur = conn.cursor()
         try:
+            # Delete from primary articles table (by created_at)
             cur.execute('DELETE FROM public.articles WHERE created_at < %s', (cutoff,))
-            return cur.rowcount if cur.rowcount is not None else -1
+            deleted_articles = cur.rowcount if cur.rowcount is not None else 0
+
+            # Also delete translated/generated articles that haven't been updated recently
+            cur.execute('DELETE FROM public.articles_ru WHERE updated_at < %s', (cutoff,))
+            deleted_articles_ru = cur.rowcount if cur.rowcount is not None else 0
+
+            return deleted_articles + deleted_articles_ru
         finally:
             try:
                 cur.close()

@@ -55,7 +55,7 @@ jobs:
         RSS_FEEDS_FILE: workers/rss/feeds.txt
         RSS_PARALLEL_FEEDS: 6
         POSTGRES_URL: ${{ env.POSTGRES_URL }}
-        RSS_PURGE_DAYS: 15
+        RSS_PURGE_DAYS: 7
       run: |
         echo "Starting full RSS Worker (running on Python ${{ matrix.python-version }})"
         python -m workers.rss.worker
