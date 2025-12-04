@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish translated articles to Telegram
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ke_pasa_content_machine
+Environment="COMPOSE_PROJECT_NAME=ke-pasa"
+Environment="COMPOSE_FILE=/opt/ke_pasa_content_machine/docker-compose.yml"
+ExecStart=/usr/bin/docker compose --env-file /opt/ke_pasa_content_machine/.env run --rm publisher
+TimeoutStartSec=900

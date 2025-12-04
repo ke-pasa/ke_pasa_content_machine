@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly RSS ingestion via Docker Compose
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1m
+Unit=rss-hourly.service
+
+[Install]
+WantedBy=timers.target

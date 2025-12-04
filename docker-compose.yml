@@ -1,0 +1,56 @@
+version: "3.9"
+
+x-environment: &default-environment
+  PYTHONUNBUFFERED: "1"
+
+x-defaults: &defaults
+  image: ke-pasa-content-machine:latest
+  build: .
+  working_dir: /app
+  env_file:
+    - .env
+  environment: *default-environment
+  volumes:
+    - logs:/app/logs
+
+services:
+  rss:
+    <<: *defaults
+    command: ["python", "-m", "workers.rss.worker"]
+    environment:
+      <<: *default-environment
+      RSS_ETAG_CACHE: /app/var/rss-cache/rss_etag_cache.json
+      RSS_LM_CACHE: /app/var/rss-cache/rss_lastmod_cache.json
+    volumes:
+      - logs:/app/logs
+      - rss-cache:/app/var/rss-cache
+      - rss-feeds:/app/workers/rss/feeds.d
+
+  categorization:
+    <<: *defaults
+    command: ["python", "-m", "workers.categorization.worker"]
+
+  article-generator:
+    <<: *defaults
+    command: ["python", "-m", "workers.article_generator.worker"]
+    volumes:
+      - logs:/app/logs
+      - articles:/app/articles
+
+  translator:
+    <<: *defaults
+    command: ["python", "-m", "workers.article_generator.worker", "--batch-size", "25"]
+    profiles: [translator]
+    volumes:
+      - logs:/app/logs
+      - articles:/app/articles
+
+  publisher:
+    <<: *defaults
+    command: ["python", "-m", "workers.publisher.worker"]
+
+volumes:
+  logs:
+  rss-cache:
+  rss-feeds:
+  articles:

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily article generation run after categorization
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+AccuracySec=5m
+Unit=article-generator-daily.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly publisher run via Docker Compose
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1m
+Unit=publisher-hourly.service
+
+[Install]
+WantedBy=timers.target

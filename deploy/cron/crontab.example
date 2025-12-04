@@ -1,0 +1,9 @@
+# Example crontab. Load with `crontab deploy/cron/crontab.example` after editing paths.
+# Use the repo path where docker-compose.yml and .env live.
+SHELL=/bin/bash
+COMPOSE_DIR=/opt/ke_pasa_content_machine
+
+0 * * * * cd "$COMPOSE_DIR" && /usr/bin/docker compose run --rm rss
+0 2 * * * cd "$COMPOSE_DIR" && /usr/bin/docker compose run --rm categorization --batch-size 2000
+0 3 * * * cd "$COMPOSE_DIR" && /usr/bin/docker compose run --rm article-generator
+15 * * * * cd "$COMPOSE_DIR" && /usr/bin/docker compose run --rm publisher
