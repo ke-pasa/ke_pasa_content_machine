@@ -9,13 +9,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict
-from dotenv import load_dotenv
 
 # Add root directory to path
 root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir))
 
-load_dotenv()
+# dotenv not required for Postgres-based workflows; env vars are provided by runtime/CI
 
 from workers.tools.pg_client import get_pg_client
 import html
@@ -139,8 +138,8 @@ class PublisherWorker:
             print(f"[publisher] ⚠️ Embedding compute failed: {text[:60]}")
         return None
     
-    def _compute_and_save_embedding_for_doc(self, coll, doc):
-        """Compute embedding for candidate article and save it to the document. Returns embedding or None."""
+    def _compute_and_save_embedding_for_doc(self, doc):
+        """Compute embedding for candidate article and save it to the Postgres articles_ru row. Returns embedding or None."""
         try:
             data = doc.to_dict() or {}
             # Use only data['telegram_final']['tg_preview'] as the canonical preview
@@ -157,12 +156,7 @@ class PublisherWorker:
                 return None
 
             try:
-                # Prefer PG write
-                try:
-                    pg = self.pg
-                except Exception:
-                    pg = None
-
+                pg = getattr(self, 'pg', None)
                 if pg and getattr(doc, 'id', None):
                     try:
                         tf = (doc.to_dict() or {}).get('telegram_final') or {}
@@ -176,11 +170,6 @@ class PublisherWorker:
                         pg.save_generated_article(doc.id, {'telegram_final': tf, 'updated_at': datetime.utcnow().isoformat()})
                     except Exception:
                         pass
-                else:
-                    try:
-                        coll.document(doc.id).set({'telegram_emb': emb, 'telegram_emb_computed_at': datetime.utcnow().isoformat()}, merge=True)
-                    except Exception:
-                        pass
                 return emb
             except Exception:
                 return None
@@ -192,82 +181,44 @@ class PublisherWorker:
         try:
             cutoff = datetime.utcnow() - timedelta(days=days)
             out = []
-            # Prefer Postgres when available
+            # Use Postgres to fetch recent published embeddings
             try:
                 pg = self.pg
-            except Exception:
-                pg = None
-
-            if pg:
-                try:
-                    rows = pg.fetch_translated_for_publish(limit=1000, min_score=0)
-                    for r in rows:
-                        try:
-                            data = r
-                            tf = data.get('telegram_final')
-                            if isinstance(tf, (str, bytes)):
-                                try:
-                                    tf = json.loads(tf)
-                                except Exception:
-                                    tf = None
-                            emb = None
-                            ts = None
-                            if tf and isinstance(tf, dict):
-                                emb = tf.get('telegram_emb')
-                                ts = tf.get('telegram_emb_computed_at')
-                            else:
-                                emb = data.get('telegram_emb')
-                                ts = data.get('telegram_emb_computed_at')
-
-                            if not emb:
-                                continue
-                            include = True
-                            if ts:
-                                try:
-                                    t = datetime.fromisoformat(ts) if isinstance(ts, str) else ts
-                                    include = (t >= cutoff)
-                                except Exception:
-                                    include = True
-                            if include:
-                                out.append((data.get('article_id') or data.get('id'), emb))
-                        except Exception:
-                            continue
-                except Exception:
-                    return []
-                return out
-            else:
-                cutoff = datetime.utcnow() - timedelta(days=days)
-                # Support different casing used in the DB: 'PUBLISHED' and 'published'
-                docs = list(coll.where('telegram_emb', '!=', None).stream())
-                # Filter locally by status to avoid complex OR queries
-                docs = [d for d in docs if ((d.to_dict() or {}).get('status') or '').lower() == 'published']
-                out = []
-                for d in docs:
+                rows = pg.fetch_translated_for_publish(limit=1000, min_score=0)
+                for r in rows:
                     try:
-                        data = d.to_dict() or {}
-                        ts = data.get('telegram_emb_computed_at')
-                        # If timestamp is a string, attempt simple parse; otherwise include
+                        data = r
+                        tf = data.get('telegram_final')
+                        if isinstance(tf, (str, bytes)):
+                            try:
+                                tf = json.loads(tf)
+                            except Exception:
+                                tf = None
+                        emb = None
+                        ts = None
+                        if tf and isinstance(tf, dict):
+                            emb = tf.get('telegram_emb')
+                            ts = tf.get('telegram_emb_computed_at')
+                        else:
+                            emb = data.get('telegram_emb')
+                            ts = data.get('telegram_emb_computed_at')
+
+                        if not emb:
+                            continue
                         include = True
                         if ts:
                             try:
-                                # Accept string ISO format
-                                if isinstance(ts, str):
-                                    t = datetime.fromisoformat(ts)
-                                else:
-                                    t = ts
-                                if hasattr(t, 'tzinfo') and t.tzinfo is None:
-                                    # naive -> assume UTC
-                                    t = t
+                                t = datetime.fromisoformat(ts) if isinstance(ts, str) else ts
                                 include = (t >= cutoff)
                             except Exception:
                                 include = True
                         if include:
-                            emb = data.get('telegram_emb')
-                            if emb:
-                                out.append((d.id, emb))
+                            out.append((data.get('article_id') or data.get('id'), emb))
                     except Exception:
                         continue
-                return out
+            except Exception:
+                return []
+            return out
         except Exception:
             return []
 
@@ -289,28 +240,49 @@ class PublisherWorker:
         except Exception:
             return 0.0
 
-    def _check_duplicate_and_mark(self, coll, doc, candidate_emb) -> bool:
+    def _check_duplicate_and_mark(self, doc, candidate_emb) -> bool:
         """Check candidate embedding against recent published embeddings.
 
         If a duplicate is detected (similarity >= threshold), mark the article
         with status 'DUBLICATED' and return True. Otherwise return False.
         """
+        if not candidate_emb:
+            return False
         try:
-            if not candidate_emb:
-                return False
             cfg_days = int(getattr(self.config, 'duplicate_check_days', 3) or 3)
             threshold = float(getattr(self.config, 'similarity_threshold', 0.8))
             recent = self._fetch_recent_published_embeddings(cfg_days)
             for rid, emb in recent:
-                sim = self._cosine_similarity(candidate_emb, emb)
-                if sim >= threshold:
-                    # Mark as duplicated
-                    try:
-                        coll.document(doc.id).set({'status': 'DUBLICATED', 'duplicate_of': rid, 'duplicate_similarity': float(sim)}, merge=True)
+                try:
+                    sim = self._cosine_similarity(candidate_emb, emb)
+                    if sim >= threshold:
+                        # Mark as duplicated in Postgres
+                        try:
+                            pg = getattr(self, 'pg', None)
+                            if pg:
+                                conn, pooled = pg._get_conn()
+                                cur = conn.cursor()
+                                try:
+                                    cur.execute(
+                                        "UPDATE public.articles_ru SET status = %s, duplicate_of = %s, duplicate_similarity = %s, updated_at = %s WHERE article_id = %s",
+                                        ('DUBLICATED', rid, float(sim), datetime.utcnow().isoformat(), doc.id)
+                                    )
+                                    conn.commit()
+                                finally:
+                                    try:
+                                        cur.close()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        pg._put_conn(conn, pooled)
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            print(f"[publisher] ⚠️ Failed to mark duplicate for {doc.id}: {e}")
                         print(f"[publisher] 🔁 Article {doc.id} marked DUBLICATED (sim={sim:.3f}) against {rid}")
-                    except Exception as e:
-                        print(f"[publisher] ⚠️ Failed to mark duplicate for {doc.id}: {e}")
-                    return True
+                        return True
+                except Exception:
+                    continue
             return False
         except Exception as e:
             print(f"[publisher] ⚠️ Duplicate check failed for {getattr(doc,'id', '?')}: {e}")
@@ -385,7 +357,7 @@ class PublisherWorker:
             except Exception:
                 pass
 
-    def _mark_article_published(self, coll, doc_id: str, sent_message, error_str: str | None = None):
+    def _mark_article_published(self, doc_id: str, sent_message, error_str: str | None = None):
         try:
             update_fields = {
                 'status': 'PUBLISHED',
@@ -393,19 +365,14 @@ class PublisherWorker:
                 'published_to_telegram_at': datetime.utcnow().isoformat(),
                 'telegram_publish_error': error_str,
             }
-            # Prefer PG update when possible
-            try:
-                pg = self.pg
-            except Exception:
-                pg = None
-
+            pg = getattr(self, 'pg', None)
             if pg:
                 try:
                     conn, pooled = pg._get_conn()
                     cur = conn.cursor()
                     try:
-                        cur.execute("UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
-                                    (update_fields['status'], update_fields['published_to_telegram_at'], update_fields['published_to_telegram_at'], doc_id))
+                        cur.execute("UPDATE public.articles_ru SET status = %s, published_to_telegram = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
+                                    (update_fields['status'], update_fields['published_to_telegram'], update_fields['published_to_telegram_at'], update_fields['published_to_telegram_at'], doc_id))
                         try:
                             conn.commit()
                         except Exception:
@@ -417,15 +384,7 @@ class PublisherWorker:
                             pass
                         pg._put_conn(conn, pooled)
                 except Exception:
-                    try:
-                        coll.document(doc_id).set(update_fields, merge=True)
-                    except Exception:
-                        pass
-            else:
-                try:
-                    coll.document(doc_id).set(update_fields, merge=True)
-                except Exception:
-                    pass
+                    print(f"[publisher] ⚠️ Failed to update articles_ru for {doc_id} via Postgres")
         except Exception as e:
             print(f"[publisher] ⚠️ Failed to update article doc {doc_id}: {e}")
 
@@ -547,10 +506,10 @@ class PublisherWorker:
                     continue
                 # Before sending, compute embedding and save it to the article document
                 try:
-                    emb = self._compute_and_save_embedding_for_doc(coll, doc)
+                    emb = self._compute_and_save_embedding_for_doc(doc)
                     # If embedding computed, perform deduplication check against recent published
                     try:
-                        if emb and self._check_duplicate_and_mark(coll, doc, emb):
+                        if emb and self._check_duplicate_and_mark(doc, emb):
                             # Already marked as DUBLICATED in the DB; skip sending and try next candidate
                             continue
                     except Exception:
@@ -562,7 +521,7 @@ class PublisherWorker:
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
                 self._record_post(article_id, sent_message, chat_id)
-                self._mark_article_published(coll, doc.id, sent_message, doc_error)
+                self._mark_article_published(doc.id, sent_message, doc_error)
 
                 if sent_message:
                     results['published'] += 1
@@ -601,6 +560,9 @@ class PublisherWorker:
 
         try:
             pool_limit = 200
+            pg = getattr(self, 'pg', None)
+            if not pg:
+                raise RuntimeError('Postgres client not available')
             rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=80)
             docs = []
             for r in rows:
@@ -642,9 +604,9 @@ class PublisherWorker:
                     continue
                 # compute embedding and save it to the article document
                 try:
-                    emb = self._compute_and_save_embedding_for_doc(coll, doc)
+                    emb = self._compute_and_save_embedding_for_doc(doc)
                     try:
-                        if emb and self._check_duplicate_and_mark(coll, doc, emb):
+                        if emb and self._check_duplicate_and_mark(doc, emb):
                             # marked as duplicate, try next candidate
                             continue
                     except Exception:
@@ -656,7 +618,7 @@ class PublisherWorker:
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
                 self._record_post(article_id, sent_message, chat_id)
-                self._mark_article_published(coll, doc.id, sent_message, doc_error)
+                self._mark_article_published(doc.id, sent_message, doc_error)
 
                 if sent_message:
                     results['published'] += 1
