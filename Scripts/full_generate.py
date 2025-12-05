@@ -112,7 +112,7 @@ def main(article_id: str):
             try:
                 cur = conn.cursor()
                 try:
-                    cur.execute('UPDATE public.articles_ru SET status = %s, published_to_telegram = %s, published_at = %s, updated_at = %s WHERE article_id = %s', ('PUBLISHED', True, datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), article_id))
+                    cur.execute('UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s', ('PUBLISHED', datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), article_id))
                     conn.commit()
                 finally:
                     try:
@@ -130,7 +130,7 @@ def main(article_id: str):
             try:
                 cur = conn.cursor()
                 try:
-                    cur.execute('UPDATE public.articles_ru SET status = %s, published_to_telegram = %s, published_at = %s, updated_at = %s WHERE article_id = %s', ('PUBLISHED', True, datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), article_id))
+                    cur.execute('UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s', ('PUBLISHED', datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), article_id))
                     conn.commit()
                 finally:
                     try:

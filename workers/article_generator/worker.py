@@ -20,6 +20,7 @@ from .ArticleGenerator import ArticleGenerator
 def main() -> None:
     parser = argparse.ArgumentParser(description='Article generator worker CLI')
     parser.add_argument('--batch-size', type=int, default=None, help='How many categorized articles to process in this run')
+    parser.add_argument('--article-id', type=str, default=None, help='Process a single article by id')
     args = parser.parse_args()
 
     # Always configure logging to stdout so CI (GitHub Actions) captures worker logs
@@ -33,10 +34,16 @@ def main() -> None:
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         root_logger.addHandler(handler)
 
+    # Disable propagation on child loggers to avoid duplicate messages when modules add handlers
+    logging.getLogger('workers.article_generator').propagate = False
+
     # Two-phase processing: pre-scan (mark low-quality as SKIPPED) then translation
 
     worker = ArticleGenerator(batch_size=args.batch_size)
-    result = worker.process_articles()
+    if args.article_id:
+        result = worker.process_single_article(args.article_id)
+    else:
+        result = worker.process_articles()
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

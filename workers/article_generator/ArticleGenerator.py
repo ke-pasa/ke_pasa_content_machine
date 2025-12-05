@@ -36,12 +36,10 @@ class ArticleGenerator:
             stage2_max_tokens=8000,
             stage3_max_tokens=8000
         )
+        # Use root logger configuration from entrypoint; avoid adding handlers here.
         self.logger = logging.getLogger('workers.article_generator')
-        if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
-            ch = logging.StreamHandler()
-            ch.setLevel(logging.DEBUG)
-            ch.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
-            self.logger.addHandler(ch)
+        # prevent duplicate propagation if root logger also prints
+        self.logger.propagate = False
 
     def _get_total_score(self, data: dict) -> float:
         """Extract float total_score from article data."""
@@ -65,35 +63,46 @@ class ArticleGenerator:
         content_ru = tr.get('content_ru') or tr.get('translation_ru')
 
         publish_md = tr.get('publish_md')
-        tg_preview = tr.get('tg_preview')
-        stage6_telegram = tr.get('stage6_telegram') or {}
-        
-        if tg_preview and not stage6_telegram.get('tg_preview'):
-            stage6_telegram = {**stage6_telegram, 'tg_preview': tg_preview}
+        # Take stage6 result directly from translator (do not synthesize tg_preview here)
+        stage6_telegram = tr.get('stage6_telegram')
 
         combined_flags = []
         for flag_list in (tr.get('flags') or [], tr.get('publish_flags') or [], tr.get('tg_flags') or []):
             combined_flags.extend(f for f in (flag_list or []) if isinstance(f, str))
 
-        payload = {
-            'article_id': doc_id,
-            'source_url': source.get('link') or source.get('url'),
-            'source_link': source.get('link') or source.get('url'),
+        # Use only `link` field from `public.articles` (Postgres fetch aliases link->source)
+        # Accept `source` key (PG alias) as the canonical link when present.
+        src_url = source.get('link') or source.get('source')
+        img_url = source.get('image')
+
+        # Extract telegram text from stage6_telegram (store plain text, not dict).
+        telegram_text = None
+        try:
+            if isinstance(stage6_telegram, dict):
+                tg = stage6_telegram.get('tg_preview') or stage6_telegram.get('text')
+                telegram_text = tg if isinstance(tg, str) and tg.strip() != '' else None
+            elif isinstance(stage6_telegram, str):
+                telegram_text = stage6_telegram.strip() or None
+        except Exception:
+            telegram_text = None
+
+        # Build the database payload directly from source and translation result
+        save_payload = {
+            # Prefer explicit link from source, but accept PG alias `source` or `link`
+            'source_url': src_url or source.get('source') or source.get('link'),
+            'source_link': src_url or source.get('source') or source.get('link'),
             'source_name': source.get('source') or source.get('source_name'),
             'source_published_at': source.get('published_at') or source.get('pub_date'),
-            'image_url': source.get('image') or source.get('image_url'),
+            'image_url': img_url,
             'status': status,
             'total_score': total_score,
             'title_ru': title_ru,
             'description_ru': description_ru,
             'content_ru': content_ru,
             'publish_md': publish_md,
-            'publish_flags': tr.get('publish_flags') or [],
-            'telegram_preview': tg_preview,
-            'telegram_flags': tr.get('tg_flags') or [],
-            'telegram_final': stage6_telegram,
-            'flags': sorted(set(combined_flags)),
-            'created_at': now,
+            # Save telegram_final as plain text (the tg_preview) or NULL.
+            'telegram_final': telegram_text,
+            'published_at': now,
             'updated_at': now,
         }
 
@@ -106,29 +115,12 @@ class ArticleGenerator:
                 pg = None
 
             if pg:
-                # Map fields to the articles_ru table
-                save_payload = {
-                    'source_url': payload.get('source_url'),
-                    'source_link': payload.get('source_link'),
-                    'source_name': payload.get('source_name'),
-                    'source_published_at': payload.get('source_published_at'),
-                    'image_url': payload.get('image_url'),
-                    'status': payload.get('status'),
-                    'total_score': payload.get('total_score'),
-                    'title_ru': payload.get('title_ru'),
-                    'description_ru': payload.get('description_ru'),
-                    'content_ru': payload.get('content_ru'),
-                    'publish_md': payload.get('publish_md'),
-                    'telegram_final': payload.get('telegram_final'),
-                    'published_at': payload.get('created_at'),
-                    'updated_at': payload.get('updated_at'),
-                }
                 ok = pg.save_generated_article(doc_id, save_payload)
                 if ok:
-                    self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)',
-                                   doc_id, len(str(save_payload.get('title_ru') or '')), len(str(save_payload.get('content_ru') or '')))
+                    self.logger.info('Saved articles_ru %s (title_ru_len=%d content_ru_len=%d)', doc_id,
+                                   len(str(save_payload.get('title_ru') or '')), len(str(save_payload.get('content_ru') or '')))
                     if tr.get('publish_md'):
-                        article_metadata = {'image_url': source.get('image') or source.get('image_url')}
+                        article_metadata = {'image_url': source.get('image')}
                         try:
                             self._save_publish_markdown(doc_id, source, article_metadata, tr)
                         except Exception:
@@ -141,10 +133,6 @@ class ArticleGenerator:
         except Exception:
             self.logger.exception('Failed to write generated article %s to articles_ru', doc_id)
 
-    # _fetch_article_content removed: we no longer fetch remote HTML during preparation.
-    # Fetching/parsing of external URLs was intentionally removed to rely on stored
-    # article content only. If you need to re-enable fetching later, restore the
-    # original implementation above.
 
     def _phase1_prescan_and_skip(self) -> int:
         """Mark CATEGORIZED articles with score < 60 or age > 3 days as SKIPPED."""
@@ -234,7 +222,8 @@ class ArticleGenerator:
         title = data.get('title', '') or ''
         description = data.get('description', '') or ''
         content = data.get('content', '') or ''
-        article_url = data.get('link') or data.get('url')
+        # Only use `link` from the canonical `public.articles` row (Postgres returns it as `source`)
+        article_url = data.get('link') or data.get('source')
         content_source = 'stored'
         
         return title, description, content, article_url, content_source, self._get_total_score(data)
@@ -244,7 +233,8 @@ class ArticleGenerator:
         """Build metadata dictionary for translation."""
         return {
             'url': article_url,
-            'image_url': data.get('image') or data.get('image_url'),
+            # Only use `image` from `public.articles`
+            'image_url': data.get('image'),
             'source': data.get('source') or data.get('source_name'),
             'published_at': data.get('published_at') or data.get('published') or data.get('pub_date'),
             'total_score': total_score,
@@ -398,17 +388,11 @@ class ArticleGenerator:
 
             # Also update original article record to reflect translation status
             # Ensure telegram_final has tg_preview for compatibility with publisher
+            # Use stage6 as returned by translator without merging tg_preview
             try:
-                stage6 = translation_result.get('stage6_telegram') or {}
-                tg_prev = translation_result.get('tg_preview')
-                if tg_prev:
-                    if not isinstance(stage6, dict):
-                        stage6 = {'tg_preview': tg_prev}
-                    else:
-                        if not stage6.get('tg_preview'):
-                            stage6['tg_preview'] = tg_prev
+                stage6 = translation_result.get('stage6_telegram')
             except Exception:
-                stage6 = translation_result.get('stage6_telegram') or {}
+                stage6 = translation_result.get('stage6_telegram') if isinstance(translation_result, dict) else None
 
             update_payload = {
                 'title_ru': title_ru,
@@ -488,14 +472,7 @@ class ArticleGenerator:
                     pass
             except Exception:
                 pass
-            # Additionally, save the generated publish markdown to local `articles/` folder
-            try:
-                self._save_publish_markdown(doc_id, data, article_metadata, translation_result)
-            except Exception:
-                try:
-                    self.logger.exception('Failed to save publish markdown for %s', doc_id)
-                except Exception:
-                    pass
+            # Publish markdown is saved earlier during Postgres save; do not call it again here.
         except Exception as save_err:
             with lock:
                 chunk_results['errors'].append(f"Save error for {doc_id}: {save_err}")
@@ -514,18 +491,22 @@ class ArticleGenerator:
         """
         try:
             proc_start = time.perf_counter()
-            # Support both Firestore-like document objects (with .id and .to_dict())
-            # and plain dict rows returned by Postgres client.
-            if isinstance(doc, dict):
-                doc_id = doc.get('id')
-                data = doc or {}
-            else:
-                doc_id = getattr(doc, 'id', None)
+
+            if not isinstance(doc, dict):
                 try:
-                    data = doc.to_dict() or {}
+                    # Try to call a to_dict() if present as a best-effort
+                    data = doc.to_dict() if hasattr(doc, 'to_dict') else None
+                    if not isinstance(data, dict):
+                        raise ValueError('doc is not a dict')
                 except Exception:
-                    # fallback if doc doesn't have to_dict
-                    data = {} if doc_id is None else {}
+                    self.logger.warning('Received non-dict document in _process_single_document; skipping')
+                    with lock:
+                        chunk_results['errors'].append(f'Invalid document type for {getattr(doc, "id", "?")}')
+                    return
+                doc_id = data.get('id')
+            else:
+                data = doc or {}
+                doc_id = data.get('id')
             
             title, description, content, article_url, content_source, total_score = self._prepare_article_content(doc_id, data)
             
@@ -775,5 +756,37 @@ class ArticleGenerator:
 
             return {'status': 'success', **results}
 
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+
+    def process_single_article(self, article_id: str) -> dict:
+        """Process a single article by id: run translation and save results.
+
+        Returns same result shape as chunk processing for one document.
+        """
+        try:
+            if not article_id:
+                return {'status': 'error', 'message': 'article_id required'}
+
+            # Fetch the article row from Postgres
+            try:
+                row = self.pg.fetch_article_by_id(article_id)
+            except Exception as e:
+                return {'status': 'error', 'message': f'failed to fetch article: {e}'}
+
+            if not row:
+                return {'status': 'error', 'message': 'article not found'}
+
+            # Process a single document using existing pipeline pieces
+            chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+            lock = threading.Lock()
+
+            # Use the same flow as _process_single_document
+            try:
+                self._process_single_document(row, chunk_results, lock)
+            except Exception as e:
+                chunk_results['errors'].append(str(e))
+
+            return {'status': 'success', **chunk_results}
         except Exception as e:
             return {'status': 'error', 'message': str(e)}

@@ -247,7 +247,7 @@ def main(article_id: str):
         try:
             cur = conn.cursor()
             try:
-                cur.execute("UPDATE public.articles_ru SET published_to_telegram = %s, published_at = %s, status = %s, updated_at = %s WHERE article_id = %s", (True, datetime.utcnow().isoformat(), 'PUBLISHED', datetime.utcnow().isoformat(), article_id))
+                cur.execute("UPDATE public.articles_ru SET published_at = %s, status = %s, updated_at = %s WHERE article_id = %s", (datetime.utcnow().isoformat(), 'PUBLISHED', datetime.utcnow().isoformat(), article_id))
                 try:
                     conn.commit()
                 except Exception:

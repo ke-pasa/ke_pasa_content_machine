@@ -13,11 +13,9 @@ from .prompts import (
 )
 
 _logger = logging.getLogger('workers.article_generator.translator')
-if not any(isinstance(h, logging.StreamHandler) for h in _logger.handlers):
-    _ch = logging.StreamHandler()
-    _ch.setLevel(logging.DEBUG)
-    _ch.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
-    _logger.addHandler(_ch)
+# Do not add handlers here; configure logging centrally in the worker entrypoint.
+# Prevent double printing by not propagating to ancestor handlers.
+_logger.propagate = False
 
 
 def _get_worker_module():

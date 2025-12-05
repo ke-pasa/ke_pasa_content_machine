@@ -142,13 +142,41 @@ class PublisherWorker:
         """Compute embedding for candidate article and save it to the Postgres articles_ru row. Returns embedding or None."""
         try:
             data = doc.to_dict() or {}
-            # Use only data['telegram_final']['tg_preview'] as the canonical preview
             final_preview = None
             try:
-                final_preview = (data.get('telegram_final') or {}).get('tg_preview')
+                final_preview = data.get('telegram_final')
             except Exception:
                 final_preview = None
-            if not final_preview:
+
+            # Normalize preview text: accept dict or string, extract text, replace literal \n with newlines,
+            # and strip surrounding parentheses like '(за январь)' -> 'за январь'.
+            def _extract_preview(v):
+                txt = None
+                if v is None:
+                    return None
+                if isinstance(v, dict):
+                    txt = v.get('tg_preview') or v.get('text') or v.get('preview')
+                elif isinstance(v, (bytes, str)):
+                    txt = v.decode('utf-8') if isinstance(v, bytes) else v
+                else:
+                    txt = str(v)
+                if not txt:
+                    return None
+                # Replace escaped newlines with real newlines
+                txt = txt.replace('\\n', '\n')
+                # Remove parentheses that wrap short phrases like '(за январь)'
+                txt = txt.strip()
+                if txt.startswith('(') and txt.endswith(')'):
+                    inner = txt[1:-1].strip()
+                    # only unwrap if no other punctuation at ends
+                    if inner and not inner.endswith('.'):
+                        txt = inner
+                return txt
+
+            final_preview = _extract_preview(final_preview)
+            # If telegram_final is None, empty string -> no preview
+            if final_preview is None or final_preview.strip() == '':
+                print(f"[publisher] ❌ Article {getattr(doc,'id', '?')} has empty telegram_final")
                 return None
 
             emb = self._compute_embedding(final_preview)
@@ -159,15 +187,31 @@ class PublisherWorker:
                 pg = getattr(self, 'pg', None)
                 if pg and getattr(doc, 'id', None):
                     try:
-                        tf = (doc.to_dict() or {}).get('telegram_final') or {}
-                        if not isinstance(tf, dict):
+                        # Build a structured telegram_final dict to store embedding metadata.
+                        existing_tf = (doc.to_dict() or {}).get('telegram_final')
+                        tf_dict = {}
+                        # If existing_tf is dict, copy it; if it's a string, try to parse JSON or store as tg_preview
+                        if isinstance(existing_tf, dict):
+                            tf_dict = dict(existing_tf)
+                        elif isinstance(existing_tf, (str, bytes)):
                             try:
-                                tf = json.loads(tf)
+                                parsed = json.loads(existing_tf) if isinstance(existing_tf, str) else json.loads(existing_tf.decode('utf-8'))
+                                if isinstance(parsed, dict):
+                                    tf_dict = parsed
+                                else:
+                                    tf_dict = {'tg_preview': str(existing_tf)}
                             except Exception:
-                                tf = {}
-                        tf['telegram_emb'] = emb
-                        tf['telegram_emb_computed_at'] = datetime.utcnow().isoformat()
-                        pg.save_generated_article(doc.id, {'telegram_final': tf, 'updated_at': datetime.utcnow().isoformat()})
+                                tf_dict = {'tg_preview': existing_tf.decode('utf-8') if isinstance(existing_tf, bytes) else str(existing_tf)}
+                        else:
+                            tf_dict = {}
+
+                        # Save embeddings separately into `telegram_emd` to avoid
+                        # modifying the user-visible `telegram_final` preview text.
+                        te = {
+                            'telegram_emb': emb,
+                            'telegram_emb_computed_at': datetime.utcnow().isoformat()
+                        }
+                        pg.save_generated_article(doc.id, {'telegram_final': tf_dict, 'telegram_emd': te, 'updated_at': datetime.utcnow().isoformat()})
                     except Exception:
                         pass
                 return emb
@@ -188,20 +232,28 @@ class PublisherWorker:
                 for r in rows:
                     try:
                         data = r
-                        tf = data.get('telegram_final')
-                        if isinstance(tf, (str, bytes)):
-                            try:
-                                tf = json.loads(tf)
-                            except Exception:
-                                tf = None
                         emb = None
                         ts = None
-                        if tf and isinstance(tf, dict):
-                            emb = tf.get('telegram_emb')
-                            ts = tf.get('telegram_emb_computed_at')
-                        else:
-                            emb = data.get('telegram_emb')
-                            ts = data.get('telegram_emb_computed_at')
+                        # Prefer explicit raw value (may contain dict with metadata)
+                        tf_raw = data.get('telegram_final_raw') if 'telegram_final_raw' in data else None
+                        if tf_raw is not None:
+                            try:
+                                tf_parsed = tf_raw if isinstance(tf_raw, dict) else (json.loads(tf_raw) if isinstance(tf_raw, str) else None)
+                                if isinstance(tf_parsed, dict):
+                                    emb = tf_parsed.get('telegram_emb')
+                                    ts = tf_parsed.get('telegram_emb_computed_at')
+                            except Exception:
+                                emb = None
+                                ts = None
+                        # Fallback: if telegram_final (normalized by PG client) contains embedding
+                        if emb is None:
+                            tf = data.get('telegram_final')
+                            if isinstance(tf, dict):
+                                emb = tf.get('telegram_emb')
+                                ts = tf.get('telegram_emb_computed_at')
+                            else:
+                                emb = data.get('telegram_emb')
+                                ts = data.get('telegram_emb_computed_at')
 
                         if not emb:
                             continue
@@ -310,6 +362,24 @@ class PublisherWorker:
             parts.append(f"Источник: {source}")
         return '\n\n'.join([p for p in parts if p]) or title or 'Новость'
 
+    def _normalize_telegram_preview(self, raw) -> str | None:
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            txt = raw.get('tg_preview') or raw.get('text') or raw.get('preview')
+        elif isinstance(raw, (bytes, str)):
+            txt = raw.decode('utf-8') if isinstance(raw, bytes) else raw
+        else:
+            txt = str(raw)
+        if not txt:
+            return None
+        txt = txt.replace('\\n', '\n').strip()
+        if txt.startswith('(') and txt.endswith(')'):
+            inner = txt[1:-1].strip()
+            if inner and not inner.endswith('.'):
+                txt = inner
+        return txt
+
     def _prepare_caption(self, message: str, max_caption: int = 1024) -> str:
         if len(message) <= max_caption:
             return message
@@ -343,8 +413,8 @@ class PublisherWorker:
         cur = conn.cursor()
         try:
             cur.execute(
-                "UPDATE public.articles_ru SET status = %s, published_to_telegram = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
-                ('PUBLISHED', True, datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), article_id),
+                "UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
+                ('PUBLISHED', datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), article_id),
             )
             conn.commit()
         finally:
@@ -361,8 +431,7 @@ class PublisherWorker:
         try:
             update_fields = {
                 'status': 'PUBLISHED',
-                'published_to_telegram': True if sent_message else False,
-                'published_to_telegram_at': datetime.utcnow().isoformat(),
+                'published_at': datetime.utcnow().isoformat(),
                 'telegram_publish_error': error_str,
             }
             pg = getattr(self, 'pg', None)
@@ -371,8 +440,8 @@ class PublisherWorker:
                     conn, pooled = pg._get_conn()
                     cur = conn.cursor()
                     try:
-                        cur.execute("UPDATE public.articles_ru SET status = %s, published_to_telegram = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
-                                    (update_fields['status'], update_fields['published_to_telegram'], update_fields['published_to_telegram_at'], update_fields['published_to_telegram_at'], doc_id))
+                        cur.execute("UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
+                                    (update_fields['status'], update_fields['published_at'], update_fields['published_at'], doc_id))
                         try:
                             conn.commit()
                         except Exception:
@@ -461,7 +530,7 @@ class PublisherWorker:
                         return self._d
                 docs.append(RowWrapper(r))
 
-            filtered = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
+            filtered = [d for d in docs if (d.to_dict() or {}).get('status') == 'TRANSLATED']
 
             def _created_key(doc):
                 try:
@@ -495,14 +564,15 @@ class PublisherWorker:
                 article_id = data.get('article_id') or doc.id
                 image = data.get('image_url') or data.get('image') or None
 
-                # Use only data['telegram_final']['tg_preview'] as canonical preview
-                final_preview = None
+                # Use raw data['telegram_final'] as the message source (no fallbacks)
                 try:
-                    final_preview = (data.get('telegram_final') or {}).get('tg_preview')
+                    raw_preview = data.get('telegram_final')
                 except Exception:
-                    final_preview = None
-                if not final_preview:
-                    print(f"[publisher] ⚠️ Skipping article {article_id}: missing telegram_final.tg_preview")
+                    raw_preview = None
+                final_preview = self._normalize_telegram_preview(raw_preview)
+                if final_preview is None or final_preview.strip() == '':
+                    print(f"[publisher] ❌ Article {article_id} has empty telegram_final")
+                    results['errors'].append(f"empty_telegram_final:{article_id}")
                     continue
                 # Before sending, compute embedding and save it to the article document
                 try:
@@ -574,7 +644,7 @@ class PublisherWorker:
                         return self._d
                 docs.append(RowWrapper(r))
 
-            candidates = [d for d in docs if not (d.to_dict() or {}).get('published_to_telegram') and (d.to_dict() or {}).get('status') == 'TRANSLATED']
+            candidates = [d for d in docs if (d.to_dict() or {}).get('status') == 'TRANSLATED']
             candidates = sorted(candidates, key=lambda d: ((d.to_dict() or {}).get('created_at') and str((d.to_dict() or {}).get('created_at'))) or '')
             docs = candidates
         except Exception as e:
@@ -593,14 +663,15 @@ class PublisherWorker:
                 data = doc.to_dict() or {}
                 article_id = data.get('article_id') or doc.id
                 image = data.get('image_url') or data.get('image') or None
-                # Use only data['telegram_final']['tg_preview'] as canonical preview
-                final_preview = None
+                # Use raw data['telegram_final'] as the message source (no fallbacks)
                 try:
-                    final_preview = (data.get('telegram_final') or {}).get('tg_preview')
+                    raw_preview = data.get('telegram_final')
                 except Exception:
-                    final_preview = None
-                if not final_preview:
-                    print(f"[publisher] ⚠️ Skipping article {article_id}: missing telegram_final.tg_preview")
+                    raw_preview = None
+                final_preview = self._normalize_telegram_preview(raw_preview)
+                if final_preview is None or final_preview.strip() == '':
+                    print(f"[publisher] ❌ Article {article_id} has empty telegram_final")
+                    results['errors'].append(f"empty_telegram_final:{article_id}")
                     continue
                 # compute embedding and save it to the article document
                 try:

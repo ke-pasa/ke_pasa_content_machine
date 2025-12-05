@@ -83,6 +83,7 @@ class PGClient:
                         content_ru text,
                         publish_md text,
                         telegram_final jsonb,
+                        telegram_emd jsonb,
                         published_at timestamptz,
                         updated_at timestamptz
                     )
@@ -250,8 +251,8 @@ class PGClient:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
             sql = [
-                "SELECT id, title, summary AS description, content, categories, link AS source,",
-                "published_date AS pub_date, source_feed AS feed_name, status, created_at, updated_at, interest",
+                "SELECT id, title, summary AS description, content, categories, link AS source, link as link, image, source_link, source_feed AS source_name,",
+                "published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, status, created_at, updated_at, interest",
                 "FROM public.articles",
                 "WHERE status = %s"
             ]
@@ -286,7 +287,12 @@ class PGClient:
                     'content': r.get('content'),
                     'tags': tags or [],
                     'source': r.get('source'),
+                    'link': r.get('link'),
+                    'image': r.get('image'),
+                    'source_link': r.get('source_link'),
+                    'source_name': r.get('source_name'),
                     'pub_date': pub_date_val,
+                    'published_at': pub_date_val,
                     'feed_name': r.get('feed_name'),
                     'region_hint': None,
                     'created_at': r.get('created_at'),
@@ -311,7 +317,7 @@ class PGClient:
         conn, pooled = self._get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
-            cur.execute("SELECT id, title, summary AS description, content, categories, link AS source, published_date AS pub_date, source_feed AS feed_name, status, created_at, updated_at, interest FROM public.articles WHERE id = %s LIMIT 1", (article_id,))
+            cur.execute("SELECT id, title, summary AS description, content, categories, link AS source, link as link, image, source_link, source_feed AS source_name, published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, status, created_at, updated_at, interest FROM public.articles WHERE id = %s LIMIT 1", (article_id,))
             r = cur.fetchone()
             if not r:
                 return None
@@ -336,7 +342,12 @@ class PGClient:
                 'status': r.get('status'),
                 'tags': tags or [],
                 'source': r.get('source'),
+                'link': r.get('link'),
+                'image': r.get('image'),
+                'source_link': r.get('source_link'),
+                'source_name': r.get('source_name'),
                 'pub_date': pub_date_val,
+                'published_at': pub_date_val,
                 'feed_name': r.get('feed_name'),
                 'region_hint': None,
                 'created_at': r.get('created_at'),
@@ -403,7 +414,18 @@ class PGClient:
         except Exception:
             return False
         telegram_final = payload.get('telegram_final')
+        # If telegram_final is a plain string/bytes, store it as a JSON object
+        # with key `tg_preview` so the DB contains a structured object instead
+        # of a JSON string. This prevents double-encoding and extra quotes
+        # when the value is later read and re-saved by the publisher.
         try:
+            if isinstance(telegram_final, bytes):
+                try:
+                    telegram_final = telegram_final.decode('utf-8')
+                except Exception:
+                    telegram_final = str(telegram_final)
+            if isinstance(telegram_final, str):
+                telegram_final = {'tg_preview': telegram_final}
             telegram_json = json.dumps(telegram_final, ensure_ascii=False) if telegram_final is not None else None
         except Exception:
             telegram_json = None
@@ -411,8 +433,8 @@ class PGClient:
         # Use DELETE then INSERT to avoid relying on ON CONFLICT or unique constraints.
         delete_sql = 'DELETE FROM public.articles_ru WHERE article_id = %s'
         insert_sql = '''
-        INSERT INTO public.articles_ru (article_id, source_url, source_link, source_name, source_published_at, image_url, status, total_score, title_ru, description_ru, content_ru, publish_md, telegram_final, published_at, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
+        INSERT INTO public.articles_ru (article_id, source_url, source_link, source_name, source_published_at, image_url, status, total_score, title_ru, description_ru, content_ru, publish_md, telegram_final, telegram_emd, published_at, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
         '''
 
         params_insert = (
@@ -429,6 +451,7 @@ class PGClient:
             payload.get('content_ru'),
             payload.get('publish_md'),
             telegram_json,
+            json.dumps(payload.get('telegram_emd'), ensure_ascii=False) if payload.get('telegram_emd') is not None else None,
         )
 
         conn, pooled = self._get_conn()
@@ -530,7 +553,98 @@ class PGClient:
             )
             rows = cur.fetchall()
             for r in rows:
-                results.append(dict(r))
+                row = dict(r)
+                # Preserve raw telegram_final for debugging
+                row['telegram_final_raw'] = row.get('telegram_final')
+                # Preserve raw telegram_emd for debugging
+                row['telegram_emd_raw'] = row.get('telegram_emd')
+                # Use telegram_final value directly as a string (decode bytes). Do not parse dict/JSON here.
+                try:
+                    tf = row.get('telegram_final')
+                    if tf is None:
+                        row['telegram_final'] = None
+                    else:
+                        # If DB returned bytes, decode to str
+                        if isinstance(tf, bytes):
+                            try:
+                                tf = tf.decode('utf-8')
+                            except Exception:
+                                tf = None
+                        # At this point tf may be a dict, a JSON string, or plain string
+                        if isinstance(tf, dict):
+                            row['telegram_final'] = tf
+                        elif isinstance(tf, str):
+                            s = tf.strip()
+                            if not s:
+                                row['telegram_final'] = None
+                            else:
+                                # Try to parse JSON string that may be double-encoded
+                                parsed = None
+                                try:
+                                    # If string seems to be a JSON object (starts with { or [) parse it
+                                    if s[0] in ('{', '['):
+                                        parsed = json.loads(s)
+                                    else:
+                                        # Sometimes the DB contains a quoted JSON string like '"<b>text</b>"'
+                                        # Try to unescape once
+                                        if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+                                            inner = s[1:-1]
+                                            try:
+                                                parsed = json.loads(inner)
+                                            except Exception:
+                                                parsed = None
+                                except Exception:
+                                    parsed = None
+
+                                if isinstance(parsed, dict):
+                                    # Clean tg_preview if it contains surrounding quotes or escaped sequences
+                                    try:
+                                        tp = parsed.get('tg_preview') or parsed.get('text') or parsed.get('preview')
+                                        if isinstance(tp, str):
+                                            s = tp
+                                            # Unescape common sequences
+                                            s = s.replace('\\n', '\n')
+                                            s = s.replace('\\"', '"')
+                                            # If the preview is wrapped in quotes like '"..."' or '\'...\'', strip them
+                                            if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+                                                s = s[1:-1]
+                                            s = s.strip()
+                                            # Put cleaned value back
+                                            parsed['tg_preview'] = s
+                                    except Exception:
+                                        pass
+
+                                    # Assign the cleaned parsed dict back to telegram_final
+                                    row['telegram_final'] = parsed
+
+                                    # Try to parse telegram_emd if present in the DB raw row
+                                    try:
+                                        te = row.get('telegram_emd')
+                                        if te is None:
+                                            row['telegram_emd'] = None
+                                        else:
+                                            if isinstance(te, (bytes, str)):
+                                                try:
+                                                    row['telegram_emd'] = json.loads(te) if isinstance(te, str) else json.loads(te.decode('utf-8'))
+                                                except Exception:
+                                                    row['telegram_emd'] = te
+                                            else:
+                                                row['telegram_emd'] = te
+                                    except Exception:
+                                        row['telegram_emd'] = None
+                                elif isinstance(parsed, str) and parsed.strip():
+                                    row['telegram_final'] = parsed.strip()
+                                else:
+                                    # Fallback: use original stripped string
+                                    row['telegram_final'] = s
+                        else:
+                            try:
+                                row['telegram_final'] = str(tf)
+                            except Exception:
+                                row['telegram_final'] = None
+                except Exception:
+                    row['telegram_final'] = None
+                results.append(row)
             return results
         finally:
             try:
