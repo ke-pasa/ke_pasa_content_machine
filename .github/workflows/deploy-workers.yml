@@ -2,6 +2,27 @@ name: Deploy Workers to Server
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_rss:
+        description: 'Deploy RSS Worker'
+        required: false
+        default: true
+        type: boolean
+      deploy_categorization:
+        description: 'Deploy Categorization Worker'
+        required: false
+        default: true
+        type: boolean
+      deploy_article_generator:
+        description: 'Deploy Article Generator Worker'
+        required: false
+        default: true
+        type: boolean
+      deploy_publisher:
+        description: 'Deploy Publisher Worker'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   deploy:
@@ -32,19 +53,48 @@ jobs:
 
       - name: Build worker images
         run: |
-          docker build -f Dockerfile.rss -t ke-pasa-rss-worker:latest .
-          docker build -f Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
-          docker build -f Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
-          docker build -f Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+          # Build only selected workers (or all on push to main)
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_rss }}" == "true" ]; then
+            echo "Building RSS worker..."
+            docker build -f Dockerfile.rss -t ke-pasa-rss-worker:latest .
+          fi
+          
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_categorization }}" == "true" ]; then
+            echo "Building Categorization worker..."
+            docker build -f Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
+          fi
+          
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_article_generator }}" == "true" ]; then
+            echo "Building Article Generator worker..."
+            docker build -f Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
+          fi
+          
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_publisher }}" == "true" ]; then
+            echo "Building Publisher worker..."
+            docker build -f Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+          fi
 
       - name: Save Docker images to tar
         run: |
           mkdir -p docker-images
           docker save ke-pasa-workers-base:latest | gzip > docker-images/base.tar.gz
-          docker save ke-pasa-rss-worker:latest | gzip > docker-images/rss.tar.gz
-          docker save ke-pasa-categorization-worker:latest | gzip > docker-images/categorization.tar.gz
-          docker save ke-pasa-article-generator-worker:latest | gzip > docker-images/article-generator.tar.gz
-          docker save ke-pasa-publisher-worker:latest | gzip > docker-images/publisher.tar.gz
+          
+          # Save only selected workers (or all on push to main)
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_rss }}" == "true" ]; then
+            docker save ke-pasa-rss-worker:latest | gzip > docker-images/rss.tar.gz
+          fi
+          
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_categorization }}" == "true" ]; then
+            docker save ke-pasa-categorization-worker:latest | gzip > docker-images/categorization.tar.gz
+          fi
+          
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_article_generator }}" == "true" ]; then
+            docker save ke-pasa-article-generator-worker:latest | gzip > docker-images/article-generator.tar.gz
+          fi
+          
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_publisher }}" == "true" ]; then
+            docker save ke-pasa-publisher-worker:latest | gzip > docker-images/publisher.tar.gz
+          fi
 
       - name: Setup SSH key
         run: |
@@ -82,6 +132,10 @@ jobs:
         env:
           DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
           DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+          DEPLOY_RSS: ${{ github.event_name == 'push' || github.event.inputs.deploy_rss == 'true' }}
+          DEPLOY_CAT: ${{ github.event_name == 'push' || github.event.inputs.deploy_categorization == 'true' }}
+          DEPLOY_ART: ${{ github.event_name == 'push' || github.event.inputs.deploy_article_generator == 'true' }}
+          DEPLOY_PUB: ${{ github.event_name == 'push' || github.event.inputs.deploy_publisher == 'true' }}
         run: |
           ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
@@ -89,32 +143,68 @@ jobs:
           cd ~/ke-pasa-workers
           
           # Load Docker images
-          echo "Loading Docker images..."
+          echo "Loading base image..."
           docker load < base.tar.gz
-          docker load < rss.tar.gz
-          docker load < categorization.tar.gz
-          docker load < article-generator.tar.gz
-          docker load < publisher.tar.gz
           
-          # Stop existing containers
-          echo "Stopping existing containers..."
-          docker-compose down || true
+          # Load only selected worker images
+          if [ "${{ env.DEPLOY_RSS }}" == "true" ] && [ -f rss.tar.gz ]; then
+            echo "Loading RSS worker image..."
+            docker load < rss.tar.gz
+          fi
           
-          # Clean up old images (optional)
+          if [ "${{ env.DEPLOY_CAT }}" == "true" ] && [ -f categorization.tar.gz ]; then
+            echo "Loading Categorization worker image..."
+            docker load < categorization.tar.gz
+          fi
+          
+          if [ "${{ env.DEPLOY_ART }}" == "true" ] && [ -f article-generator.tar.gz ]; then
+            echo "Loading Article Generator worker image..."
+            docker load < article-generator.tar.gz
+          fi
+          
+          if [ "${{ env.DEPLOY_PUB }}" == "true" ] && [ -f publisher.tar.gz ]; then
+            echo "Loading Publisher worker image..."
+            docker load < publisher.tar.gz
+          fi
+          
+          # Restart only selected workers
+          echo "Restarting selected workers..."
+          
+          if [ "${{ env.DEPLOY_RSS }}" == "true" ]; then
+            echo "Restarting RSS worker..."
+            docker-compose stop rss-worker || true
+            docker-compose up -d rss-worker
+          fi
+          
+          if [ "${{ env.DEPLOY_CAT }}" == "true" ]; then
+            echo "Restarting Categorization worker..."
+            docker-compose stop categorization-worker || true
+            docker-compose up -d categorization-worker
+          fi
+          
+          if [ "${{ env.DEPLOY_ART }}" == "true" ]; then
+            echo "Restarting Article Generator worker..."
+            docker-compose stop article-generator-worker || true
+            docker-compose up -d article-generator-worker
+          fi
+          
+          if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
+            echo "Restarting Publisher worker..."
+            docker-compose stop publisher-worker || true
+            docker-compose up -d publisher-worker
+          fi
+          
+          # Clean up old images
           echo "Cleaning up old images..."
           docker image prune -f
-          
-          # Start new containers
-          echo "Starting new containers..."
-          docker-compose up -d
           
           # Show status
           echo "Deployment complete! Container status:"
           docker-compose ps
           
-          # Show logs
+          # Show logs of restarted workers
           echo "Recent logs:"
-          docker-compose logs --tail=50
+          docker-compose logs --tail=20
           
           ENDSSH
 
