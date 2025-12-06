@@ -175,26 +175,26 @@ jobs:
           
           if [ "${{ env.DEPLOY_RSS }}" == "true" ]; then
             echo "Restarting RSS worker..."
-            docker-compose stop rss-worker || true
-            docker-compose up -d rss-worker
+            docker compose stop rss-worker || true
+            docker compose up -d rss-worker
           fi
           
           if [ "${{ env.DEPLOY_CAT }}" == "true" ]; then
             echo "Restarting Categorization worker..."
-            docker-compose stop categorization-worker || true
-            docker-compose up -d categorization-worker
+            docker compose stop categorization-worker || true
+            docker compose up -d categorization-worker
           fi
           
           if [ "${{ env.DEPLOY_ART }}" == "true" ]; then
             echo "Restarting Article Generator worker..."
-            docker-compose stop article-generator-worker || true
-            docker-compose up -d article-generator-worker
+            docker compose stop article-generator-worker || true
+            docker compose up -d article-generator-worker
           fi
           
           if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
             echo "Restarting Publisher worker..."
-            docker-compose stop publisher-worker || true
-            docker-compose up -d publisher-worker
+            docker compose stop publisher-worker || true
+            docker compose up -d publisher-worker
           fi
           
           # Clean up old images
@@ -203,11 +203,11 @@ jobs:
           
           # Show status
           echo "Deployment complete! Container status:"
-          docker-compose ps
+          docker compose ps
           
           # Show logs of restarted workers
           echo "Recent logs:"
-          docker-compose logs --tail=20
+          docker compose logs --tail=20
           
           ENDSSH
 
@@ -225,8 +225,8 @@ jobs:
           cd ~/ke-pasa-workers
           
           # Check if all containers are running
-          RUNNING=$(docker-compose ps --services --filter "status=running" | wc -l)
-          TOTAL=$(docker-compose ps --services | wc -l)
+          RUNNING=$(docker compose ps --services --filter "status=running" | wc -l)
+          TOTAL=$(docker compose ps --services | wc -l)
           
           echo "Running containers: $RUNNING / $TOTAL"
           
@@ -235,8 +235,8 @@ jobs:
             exit 0
           else
             echo "❌ Some containers failed to start"
-            docker-compose ps
-            docker-compose logs --tail=100
+            docker compose ps
+            docker compose logs --tail=100
             exit 1
           fi
           
