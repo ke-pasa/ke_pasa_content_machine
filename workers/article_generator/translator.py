@@ -105,7 +105,7 @@ class ArticleTranslator:
     def __init__(
         self,
         client=None,
-        model: str = 'gpt-5-mini',
+        model: str = 'gpt-4o',
         stage1_max_tokens: int = 8000,
         stage2_max_tokens: int = 8000,
         stage3_max_tokens: int = 8000,
@@ -136,25 +136,48 @@ class ArticleTranslator:
 
     def _execute_translation_pipeline(self, title: str, description: str, content: str, metadata: Dict) -> tuple:
         """Execute 6-stage translation pipeline. Returns (stage1, stage2, stage3, stage4, stage5, stage6)."""
+        import time
+        doc_id = metadata.get('doc_id', 'unknown')
+        _logger.info('[%s] Starting translation pipeline', doc_id)
+        
         source_text = self._build_source_text(title, description, content)
 
+        _logger.info('[%s] Stage 1: Translation...', doc_id)
+        t0 = time.time()
         stage1 = self._stage1_translate(title, description, content, metadata)
+        _logger.info('[%s] Stage 1 completed in %.1fs', doc_id, time.time() - t0)
         if not stage1 or not isinstance(stage1, dict):
+            _logger.warning('[%s] Stage 1 failed', doc_id)
             return (stage1, None, None, None, None, None)
 
+        _logger.info('[%s] Stage 2: Reporter style...', doc_id)
+        t0 = time.time()
         stage2 = self._stage2_reporter(stage1, metadata)
+        _logger.info('[%s] Stage 2 completed in %.1fs', doc_id, time.time() - t0)
         if not stage2 or not isinstance(stage2, dict):
+            _logger.warning('[%s] Stage 2 failed', doc_id)
             return (stage1, None, None, None, None, None)
 
+        _logger.info('[%s] Stage 3: Editorial evaluation...', doc_id)
+        t0 = time.time()
         stage3 = self._stage3_edit_first(stage1, stage2, source_text, metadata)
+        _logger.info('[%s] Stage 3 completed in %.1fs', doc_id, time.time() - t0)
         if not stage3 or not isinstance(stage3, dict):
+            _logger.warning('[%s] Stage 3 failed', doc_id)
             return (stage1, stage2, None, None, None, None)
 
+        _logger.info('[%s] Stage 4: Final edit...', doc_id)
+        t0 = time.time()
         stage4 = self._stage4_edit_final(stage1, stage2, stage3, source_text, metadata)
+        _logger.info('[%s] Stage 4 completed in %.1fs', doc_id, time.time() - t0)
         if not stage4 or not isinstance(stage4, dict):
+            _logger.warning('[%s] Stage 4 failed', doc_id)
             return (stage1, stage2, stage3, None, None, None)
 
+        _logger.info('[%s] Stage 5: Publish markdown...', doc_id)
+        t0 = time.time()
         stage5 = self._stage5_publish_md(stage4, metadata)
+        _logger.info('[%s] Stage 5 completed in %.1fs', doc_id, time.time() - t0)
 
         stage6 = None
         try:
@@ -162,11 +185,14 @@ class ArticleTranslator:
         except Exception:
             total_score_meta = 0.0
         if total_score_meta >= 80 and metadata.get('url'):
+            _logger.info('[%s] Stage 6: Telegram preview (score=%.1f)...', doc_id, total_score_meta)
+            t0 = time.time()
             slug = stage5.get('slug') if stage5 and isinstance(stage5, dict) else None
             stage6 = self._stage6_telegram(stage4, metadata, slug)
+            _logger.info('[%s] Stage 6 completed in %.1fs', doc_id, time.time() - t0)
         else:
-            _logger.info('Stage6 skipped: total_score=%.1f (need >=80), has_url=%s', 
-                        total_score_meta, bool(metadata.get('url')))
+            _logger.info('[%s] Stage6 skipped: total_score=%.1f (need >=80), has_url=%s', 
+                        doc_id, total_score_meta, bool(metadata.get('url')))
 
         return (stage1, stage2, stage3, stage4, stage5, stage6)
 

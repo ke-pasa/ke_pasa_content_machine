@@ -174,12 +174,12 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 'stream': False,
             }
             
-            # GPT-5 models don't support temperature
-            if not model.startswith('gpt-5'):
+            # Only GPT-4o models support temperature
+            if model.startswith('gpt-4') or model.startswith('gpt-3'):
                 req_kwargs['temperature'] = temperature
             
-            # Add reasoning parameter if specified
-            if reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
+            # Add reasoning parameter ONLY for o1 models (o1, o1-mini, o1-preview)
+            if model.startswith('o1') and reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
                 req_kwargs['reasoning'] = {'effort': reasoning_effort.lower()}
 
             resp = client.responses.create(**req_kwargs)
