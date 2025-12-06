@@ -1,5 +1,5 @@
 [program:publisher-worker]
-command=/bin/bash -c "while true; do HOUR=$(date +%H); if [ $HOUR -ge 9 ] && [ $HOUR -lt 23 ]; then python -m workers.publisher.worker; fi; sleep 3600; done"
+command=/bin/bash -c "while true; do HOUR=$(date +%%H); if [ $HOUR -ge 9 ] && [ $HOUR -lt 23 ]; then python -m workers.publisher.worker; fi; sleep 3600; done"
 directory=/app
 user=root
 autostart=true
