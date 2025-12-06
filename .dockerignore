@@ -1,0 +1,82 @@
+# .dockerignore - exclude files from Docker build context
+# Version control
+.git
+.gitignore
+.github
+
+# Python virtual environments
+.venv/
+venv/
+venv_new/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Testing
+.pytest_cache/
+tests/
+*.pytest_cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Environment files (will be provided separately)
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Cache files
+rss_etag_cache.json
+rss_lastmod_cache.json
+
+# Documentation
+README.md
+docs/
+
+# Temporary files
+*.tmp
+*.temp
+feeds_not_working.txt
+feeds_outdated.txt
+
+# Articles directory (not needed in container)
+articles/
+
+# Public directory (not needed in container)
+public/
+
+# Firebase files
+firebase_key.json
+firestore.indexes.json
+
+# Scripts
+Scripts/
+activate.ps1
+pyvenv.cfg
+cgi.py
+
+# Include directory
+Include/
+
+# Library directory
+Lib/

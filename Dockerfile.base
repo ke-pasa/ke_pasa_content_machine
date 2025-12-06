@@ -1,0 +1,35 @@
+# Base Docker image for all workers
+FROM python:3.13-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    libxml2-dev \
+    libxslt-dev \
+    libpq-dev \
+    netcat-openbsd \
+    build-essential \
+    pkg-config \
+    supervisor \
+    cron \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy root requirements.txt (common dependencies)
+COPY requirements.txt /app/requirements.txt
+
+# Install common Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy workers/tools (shared utilities)
+COPY workers/tools /app/workers/tools
+
+# Create directory for supervisor logs
+RUN mkdir -p /var/log/supervisor
+
+# Copy base supervisord configuration
+COPY supervisord.conf /etc/supervisor/supervisord.conf
+
+# Ensure proper permissions
+RUN chmod -R 755 /app/workers/tools

@@ -1,0 +1,157 @@
+name: Deploy Workers to Server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create .env file from secrets
+        run: |
+          cat > .env << EOF
+          POSTGRES_URL=${{ secrets.POSTGRES_URL }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          RSS_PARALLEL_FEEDS=${{ secrets.RSS_PARALLEL_FEEDS || '6' }}
+          RSS_PURGE_DAYS=${{ secrets.RSS_PURGE_DAYS || '7' }}
+          EOF
+
+      - name: Build base image
+        run: |
+          docker build -f Dockerfile.base -t ke-pasa-workers-base:latest .
+
+      - name: Build worker images
+        run: |
+          docker build -f Dockerfile.rss -t ke-pasa-rss-worker:latest .
+          docker build -f Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
+          docker build -f Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
+          docker build -f Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+
+      - name: Save Docker images to tar
+        run: |
+          mkdir -p docker-images
+          docker save ke-pasa-workers-base:latest | gzip > docker-images/base.tar.gz
+          docker save ke-pasa-rss-worker:latest | gzip > docker-images/rss.tar.gz
+          docker save ke-pasa-categorization-worker:latest | gzip > docker-images/categorization.tar.gz
+          docker save ke-pasa-article-generator-worker:latest | gzip > docker-images/article-generator.tar.gz
+          docker save ke-pasa-publisher-worker:latest | gzip > docker-images/publisher.tar.gz
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to server
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          # Create deployment directory on server
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} \
+            "mkdir -p ~/ke-pasa-workers/logs/{rss,categorization,article_generator,publisher}"
+          
+          # Copy docker-compose.yml
+          scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            docker-compose.yml \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+          
+          # Copy .env file
+          scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            .env \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+          
+          # Copy docker images
+          scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            docker-images/*.tar.gz \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+
+      - name: Deploy on server
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
+          
+          cd ~/ke-pasa-workers
+          
+          # Load Docker images
+          echo "Loading Docker images..."
+          docker load < base.tar.gz
+          docker load < rss.tar.gz
+          docker load < categorization.tar.gz
+          docker load < article-generator.tar.gz
+          docker load < publisher.tar.gz
+          
+          # Stop existing containers
+          echo "Stopping existing containers..."
+          docker-compose down || true
+          
+          # Clean up old images (optional)
+          echo "Cleaning up old images..."
+          docker image prune -f
+          
+          # Start new containers
+          echo "Starting new containers..."
+          docker-compose up -d
+          
+          # Show status
+          echo "Deployment complete! Container status:"
+          docker-compose ps
+          
+          # Show logs
+          echo "Recent logs:"
+          docker-compose logs --tail=50
+          
+          ENDSSH
+
+      - name: Verify deployment
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          echo "Waiting 10 seconds for containers to stabilize..."
+          sleep 10
+          
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
+          
+          cd ~/ke-pasa-workers
+          
+          # Check if all containers are running
+          RUNNING=$(docker-compose ps --services --filter "status=running" | wc -l)
+          TOTAL=$(docker-compose ps --services | wc -l)
+          
+          echo "Running containers: $RUNNING / $TOTAL"
+          
+          if [ $RUNNING -eq $TOTAL ]; then
+            echo "✅ All containers are running successfully!"
+            exit 0
+          else
+            echo "❌ Some containers failed to start"
+            docker-compose ps
+            docker-compose logs --tail=100
+            exit 1
+          fi
+          
+          ENDSSH
+
+      - name: Cleanup local files
+        if: always()
+        run: |
+          rm -rf docker-images
+          rm -f .env
+          rm -f ~/.ssh/deploy_key

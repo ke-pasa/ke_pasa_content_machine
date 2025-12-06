@@ -1,15 +1,34 @@
-feedparser==6.0.10
-python-dateutil==2.8.2
-requests==2.31.0
-sgmllib3k==1.0.0
-openai==1.87.0
-beautifulsoup4==4.12.2
-lxml[html_clean]>=5.3.0,<6.0.0
-readability-lxml==0.8.1
+# Consolidated requirements for all workers
+# This file contains only essential dependencies used by RSS, Categorization, Article Generator, and Publisher workers
+
+# Core dependencies
+python-dotenv>=1.0.0,<2.0.0
+typing-extensions>=4.9.0,<5.0.0
+
+# Database
 psycopg2-binary>=2.9.0,<3.0.0
-python-slugify==8.0.1
-firebase-admin==6.4.0
-python-telegram-bot==20.7
-pytz==2024.1
-freezegun==1.2.2 
-python-dotenv==1.0.1
+
+# HTTP and networking
+requests>=2.31.0,<3.0.0
+httpx>=0.24.0,<1.0.0
+
+# RSS parsing (for RSS worker)
+feedparser>=6.0.12,<7.0.0
+
+# HTML parsing and content extraction (for RSS worker)
+beautifulsoup4>=4.12.0,<5.0.0
+lxml>=5.3.0,<6.0.0
+readability-lxml>=0.8.1,<1.0.0
+
+# Date and time
+python-dateutil>=2.8.0,<3.0.0
+pytz>=2024.1
+
+# String manipulation
+python-slugify>=8.0.0,<9.0.0
+
+# OpenAI (for Categorization and Article Generator workers)
+openai>=2.8.1,<3.0.0
+
+# Telegram (for Publisher worker)
+python-telegram-bot>=20.7,<21.0.0

@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # RSS Worker - runs every 8 hours
+  rss-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.rss
+    image: ke-pasa-rss-worker:latest
+    container_name: ke-pasa-rss-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL}
+      - RSS_FEEDS_FILE=workers/rss/feeds.txt
+      - RSS_PARALLEL_FEEDS=${RSS_PARALLEL_FEEDS:-6}
+      - RSS_PURGE_DAYS=${RSS_PURGE_DAYS:-7}
+    volumes:
+      - ./logs/rss:/var/log/supervisor
+    networks:
+      - ke-pasa-network
+    depends_on:
+      - base
+
+  # Categorization Worker - runs every 2 hours
+  categorization-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.categorization
+    image: ke-pasa-categorization-worker:latest
+    container_name: ke-pasa-categorization-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./logs/categorization:/var/log/supervisor
+    networks:
+      - ke-pasa-network
+    depends_on:
+      - base
+
+  # Article Generator Worker - runs every 30 minutes
+  article-generator-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.article_generator
+    image: ke-pasa-article-generator-worker:latest
+    container_name: ke-pasa-article-generator-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./logs/article_generator:/var/log/supervisor
+    networks:
+      - ke-pasa-network
+    depends_on:
+      - base
+
+  # Publisher Worker - runs every hour
+  publisher-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.publisher
+    image: ke-pasa-publisher-worker:latest
+    container_name: ke-pasa-publisher-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./logs/publisher:/var/log/supervisor
+    networks:
+      - ke-pasa-network
+    depends_on:
+      - base
+
+  # Base image builder (helper service)
+  base:
+    build:
+      context: .
+      dockerfile: Dockerfile.base
+    image: ke-pasa-workers-base:latest
+    container_name: ke-pasa-workers-base
+    command: /bin/true
+    networks:
+      - ke-pasa-network
+
+networks:
+  ke-pasa-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local

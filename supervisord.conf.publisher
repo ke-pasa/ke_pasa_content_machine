@@ -1,0 +1,13 @@
+[program:publisher-worker]
+command=/bin/bash -c "while true; do python -m workers.publisher.worker; sleep 3600; done"
+directory=/app
+autostart=true
+autorestart=true
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/publisher-worker.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+stderr_logfile=/var/log/supervisor/publisher-worker-error.log
+stderr_logfile_maxbytes=10MB
+startsecs=10
+stopwaitsecs=30
