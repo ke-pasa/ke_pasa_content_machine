@@ -252,7 +252,7 @@ class PGClient:
         try:
             sql = [
                 "SELECT id, title, summary AS description, content, categories, link AS source, link as link, image, source_link, source_feed AS source_name,",
-                "published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, status, created_at, updated_at, interest",
+                "published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, status, created_at, updated_at, interest, total_score",
                 "FROM public.articles",
                 "WHERE status = %s"
             ]
@@ -280,6 +280,11 @@ class PGClient:
                         interest = interest_raw
                 pub_date = r.get('pub_date')
                 pub_date_val = pub_date.isoformat() if hasattr(pub_date, 'isoformat') else pub_date
+                total_score = r.get('total_score')
+                try:
+                    total_score = float(total_score) if total_score is not None else 0.0
+                except (ValueError, TypeError):
+                    total_score = 0.0
                 normalized = {
                     'id': r.get('id'),
                     'title': r.get('title'),
@@ -297,7 +302,8 @@ class PGClient:
                     'region_hint': None,
                     'created_at': r.get('created_at'),
                     'updated_at': r.get('updated_at'),
-                    'interest': interest
+                    'interest': interest,
+                    'total_score': total_score
                 }
                 results.append(normalized)
             return results
@@ -317,7 +323,7 @@ class PGClient:
         conn, pooled = self._get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
-            cur.execute("SELECT id, title, summary AS description, content, categories, link AS source, link as link, image, source_link, source_feed AS source_name, published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, status, created_at, updated_at, interest FROM public.articles WHERE id = %s LIMIT 1", (article_id,))
+            cur.execute("SELECT id, title, summary AS description, content, categories, link AS source, link as link, image, source_link, source_feed AS source_name, published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, status, created_at, updated_at, interest, total_score FROM public.articles WHERE id = %s LIMIT 1", (article_id,))
             r = cur.fetchone()
             if not r:
                 return None
@@ -334,6 +340,11 @@ class PGClient:
                     interest = interest_raw
             pub_date = r.get('pub_date')
             pub_date_val = pub_date.isoformat() if hasattr(pub_date, 'isoformat') else pub_date
+            total_score = r.get('total_score')
+            try:
+                total_score = float(total_score) if total_score is not None else 0.0
+            except (ValueError, TypeError):
+                total_score = 0.0
             normalized = {
                 'id': r.get('id'),
                 'title': r.get('title'),
@@ -352,7 +363,8 @@ class PGClient:
                 'region_hint': None,
                 'created_at': r.get('created_at'),
                 'updated_at': r.get('updated_at'),
-                'interest': interest
+                'interest': interest,
+                'total_score': total_score
             }
             return normalized
         finally:
