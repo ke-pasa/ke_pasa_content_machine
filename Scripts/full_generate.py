@@ -41,7 +41,13 @@ def load_article_pg(article_id: str) -> dict:
 
 def save_generated_pg(doc_id: str, source: dict, translation_result: dict):
     ag = ArticleGenerator()
-    ag._save_generated_article(doc_id=doc_id, source=source, total_score=translation_result.get('total_score') or 0.0, translation_result=translation_result, status='TRANSLATED')
+    # total_score comes from the source article, not from translation_result
+    total_score = source.get('total_score', 0.0)
+    try:
+        total_score = float(total_score)
+    except (ValueError, TypeError):
+        total_score = 0.0
+    ag._save_generated_article(doc_id=doc_id, source=source, total_score=total_score, translation_result=translation_result, status='TRANSLATED')
 
 
 def main(article_id: str):
@@ -62,21 +68,21 @@ def main(article_id: str):
 
     try:
         url = src.get('link') or src.get('url')
-        if url:
-            fetched = generator._fetch_article_content(url)
-            if fetched and len(fetched) > len(content):
-                content = fetched
-
         tr = translator.translate(title, description, content, metadata={'doc_id': article_id, 'url': url, 'total_score': src.get('total_score')})
         if not tr:
             logger.error('Translation failed for %s', article_id)
             return 3
 
+        logger.info('Translation completed for %s. Keys in result: %s', article_id, list(tr.keys()))
+        logger.info('Article metadata: total_score=%.1f, url=%s', src.get('total_score', 0.0), url)
+
         save_generated_pg(article_id, src, tr)
 
         final_preview = (tr.get('stage6_telegram') or {}).get('tg_preview') or tr.get('tg_preview')
         if not final_preview:
-            logger.info('No telegram preview generated for %s', article_id)
+            logger.warning('No telegram preview generated for %s', article_id)
+            logger.info('Translation result has stage6_telegram: %s, tg_preview: %s', 
+                       bool(tr.get('stage6_telegram')), bool(tr.get('tg_preview')))
             return 0
 
         chat_id = os.environ.get('TELEGRAM_CHAT_ID')
@@ -91,17 +97,25 @@ def main(article_id: str):
             image = src.get('image') or src.get('image_url')
             if image:
                 caption = final_preview
+                logger.info('Attempting to send photo with caption (len=%d) to chat %s', len(caption), chat_id)
                 if len(caption) <= 1024:
                     sent = send_photo(chat_id, image, caption=caption, token=token)
+                    logger.info('Photo sent successfully: %s', sent)
                 else:
+                    logger.info('Caption too long, sending as text message instead')
                     sent = send_message(chat_id, final_preview, token=token)
+                    logger.info('Message sent successfully: %s', sent)
             else:
+                logger.info('No image found, sending text message to chat %s', chat_id)
                 sent = send_message(chat_id, final_preview, token=token)
-        except Exception:
-            logger.exception('Failed to send preview for %s', article_id)
+                logger.info('Message sent successfully: %s', sent)
+        except Exception as e:
+            logger.exception('Failed to send preview for %s: %s', article_id, str(e))
             sent = None
 
+
         if sent:
+            logger.info('Message sent successfully, updating article status to PUBLISHED')
             pg = get_pg_client()
             if not pg:
                 raise RuntimeError('Postgres client not available to record telegram post')
@@ -114,6 +128,7 @@ def main(article_id: str):
                 try:
                     cur.execute('UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s', ('PUBLISHED', datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), article_id))
                     conn.commit()
+                    logger.info('Article %s status updated to PUBLISHED', article_id)
                 finally:
                     try:
                         cur.close()
@@ -142,6 +157,8 @@ def main(article_id: str):
                     pg._put_conn(conn, pooled)
                 except Exception:
                     pass
+        else:
+            logger.warning('Message was not sent for article %s - skipping status update', article_id)
 
         return 0
     except Exception:
