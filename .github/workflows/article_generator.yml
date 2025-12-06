@@ -7,9 +7,6 @@ on:
         description: 'Batch size to process (optional)'
         required: false
         default: '5'
-  schedule:
-    # Runs every 4 hours
-    - cron: '0 */4 * * *'
 
 
 jobs:

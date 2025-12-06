@@ -1,13 +1,12 @@
 [program:categorization-worker]
 command=/bin/bash -c "while true; do python -m workers.categorization.worker --action categorize; sleep 7200; done"
 directory=/app
+user=root
 autostart=true
 autorestart=true
 redirect_stderr=true
 stdout_logfile=/var/log/supervisor/categorization-worker.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
-stderr_logfile=/var/log/supervisor/categorization-worker-error.log
-stderr_logfile_maxbytes=10MB
 startsecs=10
 stopwaitsecs=30

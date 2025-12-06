@@ -1,9 +1,6 @@
 name: Categorization Worker
 
 on:
-  schedule:
-    # Run every 8 hours
-    - cron: '0 */8 * * *'
   workflow_dispatch:
     inputs:
       batch_size:

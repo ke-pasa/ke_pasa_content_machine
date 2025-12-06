@@ -1,13 +1,12 @@
 [program:rss-worker]
-command=/bin/bash -c "while true; do python -m workers.rss.worker; sleep 28800; done"
+command=/bin/bash -c "while true; do python -m workers.rss.worker; sleep 7200; done"
 directory=/app
+user=root
 autostart=true
 autorestart=true
 redirect_stderr=true
 stdout_logfile=/var/log/supervisor/rss-worker.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
-stderr_logfile=/var/log/supervisor/rss-worker-error.log
-stderr_logfile_maxbytes=10MB
 startsecs=10
 stopwaitsecs=30

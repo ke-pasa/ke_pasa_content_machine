@@ -33,3 +33,7 @@ COPY supervisord.conf /etc/supervisor/supervisord.conf
 
 # Ensure proper permissions
 RUN chmod -R 755 /app/workers/tools
+
+# Disable Python output buffering for immediate logs
+ENV PYTHONUNBUFFERED=1
+

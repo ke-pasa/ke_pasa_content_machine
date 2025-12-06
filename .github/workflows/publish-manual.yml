@@ -7,8 +7,6 @@ on:
         description: 'Max articles to process (optional)'
         required: false
         default: '1'
-  schedule:
-    - cron: '0 8-22 * * *'
 
 jobs:
   publish:
