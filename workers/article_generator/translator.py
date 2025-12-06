@@ -105,7 +105,7 @@ class ArticleTranslator:
     def __init__(
         self,
         client=None,
-        model: str = 'gpt-4o',
+        model: str = 'gpt-4o-mini',
         stage1_max_tokens: int = 8000,
         stage2_max_tokens: int = 8000,
         stage3_max_tokens: int = 8000,
