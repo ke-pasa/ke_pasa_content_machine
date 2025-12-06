@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # RSS Worker - runs every 8 hours
   rss-worker:

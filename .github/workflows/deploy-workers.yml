@@ -47,55 +47,6 @@ jobs:
           RSS_PURGE_DAYS=${{ secrets.RSS_PURGE_DAYS || '7' }}
           EOF
 
-      - name: Build base image
-        run: |
-          docker build -f Dockerfile.base -t ke-pasa-workers-base:latest .
-
-      - name: Build worker images
-        run: |
-          # Build only selected workers (or all on push to main)
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_rss }}" == "true" ]; then
-            echo "Building RSS worker..."
-            docker build -f Dockerfile.rss -t ke-pasa-rss-worker:latest .
-          fi
-          
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_categorization }}" == "true" ]; then
-            echo "Building Categorization worker..."
-            docker build -f Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
-          fi
-          
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_article_generator }}" == "true" ]; then
-            echo "Building Article Generator worker..."
-            docker build -f Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
-          fi
-          
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_publisher }}" == "true" ]; then
-            echo "Building Publisher worker..."
-            docker build -f Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
-          fi
-
-      - name: Save Docker images to tar
-        run: |
-          mkdir -p docker-images
-          docker save ke-pasa-workers-base:latest | gzip > docker-images/base.tar.gz
-          
-          # Save only selected workers (or all on push to main)
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_rss }}" == "true" ]; then
-            docker save ke-pasa-rss-worker:latest | gzip > docker-images/rss.tar.gz
-          fi
-          
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_categorization }}" == "true" ]; then
-            docker save ke-pasa-categorization-worker:latest | gzip > docker-images/categorization.tar.gz
-          fi
-          
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_article_generator }}" == "true" ]; then
-            docker save ke-pasa-article-generator-worker:latest | gzip > docker-images/article-generator.tar.gz
-          fi
-          
-          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.deploy_publisher }}" == "true" ]; then
-            docker save ke-pasa-publisher-worker:latest | gzip > docker-images/publisher.tar.gz
-          fi
-
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -106,7 +57,7 @@ jobs:
           # Verify key format
           ssh-keygen -l -f ~/.ssh/deploy_key || (echo "Invalid SSH key format" && exit 1)
 
-      - name: Copy files to server
+      - name: Deploy code to server
         env:
           DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
           DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
@@ -114,24 +65,29 @@ jobs:
           # Create deployment directory on server
           ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} \
-            "mkdir -p ~/ke-pasa-workers/logs/{rss,categorization,article_generator,publisher}"
+            "mkdir -p ~/ke-pasa-workers"
           
-          # Copy docker-compose.yml
-          scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
-            docker-compose.yml \
-            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+          # Sync code to server (excluding unnecessary files)
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }}" \
+            --exclude='.git' \
+            --exclude='.venv' \
+            --exclude='venv*' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='tests' \
+            --exclude='.pytest_cache' \
+            --exclude='logs' \
+            --exclude='articles' \
+            --exclude='public' \
+            ./ ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
           
           # Copy .env file
           scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             .env \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
-          
-          # Copy docker images
-          scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
-            docker-images/*.tar.gz \
-            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
 
-      - name: Deploy on server
+      - name: Build and deploy on server
         env:
           DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
           DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
@@ -145,29 +101,29 @@ jobs:
           
           cd ~/ke-pasa-workers
           
-          # Load Docker images
-          echo "Loading base image..."
-          docker load < base.tar.gz
+          # Build base image on server (ARM64)
+          echo "Building base image on server..."
+          docker build -f Dockerfile.base -t ke-pasa-workers-base:latest .
           
-          # Load only selected worker images
-          if [ "${{ env.DEPLOY_RSS }}" == "true" ] && [ -f rss.tar.gz ]; then
-            echo "Loading RSS worker image..."
-            docker load < rss.tar.gz
+          # Build only selected worker images on server
+          if [ "${{ env.DEPLOY_RSS }}" == "true" ]; then
+            echo "Building RSS worker..."
+            docker build -f Dockerfile.rss -t ke-pasa-rss-worker:latest .
           fi
           
-          if [ "${{ env.DEPLOY_CAT }}" == "true" ] && [ -f categorization.tar.gz ]; then
-            echo "Loading Categorization worker image..."
-            docker load < categorization.tar.gz
+          if [ "${{ env.DEPLOY_CAT }}" == "true" ]; then
+            echo "Building Categorization worker..."
+            docker build -f Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
           fi
           
-          if [ "${{ env.DEPLOY_ART }}" == "true" ] && [ -f article-generator.tar.gz ]; then
-            echo "Loading Article Generator worker image..."
-            docker load < article-generator.tar.gz
+          if [ "${{ env.DEPLOY_ART }}" == "true" ]; then
+            echo "Building Article Generator worker..."
+            docker build -f Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
           fi
           
-          if [ "${{ env.DEPLOY_PUB }}" == "true" ] && [ -f publisher.tar.gz ]; then
-            echo "Loading Publisher worker image..."
-            docker load < publisher.tar.gz
+          if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
+            echo "Building Publisher worker..."
+            docker build -f Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
           fi
           
           # Restart only selected workers
@@ -245,6 +201,5 @@ jobs:
       - name: Cleanup local files
         if: always()
         run: |
-          rm -rf docker-images
           rm -f .env
           rm -f ~/.ssh/deploy_key
