@@ -665,6 +665,31 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
+    def fetch_articles_with_markdown(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        results = []
+        try:
+            self._connect()
+        except Exception:
+            return results
+        conn, pooled = self._get_conn()
+        from psycopg2.extras import RealDictCursor
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute(
+                "SELECT * FROM public.articles_ru WHERE publish_md IS NOT NULL AND length(publish_md) > 0 ORDER BY id DESC LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+            for r in rows:
+                results.append(dict(r))
+            return results
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
 
 _client: Optional[PGClient] = None
 
