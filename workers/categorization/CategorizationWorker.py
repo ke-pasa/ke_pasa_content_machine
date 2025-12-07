@@ -121,11 +121,9 @@ class CategorizationWorker:
         results = {'processed': 0, 'errors': []}
 
         score_buckets = {
-            '90+': 0,
-            '80-90': 0,
-            '70-80': 0,
-            '60-70': 0,
-            '<60': 0
+            '>=85': 0,
+            '65-85': 0,
+            '<65': 0
         }
 
         try:
@@ -406,16 +404,13 @@ class CategorizationWorker:
                                     val = None
                                 if val is not None:
                                     with lock:
-                                        if val >= 90:
-                                            score_buckets['90+'] += 1
-                                        elif val >= 80:
-                                            score_buckets['80-90'] += 1
-                                        elif val >= 70:
-                                            score_buckets['70-80'] += 1
-                                        elif val >= 60:
-                                            score_buckets['60-70'] += 1
+                                        if val >= 85:
+                                            score_buckets['>=85'] += 1
+                                        elif val >= 65:
+                                            score_buckets['65-85'] += 1
                                         else:
-                                            score_buckets['<60'] += 1
+                                            score_buckets['<65'] += 1
+
                         except Exception:
                             pass
 
@@ -458,13 +453,12 @@ class CategorizationWorker:
 
             # After successful processing, print detailed score buckets summary
             try:
+                import datetime as dt_mod
                 print(f'\n📊 Detailed scoring summary for this run ({datetime.now().strftime("%Y-%m-%d %H:%M:%S")}):')
                 print(f"   Total processed: {results.get('processed', 0)}")
-                print(f"   90+: {score_buckets.get('90+', 0)}")
-                print(f"   80-90: {score_buckets.get('80-90', 0)}")
-                print(f"   70-80: {score_buckets.get('70-80', 0)}")
-                print(f"   60-70: {score_buckets.get('60-70', 0)}")
-                print(f"   <60: {score_buckets.get('<60', 0)}")
+                print(f"   >=85: {score_buckets.get('>=85', 0)}")
+                print(f"   65-85: {score_buckets.get('65-85', 0)}")
+                print(f"   <65: {score_buckets.get('<65', 0)}")
             except Exception:
                 pass
 
@@ -487,7 +481,7 @@ class CategorizationWorker:
                 'urgent': 0,
                 'by_priority': {'high': 0, 'medium': 0, 'low': 0},
                 'by_category': {},
-                'score_buckets': {'90+': 0, '80-90': 0, '70-80': 0, '60-70': 0, '<60': 0}
+                'score_buckets': {'>=85': 0, '65-85': 0, '<65': 0}
             }
 
             # Total
@@ -499,7 +493,6 @@ class CategorizationWorker:
                 cur.execute('SELECT COUNT(*) FROM public.articles WHERE urgent = TRUE')
                 stats['urgent'] = int(cur.fetchone()[0] or 0)
 
-            # Priority buckets (if priority_score column exists)
             if column_exists('priority_score'):
                 cur.execute("SELECT SUM(CASE WHEN COALESCE(priority_score,0) >= 8 THEN 1 ELSE 0 END), SUM(CASE WHEN COALESCE(priority_score,0) >=5 AND COALESCE(priority_score,0) < 8 THEN 1 ELSE 0 END), SUM(CASE WHEN COALESCE(priority_score,0) < 5 THEN 1 ELSE 0 END) FROM public.articles")
                 row = cur.fetchone() or (0, 0, 0)
@@ -518,13 +511,11 @@ class CategorizationWorker:
 
             # Score buckets based on total_score column (fallback to 0 when NULL)
             if column_exists('total_score'):
-                cur.execute("SELECT SUM(CASE WHEN total_score >= 90 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=80 AND total_score < 90 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=70 AND total_score < 80 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=60 AND total_score < 70 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score < 60 THEN 1 ELSE 0 END) FROM public.articles WHERE total_score IS NOT NULL")
-                row = cur.fetchone() or (0, 0, 0, 0, 0)
-                stats['score_buckets']['90+'] = int(row[0] or 0)
-                stats['score_buckets']['80-90'] = int(row[1] or 0)
-                stats['score_buckets']['70-80'] = int(row[2] or 0)
-                stats['score_buckets']['60-70'] = int(row[3] or 0)
-                stats['score_buckets']['<60'] = int(row[4] or 0)
+                cur.execute("SELECT SUM(CASE WHEN total_score >= 85 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=65 AND total_score < 85 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score < 65 THEN 1 ELSE 0 END) FROM public.articles WHERE total_score IS NOT NULL")
+                row = cur.fetchone() or (0, 0, 0)
+                stats['score_buckets']['>=85'] = int(row[0] or 0)
+                stats['score_buckets']['65-85'] = int(row[1] or 0)
+                stats['score_buckets']['<65'] = int(row[2] or 0)
 
             try:
                 cur.close()
