@@ -392,12 +392,14 @@ class PGClient:
         try:
             # Create a new topic
             cur.execute(
-                'INSERT INTO public.topics (topic_name) VALUES (%s) RETURNING id',
+                'INSERT INTO public.topic (topic_name) VALUES (%s) RETURNING id',
                 (topic_name,)
             )
             row = cur.fetchone()
             return int(row[0]) if row else None
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"create_topic failed: {e}")
             return None
         finally:
             try:
@@ -598,8 +600,8 @@ class PGClient:
                 """
                 SELECT * FROM public.articles_ru 
                 WHERE status = %s 
-                  AND (total_score IS NULL OR total_score >= %s)
-                  AND source_published_at >= NOW() - INTERVAL '24 hours'
+                  AND total_score >= %s
+                  AND published_at >= NOW() - INTERVAL '24 hours'
                 ORDER BY total_score DESC NULLS LAST, id ASC 
                 LIMIT %s
                 """,

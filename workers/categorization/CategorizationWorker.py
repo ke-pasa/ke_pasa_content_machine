@@ -211,10 +211,19 @@ class CategorizationWorker:
                         topic_id_val = None
                         try:
                             # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
-                            if total_score is not None and float(total_score) >= MIN_ARTICLE_SCORE and title:
+                            score_val = float(total_score) if total_score is not None else 0.0
+                            if score_val >= MIN_ARTICLE_SCORE and title:
                                 topic_id_val = self.pg.create_topic(title)
-                        except Exception:
-                            pass
+                                if topic_id_val:
+                                    logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
+                                else:
+                                    logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
+                            else:
+                                if score_val >= MIN_ARTICLE_SCORE:
+                                    logging.getLogger('workers.categorization').warning(f"Skipping topic creation for {doc_id}: Missing title")
+                                # else: score too low, expected.
+                        except Exception as e:
+                            logging.getLogger('workers.categorization').exception(f"Error creating topic for {doc_id}: {e}")
 
                         update_payload = {
                             'interest': interest_result,
@@ -519,10 +528,15 @@ class CategorizationWorker:
             topic_id_val = None
             try:
                 # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
-                if total_score is not None and float(total_score) >= MIN_ARTICLE_SCORE and title:
+                score_val = float(total_score) if total_score is not None else 0.0
+                if score_val >= MIN_ARTICLE_SCORE and title:
                     topic_id_val = self.pg.create_topic(title)
-            except Exception:
-                pass
+                    if topic_id_val:
+                        logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
+                    else:
+                        logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
+            except Exception as e:
+                logging.getLogger('workers.categorization').exception(f"Error creating topic for {doc_id}: {e}")
 
             update_payload = {
                 'interest': interest_result,
