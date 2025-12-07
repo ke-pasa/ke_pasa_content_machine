@@ -21,6 +21,7 @@ sys.path.insert(0, str(root_dir))
 
 import html
 from workers.tools.telegram_helper import send_message, send_photo
+from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
 from workers.tools import openai_client
 from workers.tools.constants import MIN_PUBLISH_SCORE
