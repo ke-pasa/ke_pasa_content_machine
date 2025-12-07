@@ -11,6 +11,7 @@ import importlib
 
 from .news_filter_prompt import get_news_filter_prompt
 from workers.tools.openai_client import parse_json_from_text
+from workers.tools.constants import MIN_ARTICLE_SCORE
 
 # Firebase client removed — this worker uses Postgres via `workers.tools.pg_client`.
 
@@ -201,7 +202,7 @@ class CategorizationWorker:
                                     ts_val = float(total_score)
                                 except Exception:
                                     ts_val = None
-                                if ts_val is not None and ts_val < 65:
+                                if ts_val is not None and ts_val < MIN_ARTICLE_SCORE:
                                     status_field = 'SKIPPED'
 
                         except Exception:
@@ -501,7 +502,7 @@ class CategorizationWorker:
                         ts_val = float(total_score)
                     except Exception:
                         ts_val = None
-                    if ts_val is not None and ts_val < 60:
+                    if ts_val is not None and ts_val < MIN_ARTICLE_SCORE:
                         status_field = 'SKIPPED'
             except Exception:
                 pass

@@ -22,6 +22,7 @@ import html
 from workers.tools.telegram_helper import send_message, send_photo
 from .config import PublisherConfig
 from workers.tools import openai_client
+from workers.tools.constants import MIN_PUBLISH_SCORE
 
 class PublisherWorker:
     """Worker for publishing articles to Telegram channels"""
@@ -520,7 +521,7 @@ class PublisherWorker:
             pool_limit = max(self.config.max_articles_per_run * 10, 50)
 
             # Always use Postgres to fetch candidate translated articles
-            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=85)
+            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=MIN_PUBLISH_SCORE)
             docs = []
             for r in rows:
                 class RowWrapper:

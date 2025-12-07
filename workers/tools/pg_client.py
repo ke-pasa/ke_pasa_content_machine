@@ -561,7 +561,14 @@ class PGClient:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
             cur.execute(
-                "SELECT * FROM public.articles_ru WHERE status = %s AND (total_score IS NULL OR total_score >= %s) ORDER BY published_at ASC NULLS LAST, id ASC LIMIT %s",
+                """
+                SELECT * FROM public.articles_ru 
+                WHERE status = %s 
+                  AND (total_score IS NULL OR total_score >= %s)
+                  AND source_published_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY total_score DESC NULLS LAST, id ASC 
+                LIMIT %s
+                """,
                 ('TRANSLATED', min_score, limit)
             )
             rows = cur.fetchall()

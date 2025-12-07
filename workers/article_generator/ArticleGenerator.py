@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .translator import ArticleTranslator
 from workers.tools.pg_client import get_pg_client
+from workers.tools.constants import MIN_ARTICLE_SCORE
 
 
 class ArticleGenerator:
@@ -135,7 +136,7 @@ class ArticleGenerator:
 
 
     def _phase1_prescan_and_skip(self) -> int:
-        """Mark CATEGORIZED articles with score < 65 or age > 3 days as SKIPPED."""
+        """Mark CATEGORIZED articles with score < MIN_ARTICLE_SCORE or age > 3 days as SKIPPED."""
         low_score_count = 0
         page_size = 500
         last_snapshot = None
@@ -156,7 +157,7 @@ class ArticleGenerator:
                         skip_reason = None
                         age_days = None
 
-                        if total_score < 65:
+                        if total_score < MIN_ARTICLE_SCORE:
                             skip_reason = 'low_score'
                         else:
                             date_field = data.get('published_at') or data.get('published') or data.get('pub_date') or data.get('created_at')
@@ -737,7 +738,7 @@ class ArticleGenerator:
             self.logger.info('Requested total to process: %s', requested_total)
 
             # ===== PHASE 1: PRE-SCAN =====
-            # Mark all currently CATEGORIZED articles with total_score < 65 as SKIPPED
+            # Mark all currently CATEGORIZED articles with total_score < MIN_ARTICLE_SCORE as SKIPPED
             # This filtering step runs BEFORE translation to avoid wasting resources on low-quality content
             low_score_count = self._phase1_prescan_and_skip()
             if low_score_count:
