@@ -6,6 +6,11 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime
 
 # Ensure repository root is importable before loading env
 root_dir = Path(__file__).parent.parent.parent
@@ -15,6 +20,106 @@ load_dotenv()
 
 
 from .ArticleGenerator import ArticleGenerator
+
+
+def sync_to_git_repo() -> dict:
+    results = {'synced': 0, 'errors': []}
+    pat = os.getenv('GIT_KE_PASA_PAT')
+    if not pat:
+        logging.warning("GIT_KE_PASA_PAT not set; skipping git sync")
+        return results
+    
+    repo = os.getenv('ARTICLES_REPO') or 'ke-pasa/ke_pasa_site'
+    branch = os.getenv('ARTICLES_REPO_BRANCH') or 'main'
+    
+    logging.info(f"🔄 Starting git sync to {repo} ({branch})...")
+    
+    try:
+        from workers.tools.pg_client import get_pg_client
+        pg = get_pg_client()
+        # Fetch all articles that have publish_md content
+        rows = pg.fetch_articles_with_markdown(limit=10000)
+        articles_to_sync = rows
+        logging.info(f"Found {len(articles_to_sync)} articles with markdown content")
+    except Exception as e:
+        err = f"Failed to fetch articles for sync: {e}"
+        logging.error(err)
+        results['errors'].append(err)
+        return results
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        repo_url = f"https://{pat}@github.com/{repo}"
+        # Configure git (global is fine in container)
+        subprocess.run(['git', 'config', '--global', 'user.name', 'ke-pasa-bot'], check=True)
+        subprocess.run(['git', 'config', '--global', 'user.email', 'bot@ke-pasa.com'], check=True)
+        
+        # Clone
+        logging.info("Cloning repo...")
+        subprocess.run(['git', 'clone', '--depth', '1', '--branch', branch, repo_url, temp_dir], check=True, capture_output=True)
+        
+        target_dir = os.path.join(temp_dir, 'src', 'content', 'news')
+        
+        # Ensure target directory exists (clean it first)
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir)
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # 3. Write files
+        for art in articles_to_sync:
+            try:
+                md = art.get('publish_md')
+                # Regex to extract slug from frontmatter
+                import re
+                slug_match = re.search(r'^slug:\s*(.+)$', md, re.MULTILINE)
+                if slug_match:
+                    # Strip quotes if present
+                    slug = slug_match.group(1).strip().strip('"\'')
+                else:
+                    title = art.get('title_ru') or 'article'
+                    slug = re.sub(r'[^a-z0-9\-]', '-', title.lower())
+                    slug = re.sub(r'-{2,}', '-', slug).strip('-')
+                    if not slug:
+                        slug = str(art.get('article_id') or art.get('id'))
+
+                filename = f"{slug}_{art.get('article_id') or art.get('id')}.md"
+                file_path = os.path.join(target_dir, filename)
+                
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(md)
+                    
+                results['synced'] += 1
+            except Exception as e:
+                logging.error(f"Failed to write file for article {art.get('id')}: {e}")
+
+        # 4. Git commit and push
+        logging.info("Checking for changes...")
+        subprocess.run(['git', 'add', '.'], cwd=temp_dir, check=True)
+        
+        status = subprocess.run(['git', 'status', '--porcelain'], cwd=temp_dir, capture_output=True, text=True)
+        if not status.stdout.strip():
+            logging.info("No changes to commit.")
+        else:
+            msg = f"chore: update articles (synced {results['synced']} files) at {datetime.now().isoformat()}"
+            subprocess.run(['git', 'commit', '-m', msg], cwd=temp_dir, check=True)
+            logging.info("Pushing changes...")
+            subprocess.run(['git', 'push', repo_url, branch], cwd=temp_dir, check=True)
+            logging.info("✅ Git sync successful")
+
+    except subprocess.CalledProcessError as e:
+        err = f"Git operation failed: {e}"
+        if e.stderr:
+             err += f" | Stderr: {e.stderr.decode('utf-8', errors='ignore')}"
+        logging.error(err)
+        results['errors'].append(err)
+    except Exception as e:
+        err = f"Sync failed: {e}"
+        logging.error(err)
+        results['errors'].append(err)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+    return results
 
 
 def main() -> None:
@@ -46,6 +151,14 @@ def main() -> None:
         result = worker.process_articles()
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    
+    # Run git sync after processing
+    # Only run if not processing single article? Or always?
+    # User likely wants full sync always.
+    if not args.article_id:
+        sync_result = sync_to_git_repo()
+        # Log result (stdout)
+        logging.info(f"Sync result: {sync_result}")
 
     # Treat any non-success status or any collected errors as a failure for CI
     has_errors = bool(result.get('errors'))

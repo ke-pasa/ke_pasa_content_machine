@@ -6,9 +6,7 @@ import sys
 import os
 import uuid
 import json
-import shutil
-import subprocess
-import tempfile
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict
@@ -707,118 +705,6 @@ class PublisherWorker:
         return results
 
 
-    def sync_to_git_repo(self) -> dict:
-        """
-        Syncs all translated articles (with publish_md) to the external GitHub repository.
-        """
-        results = {'synced': 0, 'errors': []}
-        
-        pat = os.getenv('GIT_KE_PASA_PAT')
-        if not pat:
-            print("[publisher] ⚠️ GIT_KE_PASA_PAT not set; skipping git sync")
-            return results
-            
-        repo = os.getenv('ARTICLES_REPO') or 'ke-pasa/ke_pasa_site'
-        branch = os.getenv('ARTICLES_REPO_BRANCH') or 'main'
-        
-        print(f"[publisher] 🔄 Starting git sync to {repo} ({branch})...")
-        
-        # 1. Fetch all articles with publish_md
-        try:
-            pg = getattr(self, 'pg', None)
-            if not pg:
-                raise RuntimeError('Postgres client not available')
-                
-            # Fetch all articles that have publish_md content
-            rows = pg.fetch_articles_with_markdown(limit=10000)
-            
-            articles_to_sync = rows
-            
-            print(f"[publisher] Found {len(articles_to_sync)} articles with markdown content")
-            
-        except Exception as e:
-            err = f"Failed to fetch articles for sync: {e}"
-            print(f"[publisher] ❌ {err}")
-            results['errors'].append(err)
-            return results
-
-        # 2. Clone repo to temp dir
-        temp_dir = tempfile.mkdtemp()
-        try:
-            repo_url = f"https://{pat}@github.com/{repo}"
-            
-            # Configure git (global is fine in container)
-            subprocess.run(['git', 'config', '--global', 'user.name', 'ke-pasa-bot'], check=True)
-            subprocess.run(['git', 'config', '--global', 'user.email', 'bot@ke-pasa.com'], check=True)
-            
-            # Clone
-            print("[publisher] Cloning repo...")
-            subprocess.run(['git', 'clone', '--depth', '1', '--branch', branch, repo_url, temp_dir], check=True, capture_output=True)
-            
-            target_dir = os.path.join(temp_dir, 'src', 'content', 'news')
-            
-            # Ensure target directory exists (clean it first)
-            if os.path.exists(target_dir):
-                shutil.rmtree(target_dir)
-            os.makedirs(target_dir, exist_ok=True)
-            
-            # 3. Write files
-            for art in articles_to_sync:
-                try:
-                    md = art.get('publish_md')
-                    # Regex to extract slug from frontmatter
-                    import re
-                    slug_match = re.search(r'^slug:\s*(.+)$', md, re.MULTILINE)
-                    if slug_match:
-                        # Strip quotes if present
-                        slug = slug_match.group(1).strip().strip('"\'')
-                    else:
-                        title = art.get('title_ru') or 'article'
-                        slug = re.sub(r'[^a-z0-9\-]', '-', title.lower())
-                        slug = re.sub(r'-{2,}', '-', slug).strip('-')
-                        if not slug:
-                            slug = str(art.get('article_id') or art.get('id'))
-
-                    filename = f"{slug}_{art.get('article_id') or art.get('id')}.md"
-                    file_path = os.path.join(target_dir, filename)
-                    
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(md)
-                        
-                    results['synced'] += 1
-                except Exception as e:
-                    print(f"[publisher] Failed to write file for article {art.get('id')}: {e}")
-
-            # 4. Git commit and push
-            print("[publisher] Checking for changes...")
-            subprocess.run(['git', 'add', '.'], cwd=temp_dir, check=True)
-            
-            status = subprocess.run(['git', 'status', '--porcelain'], cwd=temp_dir, capture_output=True, text=True)
-            if not status.stdout.strip():
-                print("[publisher] No changes to commit.")
-            else:
-                msg = f"chore: update articles (synced {results['synced']} files) at {datetime.now().isoformat()}"
-                subprocess.run(['git', 'commit', '-m', msg], cwd=temp_dir, check=True)
-                print("[publisher] Pushing changes...")
-                subprocess.run(['git', 'push', repo_url, branch], cwd=temp_dir, check=True)
-                print("[publisher] ✅ Git sync successful")
-
-        except subprocess.CalledProcessError as e:
-            err = f"Git operation failed: {e}"
-            if e.stderr:
-                 err += f" | Stderr: {e.stderr.decode('utf-8', errors='ignore')}"
-            print(f"[publisher] ❌ {err}")
-            results['errors'].append(err)
-        except Exception as e:
-            err = f"Sync failed: {e}"
-            print(f"[publisher] ❌ {err}")
-            results['errors'].append(err)
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            
-        return results
-
-
 def main():
     """Entry point for worker execution"""
     print("=" * 60)
@@ -832,12 +718,7 @@ def main():
         worker = PublisherWorker(config)
         result = worker.publish_articles()
         
-        # Run git sync after publishing
-        sync_result = worker.sync_to_git_repo()
-        # Merge results for reporting?
-        # For now just print them.
-        print(f"[publisher] Sync result: {sync_result}")
-        
+
         print("\n" + "=" * 60)
         print("📊 RESULTS")
         print("=" * 60)

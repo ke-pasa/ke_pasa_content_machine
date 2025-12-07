@@ -51,6 +51,9 @@ services:
       - POSTGRES_URL=${POSTGRES_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - PYTHONUNBUFFERED=1
+      - GIT_KE_PASA_PAT=${GIT_KE_PASA_PAT}
+      - ARTICLES_REPO=${ARTICLES_REPO:-ke-pasa/ke_pasa_site}
+      - ARTICLES_REPO_BRANCH=${ARTICLES_REPO_BRANCH:-main}
     volumes:
       - ./logs/article_generator:/var/log/supervisor
     networks:
@@ -71,10 +74,6 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-
-      - GIT_KE_PASA_PAT=${GIT_KE_PASA_PAT}
-      - ARTICLES_REPO=${ARTICLES_REPO:-ke-pasa/ke_pasa_site}
-      - ARTICLES_REPO_BRANCH=${ARTICLES_REPO_BRANCH:-main}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/publisher:/var/log/supervisor

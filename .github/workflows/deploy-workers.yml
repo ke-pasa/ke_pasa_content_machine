@@ -45,6 +45,7 @@ jobs:
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           RSS_PARALLEL_FEEDS=${{ secrets.RSS_PARALLEL_FEEDS || '6' }}
           RSS_PURGE_DAYS=${{ secrets.RSS_PURGE_DAYS || '7' }}
+          GIT_KE_PASA_PAT=${{ secrets.GIT_KE_PASA_PAT }}
           EOF
 
       - name: Setup SSH key
