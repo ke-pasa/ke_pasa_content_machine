@@ -201,7 +201,7 @@ class CategorizationWorker:
                                     ts_val = float(total_score)
                                 except Exception:
                                     ts_val = None
-                                if ts_val is not None and ts_val < 60:
+                                if ts_val is not None and ts_val < 65:
                                     status_field = 'SKIPPED'
 
                         except Exception:

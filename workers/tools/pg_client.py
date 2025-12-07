@@ -551,6 +551,7 @@ class PGClient:
 
     def fetch_translated_for_publish(self, limit: int = 10, min_score: float = 0.0) -> List[Dict[str, Any]]:
         results = []
+        
         try:
             self._connect()
         except Exception:

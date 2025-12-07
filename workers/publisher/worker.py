@@ -520,7 +520,7 @@ class PublisherWorker:
             pool_limit = max(self.config.max_articles_per_run * 10, 50)
 
             # Always use Postgres to fetch candidate translated articles
-            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=80)
+            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=85)
             docs = []
             for r in rows:
                 class RowWrapper:
