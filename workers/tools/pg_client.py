@@ -374,6 +374,38 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
+    def create_topic(self, topic_name: str) -> Optional[int]:
+        try:
+            self._connect()
+        except Exception:
+            return None
+        
+        if not topic_name or not isinstance(topic_name, str):
+            return None
+        
+        topic_name = topic_name.strip()
+        if not topic_name:
+            return None
+            
+        conn, pooled = self._get_conn()
+        cur = conn.cursor()
+        try:
+            # Create a new topic
+            cur.execute(
+                'INSERT INTO public.topics (topic_name) VALUES (%s) RETURNING id',
+                (topic_name,)
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+        except Exception:
+            return None
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
     def save_article_categorization(self, article_id: str, payload: Dict[str, Any]) -> bool:
         try:
             self._connect()
@@ -394,6 +426,7 @@ class PGClient:
             category = COALESCE(%s, category),
             publish_on_site = COALESCE(%s, publish_on_site),
             publish_on_social = COALESCE(%s, publish_on_social),
+            topic_id = COALESCE(%s, topic_id),
             categorized_at = now(),
             updated_at = now()
         WHERE id = %s
@@ -406,6 +439,7 @@ class PGClient:
             payload.get('category'),
             payload.get('publish_on_site'),
             payload.get('publish_on_social'),
+            payload.get('topic_id'),
             article_id,
         )
         conn, pooled = self._get_conn()

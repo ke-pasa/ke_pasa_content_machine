@@ -208,6 +208,14 @@ class CategorizationWorker:
                         except Exception:
                             pass
 
+                        topic_id_val = None
+                        try:
+                            # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
+                            if total_score is not None and float(total_score) >= MIN_ARTICLE_SCORE and title:
+                                topic_id_val = self.pg.create_topic(title)
+                        except Exception:
+                            pass
+
                         update_payload = {
                             'interest': interest_result,
                             'status': status_field,
@@ -219,6 +227,7 @@ class CategorizationWorker:
                             'publish_on_site': publish_on_site,
                             'publish_on_social': publish_on_social,
                             'newsletter': newsletter_field,
+                            'topic_id': topic_id_val,
                             'categorized_at': datetime.now(timezone.utc).isoformat(),
                             'updated_at': datetime.now(timezone.utc).isoformat(),
                         }
@@ -507,6 +516,14 @@ class CategorizationWorker:
             except Exception:
                 pass
 
+            topic_id_val = None
+            try:
+                # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
+                if total_score is not None and float(total_score) >= MIN_ARTICLE_SCORE and title:
+                    topic_id_val = self.pg.create_topic(title)
+            except Exception:
+                pass
+
             update_payload = {
                 'interest': interest_result,
                 'status': status_field,
@@ -518,6 +535,7 @@ class CategorizationWorker:
                 'publish_on_site': publish_on_site,
                 'publish_on_social': publish_on_social,
                 'newsletter': newsletter_field,
+                'topic_id': topic_id_val,
                 'categorized_at': datetime.now(timezone.utc).isoformat(),
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }
