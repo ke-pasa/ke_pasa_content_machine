@@ -9,7 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib
 
-from .news_filter_prompt import get_news_filter_prompt
+from .news_filter_prompt import get_news_filter_prompt, TOPIC_MATCH_PROMPT
 from workers.tools.openai_client import parse_json_from_text
 from workers.tools.constants import MIN_ARTICLE_SCORE
 
@@ -74,6 +74,49 @@ class CategorizationWorker:
         self.pg = get_pg_client()
         self.instance_id = str(uuid.uuid4())[:8]
 
+
+    def _deduplicate_by_topic(self, topic_id: int):
+        """
+        Deduplicate articles within a given topic.
+        1. If any article in the topic is 'TRANSLATED', mark all others (non-TRANSLATED) as 'DEDUPLICATED'.
+        2. If none are 'TRANSLATED', keep the one with the highest total_score and mark others as 'DEDUPLICATED'.
+        """
+        if not topic_id:
+            return
+
+        try:
+            t_articles = self.pg.get_articles_by_topic(topic_id)
+            if len(t_articles) <= 1:
+                return
+
+            has_translated = any(a.get('status') == 'TRANSLATED' for a in t_articles)
+            dedup_ids = []
+
+            if has_translated:
+                # If at least one is TRANSLATED, mark all others (non-TRANSLATED) as DEDUPLICATED
+                dedup_ids = [str(a['id']) for a in t_articles if a.get('status') != 'TRANSLATED']
+            else:
+                # No TRANSLATED. Find max total_score.
+                def get_score(x):
+                    try:
+                        return float(x.get('total_score') or 0)
+                    except Exception:
+                        return 0.0
+                
+                # Sort descending by score. First one stays, others become DEDUPLICATED.
+                sorted_arts = sorted(t_articles, key=get_score, reverse=True)
+                # Best one is sorted_arts[0] - do nothing
+                # Others
+                if len(sorted_arts) > 1:
+                    dedup_ids = [str(a['id']) for a in sorted_arts[1:]]
+
+            if dedup_ids:
+                updated_count = self.pg.set_articles_status(dedup_ids, 'DEDUPLICATED')
+                logging.getLogger('workers.categorization').info(f"Deduplicated {updated_count} articles in topic {topic_id}: {dedup_ids}")
+
+        except Exception as ex:
+            logging.getLogger('workers.categorization').warning(f"Error in deduplication logic for topic {topic_id}: {ex}")
+
     def categorize_new_articles(self) -> Dict:
         results = {'processed': 0, 'errors': []}
 
@@ -102,6 +145,13 @@ class CategorizationWorker:
                     docs = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='NEW')
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
+
+                # Fetch recent topics for deduplication
+                recent_topics = []
+                try:
+                    recent_topics = self.pg.get_recent_topics(hours=48)
+                except Exception:
+                    recent_topics = []
 
                 if not docs:
                     break
@@ -213,11 +263,42 @@ class CategorizationWorker:
                             # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
                             score_val = float(total_score) if total_score is not None else 0.0
                             if score_val >= MIN_ARTICLE_SCORE and title:
-                                topic_id_val = self.pg.create_topic(title)
-                                if topic_id_val:
-                                    logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
+                                # Smart topic assignment logic
+                                # 1. Check against recent_topics using LLM
+                                matched_topic_id = None
+                                if recent_topics and client:
+                                    try:
+                                        # Prepare JSON for prompt
+                                        topics_list_json = json.dumps([
+                                            {'id': t['id'], 'topic_name': t['topic_name']} 
+                                            for t in recent_topics
+                                        ], ensure_ascii=False)
+                                        
+                                        match_prompt = TOPIC_MATCH_PROMPT.replace('{current_title}', title).replace('{topics_json}', topics_list_json)
+                                        
+                                        tm_messages = [{"role": "user", "content": match_prompt}]
+                                        tm_text = _chat_completion(client, model, tm_messages, max_tokens=1000, temperature=0)
+                                        tm_parsed = _parse_json_from_text(tm_text or '')
+                                        
+                                        if tm_parsed and tm_parsed.get('matched_topic_id'):
+                                            matched_topic_id = int(tm_parsed['matched_topic_id'])
+                                            logging.getLogger('workers.categorization').info(f"Matched existing topic {matched_topic_id} for '{title}'")
+                                    except Exception as e:
+                                        logging.getLogger('workers.categorization').warning(f"Error checking topic match: {e}")
+                                        matched_topic_id = None
+
+                                if matched_topic_id:
+                                    topic_id_val = matched_topic_id
                                 else:
-                                    logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
+                                    # Create new topic
+                                    topic_id_val = self.pg.create_topic(title)
+                                    if topic_id_val:
+                                        logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
+                                        # Add to local cache for subsequent docs in this batch
+                                        with lock:
+                                            recent_topics.append({'id': topic_id_val, 'topic_name': title})
+                                    else:
+                                        logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
                             else:
                                 if score_val >= MIN_ARTICLE_SCORE:
                                     logging.getLogger('workers.categorization').warning(f"Skipping topic creation for {doc_id}: Missing title")
@@ -260,6 +341,12 @@ class CategorizationWorker:
                             result_line = f"[categorization] ❌ {err}"
                             with lock:
                                 chunk_results['errors'].append(err)
+
+
+                        # Logic to deduplicate by topic
+                        if topic_id_val:
+                            self._deduplicate_by_topic(topic_id_val)
+
 
                         # logging
                         try:
@@ -476,6 +563,13 @@ class CategorizationWorker:
             feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
             region_hint = data.get('region_hint', '') or ''
             system_prompt, user_prompt = get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name=feed_name, region_hint=region_hint)
+            
+            # Fetch recent topics for deduplication (fresh fetch)
+            recent_topics = []
+            try:
+                recent_topics = self.pg.get_recent_topics(hours=48)
+            except Exception:
+                recent_topics = []
 
             client = _get_openai_client()
             model = 'gpt-5-mini'
@@ -530,11 +624,34 @@ class CategorizationWorker:
                 # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
                 score_val = float(total_score) if total_score is not None else 0.0
                 if score_val >= MIN_ARTICLE_SCORE and title:
-                    topic_id_val = self.pg.create_topic(title)
-                    if topic_id_val:
-                        logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
+                    # Smart topic assignment logic
+                    matched_topic_id = None
+                    if recent_topics and client:
+                        try:
+                            topics_list_json = json.dumps([
+                                {'id': t['id'], 'topic_name': t['topic_name']} 
+                                for t in recent_topics
+                            ], ensure_ascii=False)
+                            
+                            match_prompt = TOPIC_MATCH_PROMPT.replace('{current_title}', title).replace('{topics_json}', topics_list_json)
+                            
+                            tm_messages = [{"role": "user", "content": match_prompt}]
+                            tm_text = _chat_completion(client, model, tm_messages, max_tokens=1000, temperature=0)
+                            tm_parsed = _parse_json_from_text(tm_text or '')
+                            
+                            if tm_parsed and tm_parsed.get('matched_topic_id'):
+                                matched_topic_id = int(tm_parsed['matched_topic_id'])
+                        except Exception:
+                            matched_topic_id = None
+
+                    if matched_topic_id:
+                        topic_id_val = matched_topic_id
                     else:
-                        logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
+                        topic_id_val = self.pg.create_topic(title)
+                        if topic_id_val:
+                            logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
+                        else:
+                            logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
             except Exception as e:
                 logging.getLogger('workers.categorization').exception(f"Error creating topic for {doc_id}: {e}")
 
@@ -555,6 +672,11 @@ class CategorizationWorker:
             }
 
             ok = self.pg.save_article_categorization(doc_id, update_payload)
+
+            # Logic to deduplicate by topic
+            if topic_id_val:
+                self._deduplicate_by_topic(topic_id_val)
+
             return {'doc_id': doc_id, 'ok': ok, 'payload': update_payload}
         except Exception as e:
             return {'doc_id': getattr(doc, 'id', None), 'ok': False, 'error': str(e)}

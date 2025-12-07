@@ -88,6 +88,13 @@ class PGClient:
                         updated_at timestamptz
                     )
                     """)
+                    cur.execute("""
+                    CREATE TABLE IF NOT EXISTS public.topic (
+                        id serial PRIMARY KEY,
+                        topic_name text NOT NULL,
+                        created_at timestamptz DEFAULT now()
+                    )
+                    """)
                 finally:
                     try:
                         cur.close()
@@ -401,6 +408,70 @@ class PGClient:
             import logging
             logging.getLogger(__name__).error(f"create_topic failed: {e}")
             return None
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
+    def get_recent_topics(self, hours: int = 48) -> List[Dict[str, Any]]:
+        results = []
+        try:
+            self._connect()
+        except Exception:
+            return results
+        
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        conn, pooled = self._get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute('SELECT id, topic_name FROM public.topic WHERE created_at >= %s', (cutoff,))
+            rows = cur.fetchall()
+            for r in rows:
+                results.append({'id': r[0], 'topic_name': r[1]})
+            return results
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
+    def get_articles_by_topic(self, topic_id: int) -> List[Dict[str, Any]]:
+        results = []
+        try:
+            self._connect()
+        except Exception:
+            return results
+        conn, pooled = self._get_conn()
+        from psycopg2.extras import RealDictCursor
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute("SELECT id, status, total_score FROM public.articles WHERE topic_id = %s", (topic_id,))
+            rows = cur.fetchall()
+            for r in rows:
+                results.append(dict(r))
+            return results
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
+    def set_articles_status(self, article_ids: List[str], status: str) -> int:
+        if not article_ids:
+            return 0
+        try:
+            self._connect()
+        except Exception:
+            return 0
+        conn, pooled = self._get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("UPDATE public.articles SET status = %s WHERE id = ANY(%s)", (status, article_ids))
+            return cur.rowcount
         finally:
             try:
                 cur.close()
