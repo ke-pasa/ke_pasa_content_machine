@@ -67,17 +67,8 @@ class PublisherWorker:
         try:
             print(f"[publisher] 🚀 Starting publication run (articles_ru)...")
 
-            results = self.publish_oldest_translated_high_score()
-
             target = int(self.config.max_articles_per_run or 1)
-            published_so_far = results.get('published', 0)
-            if published_so_far < target:
-                remaining = target - published_so_far
-                batch_results = self.publish_articles_from_articles_ru(max_to_publish=remaining)
-                # Merge results
-                results['checked'] = (results.get('checked', 0) or 0) + (batch_results.get('checked', 0) or 0)
-                results['published'] = (results.get('published', 0) or 0) + (batch_results.get('published', 0) or 0)
-                results['errors'] = (results.get('errors', []) or []) + (batch_results.get('errors', []) or [])
+            results = self.publish_articles_from_articles_ru(max_to_publish=target)
 
             published = results.get('published', 0)
             total_checked = results.get('checked', 0)
@@ -211,9 +202,9 @@ class PublisherWorker:
                         # modifying the user-visible `telegram_final` preview text.
                         te = {
                             'telegram_emb': emb,
-                            'telegram_emb_computed_at': datetime.utcnow().isoformat()
+                            'telegram_emb_computed_at': datetime.now(timezone.utc).isoformat()
                         }
-                        pg.save_generated_article(doc.id, {'telegram_final': tf_dict, 'telegram_emd': te, 'updated_at': datetime.utcnow().isoformat()})
+                        pg.save_generated_article(doc.id, {'telegram_final': tf_dict, 'telegram_emd': te, 'updated_at': datetime.now(timezone.utc).isoformat()})
                     except Exception:
                         pass
                 return emb
@@ -225,7 +216,7 @@ class PublisherWorker:
     def _fetch_recent_published_embeddings(self, days: int):
         """Return list of (doc_id, embedding) for articles published in the last `days` days."""
         try:
-            cutoff = datetime.utcnow() - timedelta(days=days)
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             out = []
             # Use Postgres to fetch recent published embeddings
             try:
@@ -318,8 +309,8 @@ class PublisherWorker:
                                 cur = conn.cursor()
                                 try:
                                     cur.execute(
-                                        "UPDATE public.articles_ru SET status = %s, duplicate_of = %s, duplicate_similarity = %s, updated_at = %s WHERE article_id = %s",
-                                        ('DUBLICATED', rid, float(sim), datetime.utcnow().isoformat(), doc.id)
+                                        "UPDATE public.articles_ru SET status = %s, duplicate_of = %s, duplicate_similarity = %s, updated_at = %s WHERE id = %s",
+                                        ('DUBLICATED', rid, float(sim), datetime.now(timezone.utc).isoformat(), doc.id)
                                     )
                                     conn.commit()
                                 finally:
@@ -403,7 +394,7 @@ class PublisherWorker:
             'article_id': article_id,
             'telegram_message': telegram_result.to_dict() if hasattr(telegram_result, 'to_dict') else None,
             'chat_id': chat_id,
-            'created_at': datetime.utcnow().isoformat(),
+            'created_at': datetime.now(timezone.utc).isoformat(),
         }
 
         pg = getattr(self, 'pg', None)
@@ -415,8 +406,8 @@ class PublisherWorker:
         cur = conn.cursor()
         try:
             cur.execute(
-                "UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
-                ('PUBLISHED', datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), article_id),
+                "UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE id = %s",
+                ('PUBLISHED', datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), article_id),
             )
             conn.commit()
         finally:
@@ -433,7 +424,7 @@ class PublisherWorker:
         try:
             update_fields = {
                 'status': 'PUBLISHED',
-                'published_at': datetime.utcnow().isoformat(),
+                'published_at': datetime.now(timezone.utc).isoformat(),
                 'telegram_publish_error': error_str,
             }
             pg = getattr(self, 'pg', None)
@@ -442,7 +433,7 @@ class PublisherWorker:
                     conn, pooled = pg._get_conn()
                     cur = conn.cursor()
                     try:
-                        cur.execute("UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE article_id = %s",
+                        cur.execute("UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE id = %s",
                                     (update_fields['status'], update_fields['published_at'], update_fields['published_at'], doc_id))
                         try:
                             conn.commit()
@@ -487,11 +478,7 @@ class PublisherWorker:
         return sent_message, doc_error
 
     def publish_articles_from_articles_ru(self, max_to_publish: int | None = None) -> Dict:
-        """Publishes up to `max_to_publish` (or config.max_articles_per_run) articles from `articles_ru` collection.
-
-        When duplicates are encountered, the method continues to try other candidates
-        until the desired number of publications is reached or the candidate pool is exhausted.
-        """
+        """Publishes up to `max_to_publish` (or config.max_articles_per_run) articles from `articles_ru` collection."""
         if max_to_publish is None:
             max_to_publish = self.config.max_articles_per_run
 
@@ -511,81 +498,85 @@ class PublisherWorker:
             return results
 
         try:
-            # Prefer Postgres for articles_ru queries when available
-            try:
-                from workers.tools.pg_client import get_pg_client
-                pg = get_pg_client()
-            except Exception:
-                pg = None
+            # Prefer Postgres for articles_ru queries
+            from workers.tools.pg_client import get_pg_client
+            pg = get_pg_client()
 
             pool_limit = max(self.config.max_articles_per_run * 10, 50)
 
-            # Always use Postgres to fetch candidate translated articles
+            # Fetch candidates: high score first
             rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=MIN_PUBLISH_SCORE)
+            
+            # Simple wrapper to mimic Firestore-like object if needed, or just use dicts.
+            # Here we just use the dicts directly but ensure 'id' is present.
             docs = []
             for r in rows:
-                class RowWrapper:
-                    def __init__(self, data):
-                        self._d = data
-                        self.id = data.get('article_id') or data.get('id')
-                    def to_dict(self):
-                        return self._d
-                docs.append(RowWrapper(r))
+                # Ensure we have an ID
+                if not r.get('id') and r.get('article_id'):
+                    r['id'] = r['article_id']
+                docs.append(r)
 
-            filtered = [d for d in docs if (d.to_dict() or {}).get('status') == 'TRANSLATED']
+            # Safety filter (DB query should have covered this, but good to double check)
+            filtered = [d for d in docs if d.get('status') == 'TRANSLATED']
 
-            def _created_key(doc):
-                try:
-                    v = (doc.to_dict() or {}).get('created_at')
-                    if v is None:
-                        return ''
-                    if hasattr(v, 'isoformat'):
-                        return v.isoformat()
-                    if hasattr(v, 'seconds'):
-                        return str(v.seconds)
-                    return str(v)
-                except Exception:
-                    return ''
+            # Sort by creation date (oldest first) to avoid starving older high-quality news
+            def _get_created_at(d):
+                v = d.get('created_at')
+                if v is None:
+                    return datetime.max.replace(tzinfo=timezone.utc)
+                if isinstance(v, str):
+                    try:
+                        return datetime.fromisoformat(v)
+                    except ValueError:
+                        pass
+                if isinstance(v, datetime):
+                    return v
+                return datetime.max.replace(tzinfo=timezone.utc)
 
-            # Sort candidates by creation and keep an expanded candidate list
-            docs = sorted(filtered, key=_created_key)[: pool_limit]
+            candidates = sorted(filtered, key=_get_created_at)[:pool_limit]
+            
         except Exception as e:
-            err = f'Firestore query error: {e}'
+            err = f'Database query error: {e}'
             print(f"[publisher] ❌ {err}")
             results['errors'].append(err)
             return results
 
-        results['checked'] = len(docs)
+        results['checked'] = len(candidates)
 
-        for doc in docs:
+        for data in candidates:
             # stop if we've already published the requested maximum in this run
             if results['published'] >= max_to_publish:
                 break
+            
+            article_id = data.get('id')
+            doc_id = article_id # Use same ID for logging
+            
             try:
-                data = doc.to_dict() or {}
-                article_id = data.get('article_id') or doc.id
                 image = data.get('image_url') or data.get('image') or None
 
-                # Use raw data['telegram_final'] as the message source (no fallbacks)
-                try:
-                    raw_preview = data.get('telegram_final')
-                except Exception:
-                    raw_preview = None
+                # Use raw data['telegram_final'] as the message source
+                raw_preview = data.get('telegram_final')
                 final_preview = self._normalize_telegram_preview(raw_preview)
-                if final_preview is None or final_preview.strip() == '':
+                
+                if not final_preview or not final_preview.strip():
                     print(f"[publisher] ❌ Article {article_id} has empty telegram_final")
                     results['errors'].append(f"empty_telegram_final:{article_id}")
                     continue
+
+                # Mock object for embedding methods that expect an object with .id and .to_dict()
+                class DocShim:
+                    def __init__(self, d): self.d = d; self.id = d.get('id')
+                    def to_dict(self): return self.d
+
+                doc_obj = DocShim(data)
+
                 # Before sending, compute embedding and save it to the article document
                 try:
-                    emb = self._compute_and_save_embedding_for_doc(doc)
+                    emb = self._compute_and_save_embedding_for_doc(doc_obj)
                     # If embedding computed, perform deduplication check against recent published
-                    try:
-                        if emb and self._check_duplicate_and_mark(doc, emb):
-                            # Already marked as DUBLICATED in the DB; skip sending and try next candidate
-                            continue
-                    except Exception:
-                        pass
+                    if emb and self._check_duplicate_and_mark(doc_obj, emb):
+                        # Already marked as DUBLICATED in the DB; skip sending and try next candidate
+                        continue
                 except Exception:
                     pass
 
@@ -593,113 +584,15 @@ class PublisherWorker:
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
 
                 self._record_post(article_id, sent_message, chat_id)
-                self._mark_article_published(doc.id, sent_message, doc_error)
+                self._mark_article_published(article_id, sent_message, doc_error)
 
                 if sent_message:
                     results['published'] += 1
                     print(f"[publisher] ✅ Published article {article_id} to Telegram")
-                    # If we've reached the requested maximum, stop attempting more
-                    if results['published'] >= max_to_publish:
-                        break
                 else:
                     print(f"[publisher] ⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
             except Exception as e:
-                err = f"Error publishing doc {getattr(doc, 'id', '?')}: {e}"
-                print(f"[publisher] ❌ {err}")
-                results['errors'].append(err)
-
-        return results
-
-    def publish_oldest_translated_high_score(self) -> Dict:
-        """Find the oldest article in `articles_ru` with status == 'TRANSLATED' and total_score > 80
-
-        Publishes a single article (image first, then text+source) and marks it published.
-        """
-        results = {'published': 0, 'checked': 0, 'errors': []}
-
-        if not self.telegram_token:
-            err = 'Telegram bot not configured (TELEGRAM_BOT_TOKEN missing)'
-            print(f"[publisher] ❌ {err}")
-            results['errors'].append(err)
-            return results
-
-        chat_id = self._get_chat_id()
-        if not chat_id:
-            err = 'Telegram chat id not configured (TELEGRAM_CHAT_ID missing and not in Firebase settings)'
-            print(f"[publisher] ❌ {err}")
-            results['errors'].append(err)
-            return results
-
-        try:
-            pool_limit = 200
-            pg = getattr(self, 'pg', None)
-            if not pg:
-                raise RuntimeError('Postgres client not available')
-            rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=80)
-            docs = []
-            for r in rows:
-                class RowWrapper:
-                    def __init__(self, data):
-                        self._d = data
-                        self.id = data.get('article_id') or data.get('id')
-                    def to_dict(self):
-                        return self._d
-                docs.append(RowWrapper(r))
-
-            candidates = [d for d in docs if (d.to_dict() or {}).get('status') == 'TRANSLATED']
-            candidates = sorted(candidates, key=lambda d: ((d.to_dict() or {}).get('created_at') and str((d.to_dict() or {}).get('created_at'))) or '')
-            docs = candidates
-        except Exception as e:
-            err = f'PG query error: {e}'
-            print(f"[publisher] ❌ {err}")
-            results['errors'].append(err)
-            return results
-
-        results['checked'] = len(docs)
-
-        for doc in docs:
-            # stop if we've published one (this method intends to publish a single top candidate)
-            if results['published'] >= 1:
-                break
-            try:
-                data = doc.to_dict() or {}
-                article_id = data.get('article_id') or doc.id
-                image = data.get('image_url') or data.get('image') or None
-                # Use raw data['telegram_final'] as the message source (no fallbacks)
-                try:
-                    raw_preview = data.get('telegram_final')
-                except Exception:
-                    raw_preview = None
-                final_preview = self._normalize_telegram_preview(raw_preview)
-                if final_preview is None or final_preview.strip() == '':
-                    print(f"[publisher] ❌ Article {article_id} has empty telegram_final")
-                    results['errors'].append(f"empty_telegram_final:{article_id}")
-                    continue
-                # compute embedding and save it to the article document
-                try:
-                    emb = self._compute_and_save_embedding_for_doc(doc)
-                    try:
-                        if emb and self._check_duplicate_and_mark(doc, emb):
-                            # marked as duplicate, try next candidate
-                            continue
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-                message = final_preview
-                sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
-
-                self._record_post(article_id, sent_message, chat_id)
-                self._mark_article_published(doc.id, sent_message, doc_error)
-
-                if sent_message:
-                    results['published'] += 1
-                    print(f"[publisher] ✅ Published article {article_id} to Telegram (TRANSLATED/high-score)")
-                else:
-                    print(f"[publisher] ⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
-            except Exception as e:
-                err = f"Error publishing doc {getattr(doc, 'id', '?')}: {e}"
+                err = f"Error publishing doc {doc_id}: {e}"
                 print(f"[publisher] ❌ {err}")
                 results['errors'].append(err)
 
