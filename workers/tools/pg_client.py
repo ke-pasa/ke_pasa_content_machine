@@ -321,6 +321,7 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
+
     def fetch_article_by_id(self, article_id: str) -> Optional[Dict[str, Any]]:
         try:
             self._connect()
@@ -780,7 +781,7 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
-    def fetch_articles_with_markdown(self, limit: int = 1000) -> List[Dict[str, Any]]:
+    def fetch_articles_with_markdown(self, limit: int = 1000, article_ids: List[str] = None) -> List[Dict[str, Any]]:
         results = []
         try:
             self._connect()
@@ -790,10 +791,16 @@ class PGClient:
         from psycopg2.extras import RealDictCursor
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
-            cur.execute(
-                "SELECT * FROM public.articles_ru WHERE publish_md IS NOT NULL AND length(publish_md) > 0 ORDER BY id DESC LIMIT %s",
-                (limit,)
-            )
+            if article_ids:
+                cur.execute(
+                    "SELECT * FROM public.articles_ru WHERE publish_md IS NOT NULL AND length(publish_md) > 0 AND (article_id = ANY(%s) OR id::text = ANY(%s)) ORDER BY id DESC LIMIT %s",
+                    (article_ids, article_ids, limit)
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM public.articles_ru WHERE publish_md IS NOT NULL AND length(publish_md) > 0 ORDER BY id DESC LIMIT %s",
+                    (limit,)
+                )
             rows = cur.fetchall()
             for r in rows:
                 results.append(dict(r))
@@ -807,7 +814,6 @@ class PGClient:
 
 
 _client: Optional[PGClient] = None
-
 
 def get_pg_client() -> PGClient:
     global _client

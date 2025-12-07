@@ -451,6 +451,7 @@ class ArticleGenerator:
             with lock:
                 chunk_results['translated'] += 1
                 chunk_results['processed'] += 1
+                chunk_results['translated_ids'].append(doc_id)
 
             # Per-article success summary
             try:
@@ -663,7 +664,8 @@ class ArticleGenerator:
         Returns:
             dict: Results with keys: processed, skipped, translated, errors
         """
-        results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+        """
+        results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
         chunk_size = 20
         processed_total = 0
         last_snapshot = None
@@ -690,7 +692,7 @@ class ArticleGenerator:
             except Exception:
                 max_workers = 4
 
-            chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+            chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
             lock = threading.Lock()
 
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -710,6 +712,7 @@ class ArticleGenerator:
             results['skipped'] += chunk_results['skipped']
             results['translated'] += chunk_results['translated']
             results['errors'].extend(chunk_results['errors'])
+            results['translated_ids'].extend(chunk_results['translated_ids'])
             processed_total += chunk_results['processed']
             batch_index += 1
 
@@ -728,7 +731,7 @@ class ArticleGenerator:
 
     def process_articles(self) -> dict[str, any]:
         """Two-phase pipeline: 1) Mark low-quality as SKIPPED, 2) Translate high-quality to Russian."""
-        results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+        results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
 
         try:
             self.logger.info('ArticleGenerator starting; instance=%s batch_size=%s', self.instance_id, self.batch_size)
@@ -754,6 +757,7 @@ class ArticleGenerator:
             results['skipped'] += translation_results['skipped']
             results['translated'] += translation_results['translated']
             results['errors'].extend(translation_results['errors'])
+            results['translated_ids'].extend(translation_results['translated_ids'])
 
             return {'status': 'success', **results}
 

@@ -1,5 +1,3 @@
-"""Thin CLI wrapper for the ArticleGenerator worker."""
-
 import argparse
 import json
 import sys
@@ -12,17 +10,15 @@ import subprocess
 import tempfile
 from datetime import datetime
 
-# Ensure repository root is importable before loading env
 root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir))
 
 load_dotenv()
 
-
 from .ArticleGenerator import ArticleGenerator
 
 
-def sync_to_git_repo() -> dict:
+def sync_to_git_repo(article_ids: list[str] = None) -> dict:
     results = {'synced': 0, 'errors': []}
     pat = os.getenv('GIT_KE_PASA_PAT')
     if not pat:
@@ -37,10 +33,12 @@ def sync_to_git_repo() -> dict:
     try:
         from workers.tools.pg_client import get_pg_client
         pg = get_pg_client()
-        # Fetch all articles that have publish_md content
-        rows = pg.fetch_articles_with_markdown(limit=10000)
+
+        rows = pg.fetch_articles_with_markdown(limit=10000, article_ids=article_ids)
         articles_to_sync = rows
-        logging.info(f"Found {len(articles_to_sync)} articles with markdown content")
+        
+        mode_str = f"incremental ({len(article_ids)} articles)" if article_ids else "full"
+        logging.info(f"Found {len(articles_to_sync)} articles with markdown content for {mode_str} sync")
     except Exception as e:
         err = f"Failed to fetch articles for sync: {e}"
         logging.error(err)
@@ -139,10 +137,7 @@ def main() -> None:
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         root_logger.addHandler(handler)
 
-    # Disable propagation on child loggers to avoid duplicate messages when modules add handlers
     logging.getLogger('workers.article_generator').propagate = False
-
-    # Two-phase processing: pre-scan (mark low-quality as SKIPPED) then translation
 
     worker = ArticleGenerator(batch_size=args.batch_size)
     if args.article_id:
@@ -152,13 +147,14 @@ def main() -> None:
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     
-    # Run git sync after processing
-    # Only run if not processing single article? Or always?
-    # User likely wants full sync always.
     if not args.article_id:
-        sync_result = sync_to_git_repo()
-        # Log result (stdout)
-        logging.info(f"Sync result: {sync_result}")
+        translated_ids = result.get('translated_ids') or []
+        if translated_ids:
+            logging.info(f"Processing incremental git sync for {len(translated_ids)} articles...")
+            sync_result = sync_to_git_repo(article_ids=translated_ids)
+            logging.info(f"Sync result: {sync_result}")
+        else:
+             logging.info("No new translated articles to sync.")
 
     # Treat any non-success status or any collected errors as a failure for CI
     has_errors = bool(result.get('errors'))
