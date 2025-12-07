@@ -133,7 +133,7 @@ def main() -> None:
     root_logger.setLevel(logging.DEBUG)
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     handler.setFormatter(formatter)
     # ensure not to add multiple StreamHandlers
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):

@@ -6,6 +6,7 @@ import sys
 import os
 import uuid
 import json
+import logging
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,12 +18,14 @@ sys.path.insert(0, str(root_dir))
 
 # dotenv not required for Postgres-based workflows; env vars are provided by runtime/CI
 
-from workers.tools.pg_client import get_pg_client
+
 import html
 from workers.tools.telegram_helper import send_message, send_photo
 from .config import PublisherConfig
 from workers.tools import openai_client
 from workers.tools.constants import MIN_PUBLISH_SCORE
+
+logger = logging.getLogger(__name__)
 
 class PublisherWorker:
     """Worker for publishing articles to Telegram channels"""
@@ -45,17 +48,15 @@ class PublisherWorker:
         # Telegram bot token (we'll use HTTP requests for sync sends)
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN') or None
         if not bot_token:
-            print("[publisher] ⚠️ TELEGRAM_BOT_TOKEN not set in environment; publishing will fail until configured")
+            logger.warning("⚠️ TELEGRAM_BOT_TOKEN not set in environment; publishing will fail until configured")
         # Keep token for helper usage
         self.telegram_token = bot_token
         # Chat id may come from env or from Firebase settings
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID') or None
         
-        print(f"[publisher] Starting worker id={self.instance_id}")
-        print(f"[publisher] Max articles per run: {self.config.max_articles_per_run}")
-        print(f"[publisher] Publication delay: {self.config.publication_delay}s")
-
-    # Locking disabled: run without acquiring Firestore locks
+        logger.info(f"Starting worker id={self.instance_id}")
+        logger.info(f"Max articles per run: {self.config.max_articles_per_run}")
+        logger.info(f"Publication delay: {self.config.publication_delay}s")
 
     def publish_articles(self) -> Dict:
         """
@@ -65,7 +66,7 @@ class PublisherWorker:
             Dictionary with publication results
         """
         try:
-            print(f"[publisher] 🚀 Starting publication run (articles_ru)...")
+            logger.info(f"🚀 Starting publication run (articles_ru)...")
 
             target = int(self.config.max_articles_per_run or 1)
             results = self.publish_articles_from_articles_ru(max_to_publish=target)
@@ -74,13 +75,13 @@ class PublisherWorker:
             total_checked = results.get('checked', 0)
             errors = results.get('errors', [])
             
-            print(f"[publisher] ✅ Publication completed")
-            print(f"[publisher] Published: {published}/{total_checked}")
+            logger.info(f"✅ Publication completed")
+            logger.info(f"Published: {published}/{total_checked}")
             
             if errors:
-                print(f"[publisher] ⚠️  Errors occurred: {len(errors)}")
+                logger.warning(f"⚠️  Errors occurred: {len(errors)}")
                 for error in errors[:3]:  # Show first 3 errors
-                    print(f"  • {error}")
+                    logger.warning(f"  • {error}")
             
             return {
                 'status': 'success',
@@ -93,7 +94,7 @@ class PublisherWorker:
             }
             
         except Exception as e:
-            print(f"[publisher] ❌ Critical error: {e}")
+            logger.critical(f"❌ Critical error: {e}")
             return {
                 'status': 'error',
                 'reason': 'processing_error',
@@ -128,7 +129,7 @@ class PublisherWorker:
             if getattr(resp, 'data', None) and len(resp.data) > 0:
                 return resp.data[0].embedding
         except Exception:
-            print(f"[publisher] ⚠️ Embedding compute failed: {text[:60]}")
+            logger.warning(f"⚠️ Embedding compute failed: {text[:60]}")
         return None
     
     def _compute_and_save_embedding_for_doc(self, doc):
@@ -169,7 +170,7 @@ class PublisherWorker:
             final_preview = _extract_preview(final_preview)
             # If telegram_final is None, empty string -> no preview
             if final_preview is None or final_preview.strip() == '':
-                print(f"[publisher] ❌ Article {getattr(doc,'id', '?')} has empty telegram_final")
+                logger.error(f"❌ Article {getattr(doc,'id', '?')} has empty telegram_final")
                 return None
 
             emb = self._compute_embedding(final_preview)
@@ -323,14 +324,14 @@ class PublisherWorker:
                                     except Exception:
                                         pass
                         except Exception as e:
-                            print(f"[publisher] ⚠️ Failed to mark duplicate for {doc.id}: {e}")
-                        print(f"[publisher] 🔁 Article {doc.id} marked DUBLICATED (sim={sim:.3f}) against {rid}")
+                            logger.warning(f"⚠️ Failed to mark duplicate for {doc.id}: {e}")
+                        logger.info(f"🔁 Article {doc.id} marked DUBLICATED (sim={sim:.3f}) against {rid}")
                         return True
                 except Exception:
                     continue
             return False
         except Exception as e:
-            print(f"[publisher] ⚠️ Duplicate check failed for {getattr(doc,'id', '?')}: {e}")
+            logger.warning(f"⚠️ Duplicate check failed for {getattr(doc,'id', '?')}: {e}")
             return False
 
     def _http_send_message(self, chat_id: str, text: str) -> dict:
@@ -446,9 +447,9 @@ class PublisherWorker:
                             pass
                         pg._put_conn(conn, pooled)
                 except Exception:
-                    print(f"[publisher] ⚠️ Failed to update articles_ru for {doc_id} via Postgres")
+                    logger.warning(f"⚠️ Failed to update articles_ru for {doc_id} via Postgres")
         except Exception as e:
-            print(f"[publisher] ⚠️ Failed to update article doc {doc_id}: {e}")
+            logger.warning(f"⚠️ Failed to update article doc {doc_id}: {e}")
 
     def _send_with_fallback(self, chat_id: str, image: str | None, message: str, data: dict) -> tuple:
         """Try to send a photo with caption, fall back to sending text. Returns (result, error_str)."""
@@ -462,18 +463,18 @@ class PublisherWorker:
                     caption = self._prepare_caption(caption, max_caption=max_caption)
                 sent_message = self._http_send_photo(chat_id, image, caption)
             except Exception as e:
-                print(f"[publisher] ⚠️ Failed to send photo: {e}")
+                logger.warning(f"⚠️ Failed to send photo: {e}")
                 doc_error = str(e)
                 try:
                     sent_message = self._http_send_message(chat_id, html.escape(message) if not isinstance(message, str) else message)
                 except Exception as e2:
-                    print(f"[publisher] ⚠️ Fallback text send failed: {e2}")
+                    logger.warning(f"⚠️ Fallback text send failed: {e2}")
                     doc_error = f"{doc_error}; fallback_send_error: {e2}" if doc_error else str(e2)
         else:
             try:
                 sent_message = self._http_send_message(chat_id, html.escape(message) if not isinstance(message, str) else message)
             except Exception as e:
-                print(f"[publisher] ⚠️ sendMessage failed: {e}")
+                logger.warning(f"⚠️ sendMessage failed: {e}")
                 doc_error = str(e)
         return sent_message, doc_error
 
@@ -486,20 +487,20 @@ class PublisherWorker:
 
         if not self.telegram_token:
             err = 'Telegram bot not configured (TELEGRAM_BOT_TOKEN missing)'
-            print(f"[publisher] ❌ {err}")
+            logger.error(f"❌ {err}")
             results['errors'].append(err)
             return results
 
         chat_id = self._get_chat_id()
         if not chat_id:
             err = 'Telegram chat id not configured (TELEGRAM_CHAT_ID missing and not in Firebase settings)'
-            print(f"[publisher] ❌ {err}")
+            logger.error(f"❌ {err}")
             results['errors'].append(err)
             return results
 
         try:
             # Prefer Postgres for articles_ru queries
-            from workers.tools.pg_client import get_pg_client
+
             pg = get_pg_client()
 
             pool_limit = max(self.config.max_articles_per_run * 10, 50)
@@ -537,7 +538,7 @@ class PublisherWorker:
             
         except Exception as e:
             err = f'Database query error: {e}'
-            print(f"[publisher] ❌ {err}")
+            logger.error(f"❌ {err}")
             results['errors'].append(err)
             return results
 
@@ -559,7 +560,7 @@ class PublisherWorker:
                 final_preview = self._normalize_telegram_preview(raw_preview)
                 
                 if not final_preview or not final_preview.strip():
-                    print(f"[publisher] ❌ Article {article_id} has empty telegram_final")
+                    logger.error(f"❌ Article {article_id} has empty telegram_final")
                     results['errors'].append(f"empty_telegram_final:{article_id}")
                     continue
 
@@ -570,12 +571,9 @@ class PublisherWorker:
 
                 doc_obj = DocShim(data)
 
-                # Before sending, compute embedding and save it to the article document
                 try:
                     emb = self._compute_and_save_embedding_for_doc(doc_obj)
-                    # If embedding computed, perform deduplication check against recent published
                     if emb and self._check_duplicate_and_mark(doc_obj, emb):
-                        # Already marked as DUBLICATED in the DB; skip sending and try next candidate
                         continue
                 except Exception:
                     pass
@@ -588,22 +586,31 @@ class PublisherWorker:
 
                 if sent_message:
                     results['published'] += 1
-                    print(f"[publisher] ✅ Published article {article_id} to Telegram")
+                    logger.info(f"✅ Published article {article_id} to Telegram")
                 else:
-                    print(f"[publisher] ⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
+                    logger.warning(f"⚠️ Article {article_id} marked published but Telegram send failed. See 'telegram_publish_error' in doc.")
             except Exception as e:
                 err = f"Error publishing doc {doc_id}: {e}"
-                print(f"[publisher] ❌ {err}")
+                logger.error(f"❌ {err}")
                 results['errors'].append(err)
 
         return results
 
 
+
 def main():
     """Entry point for worker execution"""
-    print("=" * 60)
-    print("📢 Publisher Worker - Telegram Publication Handler")
-    print("=" * 60)
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger = logging.getLogger('workers.publisher')
+
+    logger.info("=" * 60)
+    logger.info("📢 Publisher Worker - Telegram Publication Handler")
+    logger.info("=" * 60)
     
     try:
         config = PublisherConfig.from_env()
@@ -613,26 +620,26 @@ def main():
         result = worker.publish_articles()
         
 
-        print("\n" + "=" * 60)
-        print("📊 RESULTS")
-        print("=" * 60)
-        print(f"Status: {result['status']}")
-        print(f"Published: {result.get('published', 0)}")
-        print(f"Total checked: {result.get('total_checked', 0)}")
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 RESULTS")
+        logger.info("=" * 60)
+        logger.info(f"Status: {result['status']}")
+        logger.info(f"Published: {result.get('published', 0)}")
+        logger.info(f"Total checked: {result.get('total_checked', 0)}")
         
         if result.get('errors'):
-            print(f"\nErrors ({len(result['errors'])}):")
+            logger.info(f"\nErrors ({len(result['errors'])}):")
             for error in result['errors'][:5]:
-                print(f"  • {error}")
+                logger.info(f"  • {error}")
         
         exit_code = 0 if result['status'] == 'success' else 1
         sys.exit(exit_code)
         
     except KeyboardInterrupt:
-        print("\n⚠️  Interrupted by user")
+        logger.info("\n⚠️  Interrupted by user")
         sys.exit(130)
     except Exception as e:
-        print(f"\n❌ Critical error: {e}")
+        logger.critical(f"\n❌ Critical error: {e}")
         sys.exit(1)
 
 

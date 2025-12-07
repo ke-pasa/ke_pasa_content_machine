@@ -23,6 +23,16 @@ load_dotenv()
 from .CategorizationWorker import CategorizationWorker
 
 
+import logging
+
+# Configure logging with timestamp
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Categorization worker CLI')
     parser.add_argument('--batch-size', type=int, default=None, help='Batch size for categorization (default: config or 10)')

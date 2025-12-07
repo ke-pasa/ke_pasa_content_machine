@@ -458,7 +458,7 @@ class CategorizationWorker:
 
             # After successful processing, print detailed score buckets summary
             try:
-                print('\n📊 Detailed scoring summary for this run:')
+                print(f'\n📊 Detailed scoring summary for this run ({datetime.now().strftime("%Y-%m-%d %H:%M:%S")}):')
                 print(f"   Total processed: {results.get('processed', 0)}")
                 print(f"   90+: {score_buckets.get('90+', 0)}")
                 print(f"   80-90: {score_buckets.get('80-90', 0)}")
