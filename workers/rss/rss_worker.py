@@ -231,7 +231,6 @@ class RSSWorker:
                 for feed in sorted(all_problematic):
                     f.write(feed + '\n')
         except Exception as e:
-        except Exception as e:
             logger.error(f"❌ Problematic feeds save error: {e}")
 
     def get_status(self) -> dict:
