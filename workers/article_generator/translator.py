@@ -13,8 +13,6 @@ from .prompts import (
 )
 
 _logger = logging.getLogger('workers.article_generator.translator')
-# Do not add handlers here; configure logging centrally in the worker entrypoint.
-# Prevent double printing by not propagating to ancestor handlers.
 _logger.propagate = False
 
 

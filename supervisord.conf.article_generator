@@ -1,5 +1,5 @@
 [program:article-generator-worker]
-command=/bin/bash -c "while true; do python -m workers.article_generator.worker --batch-size 50; sleep 1800; done"
+command=/bin/bash -c "while true; do python -m workers.article_generator.worker --batch-size 50; sleep 1800000; done"
 directory=/app
 user=root
 autostart=true
