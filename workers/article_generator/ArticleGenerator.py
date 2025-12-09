@@ -33,9 +33,9 @@ class ArticleGenerator:
             raise RuntimeError('Postgres client is required for ArticleGenerator')
         self.instance_id = str(uuid.uuid4())[:8]
         self.translator = translator or ArticleTranslator(
-            stage1_max_tokens=8000,
-            stage2_max_tokens=8000,
-            stage3_max_tokens=8000
+            stage1_max_tokens=800,
+            stage2_max_tokens=800,
+            stage3_max_tokens=800
         )
         # Use root logger configuration from entrypoint; avoid adding handlers here.
         self.logger = logging.getLogger('workers.article_generator')
