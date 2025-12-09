@@ -104,9 +104,9 @@ class ArticleTranslator:
         self,
         client=None,
         model: str = 'gpt-4o-mini',
-        stage1_max_tokens: int = 8000,
-        stage2_max_tokens: int = 8000,
-        stage3_max_tokens: int = 8000,
+        stage1_max_tokens: int = 1000,
+        stage2_max_tokens: int = 1000,
+        stage3_max_tokens: int = 1000,
         stage1_temperature: float = 0.2,
         stage2_temperature: float = 0.4,
         stage3_temperature: float = 1.0,
@@ -115,10 +115,21 @@ class ArticleTranslator:
         self.model = model
         self.stage1_max_tokens = stage1_max_tokens
         self.stage2_max_tokens = stage2_max_tokens
+        self.stage3_max_tokens = stage3_max_tokens
         self.stage1_temperature = stage1_temperature
         self.stage2_temperature = stage2_temperature
-        self.stage3_max_tokens = stage3_max_tokens
         self.stage3_temperature = stage3_temperature
+        # Stage 4, 5, 6 use same params as stage 3
+        self.stage4_max_tokens = stage3_max_tokens
+        self.stage4_temperature = stage3_temperature
+        self.stage5_max_tokens = stage3_max_tokens
+        self.stage5_temperature = stage3_temperature
+        self.stage6_max_tokens = stage3_max_tokens
+        self.stage6_temperature = stage3_temperature
+        # Token tracking
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._total_tokens = 0
 
     @staticmethod
     def _build_source_text(title: str, description: str, content: str) -> str:
@@ -256,21 +267,31 @@ class ArticleTranslator:
     def translate(self, title: str, description: str, content: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
         """Execute 6-stage translation pipeline and merge results."""
         if not self.client:
+            _logger.error('OpenAI client is not initialized')
             return None
 
         metadata = metadata or {}
+        doc_id = metadata.get('doc_id', 'unknown')
+        _logger.info(f'Starting translation for {doc_id}')
+        
+        pipeline_start = __import__('time').time()
 
         stage1, stage2, stage3, stage4, stage5, stage6 = self._execute_translation_pipeline(title, description, content, metadata)
 
         if not stage1 or not isinstance(stage1, dict):
+            _logger.error(f'Stage1 failed for {doc_id}: stage1={stage1}')
             return stage1 if isinstance(stage1, dict) else None
         if not stage2 or not stage3 or not stage4:
+            _logger.error(f'Translation pipeline failed for {doc_id}: stage2={bool(stage2)} stage3={bool(stage3)} stage4={bool(stage4)}')
             return stage1
 
         final = self._build_base_result(stage1, stage2, stage3, stage4)
         self._add_optional_fields(final, stage1, stage2, stage3, stage4)
         self._merge_stage5_results(final, stage5)
         self._merge_stage6_results(final, stage6)
+        
+        pipeline_duration = __import__('time').time() - pipeline_start
+        _logger.info(f'[{doc_id}] Translation completed in {pipeline_duration:.1f}s (6 stages)')
 
         return final
 
@@ -289,7 +310,8 @@ class ArticleTranslator:
                 max_tokens=self.stage1_max_tokens,
                 temperature=self.stage1_temperature,
             )
-        except Exception:
+        except Exception as e:
+            _logger.exception(f'Stage1 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
             return None
 
         return _parse_stage_response(text, 'stage1', (metadata or {}).get('doc_id', 'unknown'))
@@ -310,7 +332,8 @@ class ArticleTranslator:
                 max_tokens=self.stage2_max_tokens,
                 temperature=self.stage2_temperature,
             )
-        except Exception:
+        except Exception as e:
+            _logger.exception(f'Stage2 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
             return None
 
         return _parse_stage_response(text, 'stage2', metadata.get('doc_id', 'unknown'))
@@ -334,7 +357,8 @@ class ArticleTranslator:
                 max_tokens=self.stage3_max_tokens,
                 temperature=self.stage3_temperature,
             )
-        except Exception:
+        except Exception as e:
+            _logger.exception(f'Stage3 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
             return None
 
         return _parse_stage_response(text, 'stage3', metadata.get('doc_id', 'unknown'))
@@ -390,10 +414,11 @@ class ArticleTranslator:
                 self.client,
                 self.model,
                 messages,
-                max_tokens=self.stage3_max_tokens,
-                temperature=self.stage3_temperature,
+                max_tokens=self.stage5_max_tokens,
+                temperature=self.stage5_temperature,
             )
-        except Exception:
+        except Exception as e:
+            _logger.exception(f'Stage5 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
             return None
 
         if not text:

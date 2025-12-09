@@ -528,6 +528,7 @@ class ArticleGenerator:
 
             is_parse_error = isinstance(translation_result, dict) and bool(translation_result.get('_parse_error') or translation_result.get('parse_error'))
             if (not translation_result) or is_parse_error:
+                self.logger.error(f'Translation failed for {doc_id}: result={translation_result}')
                 self._handle_translation_failure(doc_id, translation_result, total_score, chunk_results, lock, proc_start)
                 return
 
@@ -686,22 +687,14 @@ class ArticleGenerator:
             if not docs:
                 break
 
-            try:
-                max_workers = int(__import__('os').environ.get('ARTICLE_GENERATOR_PARALLELISM', '4'))
-            except Exception:
-                max_workers = 4
-
             chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
             lock = threading.Lock()
 
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = [ex.submit(self._process_single_document, d, chunk_results, lock) for d in docs]
-                for f in as_completed(futures):
-                    try:
-                        f.result()
-                    except Exception as thread_err:
-                        chunk_results['errors'].append(str(thread_err))
-
+            for doc in docs:
+                try:
+                    self._process_single_document(doc, chunk_results, lock)
+                except Exception as thread_err:
+                    chunk_results['errors'].append(str(thread_err))
 
             # summarize this chunk for CI logs
             self.logger.info('Batch %d complete: processed=%d skipped=%d translated=%d errors=%d',
@@ -782,7 +775,7 @@ class ArticleGenerator:
                 return {'status': 'error', 'message': 'article not found'}
 
             # Process a single document using existing pipeline pieces
-            chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': []}
+            chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
             lock = threading.Lock()
 
             # Use the same flow as _process_single_document
@@ -794,3 +787,122 @@ class ArticleGenerator:
             return {'status': 'success', **chunk_results}
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
+
+    def process_continuous(self, git_sync_interval_minutes: int = 30) -> None:
+        """
+        Continuously process articles in an infinite loop.
+        
+        - Fetches the top CATEGORIZED article from the last 24 hours (by total_score DESC)
+        - Processes and saves it to articles/ directory
+        - Waits 5 seconds before fetching the next article
+        - Performs git sync every git_sync_interval_minutes (default 30 minutes)
+        - Runs indefinitely until manually stopped (Ctrl+C)
+        
+        Args:
+            git_sync_interval_minutes: How often to sync to git (default 30 minutes)
+        """
+        self.logger.info('🔄 Starting continuous article processing mode')
+        self.logger.info(f'Git sync interval: {git_sync_interval_minutes} minutes')
+        
+        from workers.article_generator.worker import sync_to_git_repo
+        
+        processed_ids = []
+        processed_in_session = set()  # Track all IDs processed in this session
+        last_git_sync = time.time()
+        git_sync_interval_seconds = git_sync_interval_minutes * 60
+        article_pause_seconds = 5
+        
+        cycle_count = 0
+        
+        while True:
+            try:
+                cycle_count += 1
+                self.logger.info(f'📊 Cycle {cycle_count}: Fetching top CATEGORIZED article from last 24h...')
+                
+                # Fetch the top article from last 24 hours
+                article = self.pg.fetch_top_categorized_article_24h()
+                
+                if not article:
+                    self.logger.info('⏸️  No CATEGORIZED articles found in last 24h. Waiting 60 seconds...')
+                    time.sleep(60)
+                    continue
+                
+                article_id = article.get('id')
+                
+                # Skip if already processed in this session
+                if article_id in processed_in_session:
+                    self.logger.info(f'⏭️  Article {article_id} already processed in this session. Waiting 60 seconds...')
+                    time.sleep(60)
+                    continue
+                
+                total_score = self._get_total_score(article)
+                
+                self.logger.info(f'✅ Found article: {article_id} (score: {total_score:.2f})')
+                
+                # Process the article
+                chunk_results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
+                lock = threading.Lock()
+                
+                try:
+                    self._process_single_document(article, chunk_results, lock)
+                    
+                    # Mark this article as processed in session
+                    processed_in_session.add(article_id)
+                    
+                    if chunk_results['translated'] > 0:
+                        processed_ids.append(article_id)
+                        self.logger.info(f'✅ Successfully processed article {article_id}')
+                    elif chunk_results['skipped'] > 0:
+                        self.logger.info(f'⏭️  Skipped article {article_id}')
+                    elif chunk_results['errors']:
+                        # Translation or processing failed - stop continuous mode
+                        self.logger.error(f'❌ Errors during processing: {chunk_results["errors"]}')
+                        self.logger.error(f'🛑 Stopping continuous mode due to processing errors')
+                        break
+                    else:
+                        self.logger.warning(f'⚠️  Article {article_id} processed with no clear result')
+                        self.logger.warning(f'🛑 Stopping continuous mode due to unclear result')
+                        break
+                
+                except Exception as proc_err:
+                    self.logger.exception(f'❌ Failed to process article {article_id}: {proc_err}')
+                    self.logger.error(f'🛑 Stopping continuous mode due to processing exception')
+                    # Still mark as processed to avoid infinite retries
+                    processed_in_session.add(article_id)
+                    break
+                
+                # Check if it's time for git sync
+                current_time = time.time()
+                time_since_last_sync = current_time - last_git_sync
+                
+                if time_since_last_sync >= git_sync_interval_seconds and processed_ids:
+                    self.logger.info(f'🔄 Performing git sync for {len(processed_ids)} articles...')
+                    try:
+                        sync_result = sync_to_git_repo(article_ids=processed_ids)
+                        self.logger.info(f'✅ Git sync completed: {sync_result}')
+                        processed_ids = []  # Clear the list after successful sync
+                        last_git_sync = current_time
+                    except Exception as sync_err:
+                        self.logger.exception(f'❌ Git sync failed: {sync_err}')
+                        # Don't clear processed_ids on error, will retry next cycle
+                
+                # Wait before fetching next article
+                self.logger.info(f'⏸️  Waiting {article_pause_seconds} seconds before next article...')
+                time.sleep(article_pause_seconds)
+                
+            except KeyboardInterrupt:
+                self.logger.info('🛑 Received shutdown signal. Performing final git sync...')
+                if processed_ids:
+                    try:
+                        sync_result = sync_to_git_repo(article_ids=processed_ids)
+                        self.logger.info(f'✅ Final git sync completed: {sync_result}')
+                    except Exception as sync_err:
+                        self.logger.exception(f'❌ Final git sync failed: {sync_err}')
+                self.logger.info('👋 Shutting down gracefully')
+                break
+            
+            except Exception as loop_err:
+                self.logger.exception(f'❌ Unexpected error in continuous loop: {loop_err}')
+                self.logger.info('⏸️  Waiting 30 seconds before retry...')
+                time.sleep(30)
+

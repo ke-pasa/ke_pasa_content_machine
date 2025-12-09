@@ -124,6 +124,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Article generator worker CLI')
     parser.add_argument('--batch-size', type=int, default=None, help='How many categorized articles to process in this run')
     parser.add_argument('--article-id', type=str, default=None, help='Process a single article by id')
+    parser.add_argument('--continuous', action='store_true', help='Run in continuous mode (infinite loop processing top articles)')
+    parser.add_argument('--git-sync-interval', type=int, default=30, help='Git sync interval in minutes (for continuous mode, default 30)')
     args = parser.parse_args()
 
     # Always configure logging to stdout so CI (GitHub Actions) captures worker logs
@@ -140,9 +142,25 @@ def main() -> None:
     logging.getLogger('workers.article_generator').propagate = False
 
     worker = ArticleGenerator(batch_size=args.batch_size)
+    
+    # Continuous mode - runs indefinitely
+    if args.continuous:
+        logging.info('🔄 Starting in CONTINUOUS mode')
+        try:
+            worker.process_continuous(git_sync_interval_minutes=args.git_sync_interval)
+        except KeyboardInterrupt:
+            logging.info('👋 Continuous mode interrupted by user')
+            sys.exit(0)
+        except Exception as e:
+            logging.exception(f'❌ Continuous mode failed: {e}')
+            sys.exit(1)
+        return
+    
+    # Single article mode
     if args.article_id:
         result = worker.process_single_article(args.article_id)
     else:
+        # Batch mode
         result = worker.process_articles()
 
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -126,6 +126,18 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     def _extract_content(resp) -> Optional[str]:
         """Extract content from OpenAI Responses API response."""
         try:
+            # Log token usage if available
+            try:
+                usage = getattr(resp, 'usage', None)
+                if usage:
+                    prompt_tokens = getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0)
+                    completion_tokens = getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0)
+                    total_tokens = getattr(usage, 'total_tokens', 0) or (prompt_tokens + completion_tokens)
+                    logger.info('OpenAI usage: prompt=%d completion=%d total=%d', 
+                               prompt_tokens, completion_tokens, total_tokens)
+            except Exception:
+                pass
+            
             content = getattr(resp, 'output_text', None)
             if content and isinstance(content, str):
                 return content.strip()

@@ -167,18 +167,8 @@ class CategorizationWorker:
 
                 def _process_doc(doc):
                     try:
-                        # Expect normalized row dicts from Postgres
-                        if isinstance(doc, dict):
-                            doc_id = doc.get('id')
-                            data = doc
-                        else:
-                            # Defensive fallback: try to handle Firestore-like objects
-                            try:
-                                doc_id = getattr(doc, 'id', None)
-                                data = doc.to_dict() or {}
-                            except Exception:
-                                doc_id = None
-                                data = {}
+                        doc_id = doc.get('id')
+                        data = doc
 
                         title = data.get('title', '')
                         description = data.get('description', '') or ''

@@ -250,7 +250,7 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
-    def fetch_articles_new(self, limit: int = 30, last_cursor: dict = None, status: str = 'NEW') -> List[Dict[str, Any]]:
+    def fetch_articles_new(self, limit: int = 30, last_cursor: dict = None, status: str = 'NEW', order_by: str = 'created_at') -> List[Dict[str, Any]]:
         # Let connection/driver errors propagate so callers (workers) can see and log them.
         self._connect()
         from psycopg2.extras import RealDictCursor
@@ -267,7 +267,12 @@ class PGClient:
             if last_cursor:
                 sql.append("AND (created_at, id) > (%s::timestamptz, %s)")
                 params.extend([last_cursor.get('created_at'), last_cursor.get('id')])
-            sql.append("ORDER BY created_at ASC, id ASC")
+            
+            # Support ordering by total_score DESC or created_at ASC
+            if order_by == 'total_score':
+                sql.append("ORDER BY total_score DESC, id ASC")
+            else:
+                sql.append("ORDER BY created_at ASC, id ASC")
             sql.append("LIMIT %s")
             params.append(limit)
             cur.execute('\n'.join(sql), tuple(params))
@@ -321,6 +326,75 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
+    def fetch_top_categorized_article_24h(self) -> Optional[Dict[str, Any]]:
+        """Fetch single CATEGORIZED article with highest total_score from last 24 hours."""
+        self._connect()
+        from psycopg2.extras import RealDictCursor
+        conn, pooled = self._get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            sql = """
+                SELECT id, title, summary AS description, content, categories, link AS source, link as link, 
+                       image, source_link, source_feed AS source_name,
+                       published_date AS pub_date, published_date AS published_at, source_feed AS feed_name, 
+                       status, created_at, updated_at, interest, total_score
+                FROM public.articles
+                WHERE status = 'CATEGORIZED'
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY total_score DESC, id ASC
+                LIMIT 1
+            """
+            cur.execute(sql)
+            r = cur.fetchone()
+            if not r:
+                return None
+            
+            tags = r.get('categories') if r.get('categories') is not None else []
+            interest_raw = r.get('interest')
+            interest = None
+            if interest_raw is not None:
+                if isinstance(interest_raw, (str, bytes)):
+                    try:
+                        interest = json.loads(interest_raw)
+                    except Exception:
+                        interest = None
+                elif isinstance(interest_raw, dict):
+                    interest = interest_raw
+            pub_date = r.get('pub_date')
+            pub_date_val = pub_date.isoformat() if hasattr(pub_date, 'isoformat') else pub_date
+            total_score = r.get('total_score')
+            try:
+                total_score = float(total_score) if total_score is not None else 0.0
+            except (ValueError, TypeError):
+                total_score = 0.0
+            
+            normalized = {
+                'id': r.get('id'),
+                'title': r.get('title'),
+                'description': r.get('description'),
+                'content': r.get('content'),
+                'tags': tags or [],
+                'source': r.get('source'),
+                'link': r.get('link'),
+                'image': r.get('image'),
+                'source_link': r.get('source_link'),
+                'source_name': r.get('source_name'),
+                'pub_date': pub_date_val,
+                'published_at': pub_date_val,
+                'feed_name': r.get('feed_name'),
+                'region_hint': None,
+                'created_at': r.get('created_at'),
+                'updated_at': r.get('updated_at'),
+                'interest': interest,
+                'total_score': total_score
+            }
+            return normalized
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
 
     def fetch_article_by_id(self, article_id: str) -> Optional[Dict[str, Any]]:
         try:
