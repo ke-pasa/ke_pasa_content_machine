@@ -664,7 +664,6 @@ class ArticleGenerator:
         Returns:
             dict: Results with keys: processed, skipped, translated, errors
         """
-        """
         results = {'processed': 0, 'skipped': 0, 'translated': 0, 'errors': [], 'translated_ids': []}
         chunk_size = 20
         processed_total = 0
