@@ -140,7 +140,7 @@ class CategorizationWorker:
 
                 try:
                     # last_snapshot is a cursor dict with 'created_at' and 'id'
-                    docs = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='NEW')
+                    docs = self.pg.з(limit=limit_for_query, last_cursor=last_snapshot, status='NEW')
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
 
@@ -172,7 +172,7 @@ class CategorizationWorker:
 
                         title = data.get('title', '')
                         description = data.get('description', '') or ''
-                        content = data.get('content', '') or ''
+                        content = (data.get('content', '') or '')[:500]
                         tags = data.get('tags', []) or data.get('categories', []) or []
                         source = data.get('source', '') or data.get('link', '') or ''
                         pub_date = data.get('pub_date', '') or ''
@@ -191,7 +191,7 @@ class CategorizationWorker:
                                     {"role": "user", "content": user_prompt}
                                 ]
 
-                                text = _chat_completion(client, model, messages, max_tokens=6000, temperature=0)
+                                text = _chat_completion(client, model, messages, max_tokens=800, temperature=0)
                                 parsed = _parse_json_from_text(text or '')
 
                                 if parsed:
@@ -536,7 +536,7 @@ class CategorizationWorker:
 
             title = data.get('title', '')
             description = data.get('description', '') or ''
-            content = data.get('content', '') or ''
+            content = (data.get('content', '') or '')[:500]
             tags = data.get('tags', []) or data.get('categories', []) or []
             source = data.get('source', '') or data.get('link', '') or ''
             pub_date = data.get('pub_date', '') or ''
@@ -562,7 +562,7 @@ class CategorizationWorker:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ]
-                    text = _chat_completion(client, model, messages, max_tokens=6000, temperature=0)
+                    text = _chat_completion(client, model, messages, max_tokens=800, temperature=0)
                     parsed = _parse_json_from_text(text or '')
                     if parsed:
                         interest_result = parsed
