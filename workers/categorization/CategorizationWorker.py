@@ -392,7 +392,7 @@ class CategorizationWorker:
 
                 try:
                     # last_snapshot is a cursor dict with 'created_at' and 'id'
-                    docs = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='NEW', hours_ago=48)
+                    docs = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='NEW', hours_ago=24)
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
 
