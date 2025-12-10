@@ -1,7 +1,6 @@
 """
 Publisher Worker - handles article publication to Telegram
 """
-
 import sys
 import os
 import uuid
@@ -16,14 +15,11 @@ from typing import Dict
 root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir))
 
-# dotenv not required for Postgres-based workflows; env vars are provided by runtime/CI
-
 
 import html
 from workers.tools.telegram_helper import send_message, send_photo
 from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
-from workers.tools import openai_client
 from workers.tools.constants import MIN_PUBLISH_SCORE
 
 logger = logging.getLogger(__name__)
@@ -43,8 +39,7 @@ class PublisherWorker:
             self.pg = get_pg_client()
         except Exception:
             raise RuntimeError('Postgres client is required for PublisherWorker')
-        # Keep legacy db attribute for rare fallback usage
-        self.db = None
+
         self.instance_id = str(uuid.uuid4())[:8]
         # Telegram bot token (we'll use HTTP requests for sync sends)
         bot_token = os.getenv('TELEGRAM_BOT_TOKEN') or None
@@ -119,221 +114,7 @@ class PublisherWorker:
         except Exception:
             return None
 
-    # --- Embedding + dedup helpers ---
-    def _compute_embedding(self, text: str):
-        """Return embedding vector for text or None on failure/unsupported."""
-        try:
-            client = openai_client.get_openai_client()
-            if client is None or not text:
-                return None
-            resp = client.embeddings.create(model='text-embedding-3-small', input=[text])
-            if getattr(resp, 'data', None) and len(resp.data) > 0:
-                return resp.data[0].embedding
-        except Exception:
-            logger.warning(f"⚠️ Embedding compute failed: {text[:60]}")
-        return None
-    
-    def _compute_and_save_embedding_for_doc(self, doc):
-        """Compute embedding for candidate article and save it to the Postgres articles_ru row. Returns embedding or None."""
-        try:
-            data = doc.to_dict() or {}
-            final_preview = None
-            try:
-                final_preview = data.get('telegram_final')
-            except Exception:
-                final_preview = None
-
-            # Normalize preview text: accept dict or string, extract text, replace literal \n with newlines,
-            # and strip surrounding parentheses like '(за январь)' -> 'за январь'.
-            def _extract_preview(v):
-                txt = None
-                if v is None:
-                    return None
-                if isinstance(v, dict):
-                    txt = v.get('tg_preview') or v.get('text') or v.get('preview')
-                elif isinstance(v, (bytes, str)):
-                    txt = v.decode('utf-8') if isinstance(v, bytes) else v
-                else:
-                    txt = str(v)
-                if not txt:
-                    return None
-                # Replace escaped newlines with real newlines
-                txt = txt.replace('\\n', '\n')
-                # Remove parentheses that wrap short phrases like '(за январь)'
-                txt = txt.strip()
-                if txt.startswith('(') and txt.endswith(')'):
-                    inner = txt[1:-1].strip()
-                    # only unwrap if no other punctuation at ends
-                    if inner and not inner.endswith('.'):
-                        txt = inner
-                return txt
-
-            final_preview = _extract_preview(final_preview)
-            # If telegram_final is None, empty string -> no preview
-            if final_preview is None or final_preview.strip() == '':
-                logger.error(f"❌ Article {getattr(doc,'id', '?')} has empty telegram_final")
-                return None
-
-            emb = self._compute_embedding(final_preview)
-            if not emb:
-                return None
-
-            try:
-                pg = getattr(self, 'pg', None)
-                if pg and getattr(doc, 'id', None):
-                    try:
-                        # Build a structured telegram_final dict to store embedding metadata.
-                        existing_tf = (doc.to_dict() or {}).get('telegram_final')
-                        tf_dict = {}
-                        # If existing_tf is dict, copy it; if it's a string, try to parse JSON or store as tg_preview
-                        if isinstance(existing_tf, dict):
-                            tf_dict = dict(existing_tf)
-                        elif isinstance(existing_tf, (str, bytes)):
-                            try:
-                                parsed = json.loads(existing_tf) if isinstance(existing_tf, str) else json.loads(existing_tf.decode('utf-8'))
-                                if isinstance(parsed, dict):
-                                    tf_dict = parsed
-                                else:
-                                    tf_dict = {'tg_preview': str(existing_tf)}
-                            except Exception:
-                                tf_dict = {'tg_preview': existing_tf.decode('utf-8') if isinstance(existing_tf, bytes) else str(existing_tf)}
-                        else:
-                            tf_dict = {}
-
-                        # Save embeddings separately into `telegram_emd` to avoid
-                        # modifying the user-visible `telegram_final` preview text.
-                        te = {
-                            'telegram_emb': emb,
-                            'telegram_emb_computed_at': datetime.now(timezone.utc).isoformat()
-                        }
-                        pg.save_generated_article(doc.id, {'telegram_final': tf_dict, 'telegram_emd': te, 'updated_at': datetime.now(timezone.utc).isoformat()})
-                    except Exception:
-                        pass
-                return emb
-            except Exception:
-                return None
-        except Exception:
-            return None
-
-    def _fetch_recent_published_embeddings(self, days: int):
-        """Return list of (doc_id, embedding) for articles published in the last `days` days."""
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            out = []
-            # Use Postgres to fetch recent published embeddings
-            try:
-                pg = self.pg
-                rows = pg.fetch_translated_for_publish(limit=1000, min_score=0)
-                for r in rows:
-                    try:
-                        data = r
-                        emb = None
-                        ts = None
-                        # Prefer explicit raw value (may contain dict with metadata)
-                        tf_raw = data.get('telegram_final_raw') if 'telegram_final_raw' in data else None
-                        if tf_raw is not None:
-                            try:
-                                tf_parsed = tf_raw if isinstance(tf_raw, dict) else (json.loads(tf_raw) if isinstance(tf_raw, str) else None)
-                                if isinstance(tf_parsed, dict):
-                                    emb = tf_parsed.get('telegram_emb')
-                                    ts = tf_parsed.get('telegram_emb_computed_at')
-                            except Exception:
-                                emb = None
-                                ts = None
-                        # Fallback: if telegram_final (normalized by PG client) contains embedding
-                        if emb is None:
-                            tf = data.get('telegram_final')
-                            if isinstance(tf, dict):
-                                emb = tf.get('telegram_emb')
-                                ts = tf.get('telegram_emb_computed_at')
-                            else:
-                                emb = data.get('telegram_emb')
-                                ts = data.get('telegram_emb_computed_at')
-
-                        if not emb:
-                            continue
-                        include = True
-                        if ts:
-                            try:
-                                t = datetime.fromisoformat(ts) if isinstance(ts, str) else ts
-                                include = (t >= cutoff)
-                            except Exception:
-                                include = True
-                        if include:
-                            out.append((data.get('article_id') or data.get('id'), emb))
-                    except Exception:
-                        continue
-            except Exception:
-                return []
-            return out
-        except Exception:
-            return []
-
-    def _cosine_similarity(self, a, b):
-        try:
-            import math
-            if not a or not b or len(a) != len(b):
-                return 0.0
-            dot = 0.0
-            na = 0.0
-            nb = 0.0
-            for x, y in zip(a, b):
-                dot += (float(x) * float(y))
-                na += float(x) * float(x)
-                nb += float(y) * float(y)
-            if na == 0 or nb == 0:
-                return 0.0
-            return float(dot) / (math.sqrt(na) * math.sqrt(nb))
-        except Exception:
-            return 0.0
-
-    def _check_duplicate_and_mark(self, doc, candidate_emb) -> bool:
-        """Check candidate embedding against recent published embeddings.
-
-        If a duplicate is detected (similarity >= threshold), mark the article
-        with status 'DUBLICATED' and return True. Otherwise return False.
-        """
-        if not candidate_emb:
-            return False
-        try:
-            cfg_days = int(getattr(self.config, 'duplicate_check_days', 3) or 3)
-            threshold = float(getattr(self.config, 'similarity_threshold', 0.8))
-            recent = self._fetch_recent_published_embeddings(cfg_days)
-            for rid, emb in recent:
-                try:
-                    sim = self._cosine_similarity(candidate_emb, emb)
-                    if sim >= threshold:
-                        # Mark as duplicated in Postgres
-                        try:
-                            pg = getattr(self, 'pg', None)
-                            if pg:
-                                conn, pooled = pg._get_conn()
-                                cur = conn.cursor()
-                                try:
-                                    cur.execute(
-                                        "UPDATE public.articles_ru SET status = %s, duplicate_of = %s, duplicate_similarity = %s, updated_at = %s WHERE id = %s",
-                                        ('DUBLICATED', rid, float(sim), datetime.now(timezone.utc).isoformat(), doc.id)
-                                    )
-                                    conn.commit()
-                                finally:
-                                    try:
-                                        cur.close()
-                                    except Exception:
-                                        pass
-                                    try:
-                                        pg._put_conn(conn, pooled)
-                                    except Exception:
-                                        pass
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to mark duplicate for {doc.id}: {e}")
-                        logger.info(f"🔁 Article {doc.id} marked DUBLICATED (sim={sim:.3f}) against {rid}")
-                        return True
-                except Exception:
-                    continue
-            return False
-        except Exception as e:
-            logger.warning(f"⚠️ Duplicate check failed for {getattr(doc,'id', '?')}: {e}")
-            return False
+    # Helper utilities
 
     def _http_send_message(self, chat_id: str, text: str) -> dict:
         """Send a text message via Telegram (helper). Returns parsed result or raises."""
@@ -565,19 +346,11 @@ class PublisherWorker:
                     results['errors'].append(f"empty_telegram_final:{article_id}")
                     continue
 
-                # Mock object for embedding methods that expect an object with .id and .to_dict()
                 class DocShim:
                     def __init__(self, d): self.d = d; self.id = d.get('id')
                     def to_dict(self): return self.d
 
                 doc_obj = DocShim(data)
-
-                try:
-                    emb = self._compute_and_save_embedding_for_doc(doc_obj)
-                    if emb and self._check_duplicate_and_mark(doc_obj, emb):
-                        continue
-                except Exception:
-                    pass
 
                 message = final_preview
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)

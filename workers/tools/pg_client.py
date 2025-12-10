@@ -83,7 +83,6 @@ class PGClient:
                         content_ru text,
                         publish_md text,
                         telegram_final jsonb,
-                        telegram_emd jsonb,
                         published_at timestamptz,
                         updated_at timestamptz
                     )
@@ -627,8 +626,8 @@ class PGClient:
         # Use DELETE then INSERT to avoid relying on ON CONFLICT or unique constraints.
         delete_sql = 'DELETE FROM public.articles_ru WHERE article_id = %s'
         insert_sql = '''
-        INSERT INTO public.articles_ru (article_id, source_url, source_link, source_name, source_published_at, image_url, status, total_score, title_ru, description_ru, content_ru, publish_md, telegram_final, telegram_emd, published_at, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
+        INSERT INTO public.articles_ru (article_id, source_url, source_link, source_name, source_published_at, image_url, status, total_score, title_ru, description_ru, content_ru, publish_md, telegram_final, published_at, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
         '''
 
         params_insert = (
@@ -645,7 +644,6 @@ class PGClient:
             payload.get('content_ru'),
             payload.get('publish_md'),
             telegram_json,
-            json.dumps(payload.get('telegram_emd'), ensure_ascii=False) if payload.get('telegram_emd') is not None else None,
         )
 
         conn, pooled = self._get_conn()
@@ -758,8 +756,6 @@ class PGClient:
                 row = dict(r)
                 # Preserve raw telegram_final for debugging
                 row['telegram_final_raw'] = row.get('telegram_final')
-                # Preserve raw telegram_emd for debugging
-                row['telegram_emd_raw'] = row.get('telegram_emd')
                 # Use telegram_final value directly as a string (decode bytes). Do not parse dict/JSON here.
                 try:
                     tf = row.get('telegram_final')
@@ -816,28 +812,12 @@ class PGClient:
                                     except Exception:
                                         pass
 
-                                    # Assign the cleaned parsed dict back to telegram_final
                                     row['telegram_final'] = parsed
 
-                                    # Try to parse telegram_emd if present in the DB raw row
-                                    try:
-                                        te = row.get('telegram_emd')
-                                        if te is None:
-                                            row['telegram_emd'] = None
-                                        else:
-                                            if isinstance(te, (bytes, str)):
-                                                try:
-                                                    row['telegram_emd'] = json.loads(te) if isinstance(te, str) else json.loads(te.decode('utf-8'))
-                                                except Exception:
-                                                    row['telegram_emd'] = te
-                                            else:
-                                                row['telegram_emd'] = te
-                                    except Exception:
-                                        row['telegram_emd'] = None
+                                    pass
                                 elif isinstance(parsed, str) and parsed.strip():
                                     row['telegram_final'] = parsed.strip()
                                 else:
-                                    # Fallback: use original stripped string
                                     row['telegram_final'] = s
                         else:
                             try:
