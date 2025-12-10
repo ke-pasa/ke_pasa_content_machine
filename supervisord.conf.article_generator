@@ -4,10 +4,14 @@ directory=/app
 user=root
 autostart=true
 autorestart=true
-redirect_stderr=true
-# Send stdout to container's stdout to allow `docker logs` to show it
-stdout_logfile=/dev/fd/1
+# Do not redirect stderr into stdout (we will handle both streams separately)
+redirect_stderr=false
+# Send stdout/stderr to container's stdout/stderr so `docker logs` shows them
+stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 stdout_logfile_backups=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+stderr_logfile_backups=0
 startsecs=10
 stopwaitsecs=30

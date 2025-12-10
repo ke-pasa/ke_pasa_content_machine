@@ -39,8 +39,8 @@ class ArticleGenerator:
         )
         # Use root logger configuration from entrypoint; avoid adding handlers here.
         self.logger = logging.getLogger('workers.article_generator')
-        # prevent duplicate propagation if root logger also prints
-        self.logger.propagate = False
+        # Allow propagation to root logger so stdout captures these logs
+        self.logger.propagate = True
 
     def _get_total_score(self, data: dict) -> float:
         """Extract float total_score from article data."""

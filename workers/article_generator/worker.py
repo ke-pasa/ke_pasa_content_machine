@@ -173,7 +173,8 @@ def main() -> None:
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         root_logger.addHandler(handler)
 
-    logging.getLogger('workers.article_generator').propagate = False
+    # Allow worker logger to propagate to root handler so supervisord/stdout captures it
+    logging.getLogger('workers.article_generator').propagate = True
 
     worker = ArticleGenerator(batch_size=args.batch_size)
     
