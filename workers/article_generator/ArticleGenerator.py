@@ -33,10 +33,12 @@ class ArticleGenerator:
             raise RuntimeError('Postgres client is required for ArticleGenerator')
         self.instance_id = str(uuid.uuid4())[:8]
         self.translator = translator or ArticleTranslator(
-            stage1_max_tokens=800,
-            stage2_max_tokens=800,
-            stage3_max_tokens=800
+            stage1_max_tokens=1200,
+            stage2_max_tokens=1200,
+            stage3_max_tokens=1200
         )
+        # Whether to request stage saving from translator (passed via metadata)
+        self.save_stages = False
         # Use root logger configuration from entrypoint; avoid adding handlers here.
         self.logger = logging.getLogger('workers.article_generator')
         # Allow propagation to root logger so stdout captures these logs
@@ -242,6 +244,8 @@ class ArticleGenerator:
             'doc_id': doc_id,
             'fetched_content': fetched_content,
             'content_source': content_source,
+            # Forward save_stages flag so translator can opt-in to writing logs
+            'save_stages': getattr(self, 'save_stages', False),
         }
 
     def _log_translation_stages(self, doc_id: str, translation_result: Optional[dict], trans_duration: float) -> None:

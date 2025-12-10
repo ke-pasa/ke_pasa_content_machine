@@ -160,6 +160,7 @@ def main() -> None:
     parser.add_argument('--article-id', type=str, default=None, help='Process a single article by id')
     parser.add_argument('--continuous', action='store_true', help='Run in continuous mode (infinite loop processing top articles)')
     parser.add_argument('--git-sync-interval', type=int, default=30, help='Git sync interval in minutes (for continuous mode, default 30)')
+    parser.add_argument('--save-stages', action='store_true', help='Save translation stage outputs to logs/article_generator_stages/{doc_id}.json')
     args = parser.parse_args()
 
     # Always configure logging to stdout so CI (GitHub Actions) captures worker logs
@@ -176,7 +177,15 @@ def main() -> None:
     # Allow worker logger to propagate to root handler so supervisord/stdout captures it
     logging.getLogger('workers.article_generator').propagate = True
 
+    # Enable stage saving via CLI flag (propagated to worker.metadata.save_stages)
+
     worker = ArticleGenerator(batch_size=args.batch_size)
+    if getattr(args, 'save_stages', False):
+        try:
+            # set attribute on instance so translator receives flag via metadata
+            worker.save_stages = True
+        except Exception:
+            logging.getLogger('workers.article_generator').exception('Failed to set save_stages on worker')
     
     # Continuous mode - runs indefinitely
     if args.continuous:

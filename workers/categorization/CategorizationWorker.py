@@ -327,7 +327,7 @@ class CategorizationWorker:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            result = _chat_completion(client, model, messages, max_tokens=800, temperature=0)
+            result = _chat_completion(client, model, messages, max_tokens=1200, temperature=0)
             
             # Handle tuple return (text, usage) or just text
             if isinstance(result, tuple):

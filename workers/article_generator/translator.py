@@ -97,6 +97,43 @@ def _parse_stage_response(text: str, stage: str, doc_id: str) -> Optional[Dict]:
         return None
 
 
+def _maybe_save_stage_record(doc_id: str, metadata: Dict, stages: Dict):
+    """If metadata['save_stages'] is truthy, write a plain text file with
+    parsed stage JSON and raw texts for inspection.
+
+    The file path is `logs/article_generator_stages/{doc_id}.txt`.
+    This replaces the previous JSON output.
+    """
+    try:
+        from pathlib import Path
+        # Only save when the caller provided the explicit flag in metadata
+        if not metadata or not metadata.get('save_stages'):
+            return
+
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        text_dir = repo_root / 'logs' / 'article_generator_stages'
+        text_dir.mkdir(parents=True, exist_ok=True)
+        out_file = text_dir / f"{str(doc_id)}.txt"
+
+        with out_file.open('w', encoding='utf-8') as f:
+            f.write(f"doc_id: {doc_id}\n")
+            f.write(f"source_link: {metadata.get('url') or metadata.get('link') or metadata.get('source') or ''}\n\n")
+            # For each stage write parsed JSON (if any) and a raw separator placeholder.
+            for stage_name in ('stage1', 'stage2', 'stage3', 'stage4', 'stage5', 'stage6'):
+                parsed = stages.get(stage_name) if isinstance(stages, dict) else None
+                f.write(f"=== {stage_name} PARSED ===\n")
+                try:
+                    if parsed is None:
+                        f.write('<NO PARSED DATA>\n')
+                    else:
+                        f.write(json.dumps(parsed, ensure_ascii=False, indent=2) + '\n')
+                except Exception:
+                    f.write('<PARSED NOT SERIALIZABLE>\n')
+                f.write('\n')
+    except Exception:
+        _logger.exception('Failed to save stage text file for %s', doc_id)
+
+
 class ArticleTranslator:
     """Encapsulates multi-stage translation of article fields to Russian via OpenAI."""
 
@@ -104,9 +141,9 @@ class ArticleTranslator:
         self,
         client=None,
         model: str = 'gpt-4o-mini',
-        stage1_max_tokens: int = 800,
-        stage2_max_tokens: int = 800,
-        stage3_max_tokens: int = 800,
+        stage1_max_tokens: int = 1200,
+        stage2_max_tokens: int = 1200,
+        stage3_max_tokens: int = 1200,
         stage1_temperature: float = 0.2,
         stage2_temperature: float = 0.4,
         stage3_temperature: float = 1.0,
@@ -153,39 +190,39 @@ class ArticleTranslator:
 
         _logger.info('[%s] Stage 1: Translation...', doc_id)
         t0 = time.time()
-        stage1 = self._stage1_translate(title, description, content, metadata)
+        stage1, raw1 = self._stage1_translate(title, description, content, metadata)
         _logger.info('[%s] Stage 1 completed in %.1fs', doc_id, time.time() - t0)
         if not stage1 or not isinstance(stage1, dict):
             _logger.warning('[%s] Stage 1 failed', doc_id)
-            return (stage1, None, None, None, None, None)
+            return (stage1, None, None, None, None, None, {'stage1': raw1})
 
         _logger.info('[%s] Stage 2: Reporter style...', doc_id)
         t0 = time.time()
-        stage2 = self._stage2_reporter(stage1, metadata)
+        stage2, raw2 = self._stage2_reporter(stage1, metadata)
         _logger.info('[%s] Stage 2 completed in %.1fs', doc_id, time.time() - t0)
         if not stage2 or not isinstance(stage2, dict):
             _logger.warning('[%s] Stage 2 failed', doc_id)
-            return (stage1, None, None, None, None, None)
+            return (stage1, stage2, None, None, None, None, {'stage1': raw1, 'stage2': raw2})
 
         _logger.info('[%s] Stage 3: Editorial evaluation...', doc_id)
         t0 = time.time()
-        stage3 = self._stage3_edit_first(stage1, stage2, source_text, metadata)
+        stage3, raw3 = self._stage3_edit_first(stage1, stage2, source_text, metadata)
         _logger.info('[%s] Stage 3 completed in %.1fs', doc_id, time.time() - t0)
         if not stage3 or not isinstance(stage3, dict):
             _logger.warning('[%s] Stage 3 failed', doc_id)
-            return (stage1, stage2, None, None, None, None)
+            return (stage1, stage2, stage3, None, None, None, {'stage1': raw1, 'stage2': raw2, 'stage3': raw3})
 
         _logger.info('[%s] Stage 4: Final edit...', doc_id)
         t0 = time.time()
-        stage4 = self._stage4_edit_final(stage1, stage2, stage3, source_text, metadata)
+        stage4, raw4 = self._stage4_edit_final(stage1, stage2, stage3, source_text, metadata)
         _logger.info('[%s] Stage 4 completed in %.1fs', doc_id, time.time() - t0)
         if not stage4 or not isinstance(stage4, dict):
             _logger.warning('[%s] Stage 4 failed', doc_id)
-            return (stage1, stage2, stage3, None, None, None)
+            return (stage1, stage2, stage3, stage4, None, None, {'stage1': raw1, 'stage2': raw2, 'stage3': raw3, 'stage4': raw4})
 
         _logger.info('[%s] Stage 5: Publish markdown...', doc_id)
         t0 = time.time()
-        stage5 = self._stage5_publish_md(stage4, metadata)
+        stage5, raw5 = self._stage5_publish_md(stage4, metadata)
         _logger.info('[%s] Stage 5 completed in %.1fs', doc_id, time.time() - t0)
 
         stage6 = None
@@ -198,13 +235,14 @@ class ArticleTranslator:
             _logger.info('[%s] Stage 6: Telegram preview (score=%.1f)...', doc_id, total_score_meta)
             t0 = time.time()
             slug = stage5.get('slug') if stage5 and isinstance(stage5, dict) else None
-            stage6 = self._stage6_telegram(stage4, metadata, slug)
+            stage6, raw6 = self._stage6_telegram(stage4, metadata, slug)
             _logger.info('[%s] Stage 6 completed in %.1fs', doc_id, time.time() - t0)
         else:
             _logger.info('[%s] Stage6 skipped: total_score=%.1f (need >=%d), has_url=%s', 
                         doc_id, total_score_meta, PUBLISH_THRESHOLD, bool(metadata.get('url')))
 
-        return (stage1, stage2, stage3, stage4, stage5, stage6)
+        raws = {'stage1': raw1, 'stage2': raw2, 'stage3': raw3, 'stage4': raw4, 'stage5': raw5, 'stage6': raw6 if 'raw6' in locals() else None}
+        return (stage1, stage2, stage3, stage4, stage5, stage6, raws)
 
     def _build_base_result(self, stage1: Dict, stage2: Dict, stage3: Dict, stage4: Dict) -> Dict:
         """Build base result dictionary with core translation fields."""
@@ -277,7 +315,7 @@ class ArticleTranslator:
         
         pipeline_start = __import__('time').time()
 
-        stage1, stage2, stage3, stage4, stage5, stage6 = self._execute_translation_pipeline(title, description, content, metadata)
+        stage1, stage2, stage3, stage4, stage5, stage6, raws = self._execute_translation_pipeline(title, description, content, metadata)
 
         if not stage1 or not isinstance(stage1, dict):
             _logger.error(f'Stage1 failed for {doc_id}: stage1={stage1}')
@@ -290,6 +328,19 @@ class ArticleTranslator:
         self._add_optional_fields(final, stage1, stage2, stage3, stage4)
         self._merge_stage5_results(final, stage5)
         self._merge_stage6_results(final, stage6)
+        # Optionally save compact stage records for debugging/archival
+        try:
+            stages = {
+                'stage1': stage1,
+                'stage2': stage2,
+                'stage3': stage3,
+                'stage4': stage4,
+                'stage5': stage5,
+                'stage6': stage6,
+            }
+            _maybe_save_stage_record(metadata.get('doc_id', 'unknown'), metadata, stages)
+        except Exception:
+            _logger.exception('Error while trying to save stage record for %s', metadata.get('doc_id', 'unknown'))
         
         pipeline_duration = __import__('time').time() - pipeline_start
         _logger.info(f'[{doc_id}] Translation completed in {pipeline_duration:.1f}s (6 stages)')
@@ -313,9 +364,10 @@ class ArticleTranslator:
             )
         except Exception as e:
             _logger.exception(f'Stage1 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
-            return None
+            return None, None
 
-        return _parse_stage_response(text, 'stage1', (metadata or {}).get('doc_id', 'unknown'))
+        parsed = _parse_stage_response(text, 'stage1', (metadata or {}).get('doc_id', 'unknown'))
+        return parsed, (text or None)
 
     def _stage2_reporter(self, stage1_result: Dict, metadata: Optional[Dict] = None) -> Optional[Dict]:
         """Stage 2: Create reporter-style text based on stage1 explanation and facts."""
@@ -335,9 +387,10 @@ class ArticleTranslator:
             )
         except Exception as e:
             _logger.exception(f'Stage2 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
-            return None
+            return None, None
 
-        return _parse_stage_response(text, 'stage2', metadata.get('doc_id', 'unknown'))
+        parsed = _parse_stage_response(text, 'stage2', metadata.get('doc_id', 'unknown'))
+        return parsed, (text or None)
 
     def _stage3_edit_first(self, stage1_result: Dict, stage2_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
         """Stage 3: Editorial evaluation based on source_text, stage1, and stage2."""
@@ -360,9 +413,10 @@ class ArticleTranslator:
             )
         except Exception as e:
             _logger.exception(f'Stage3 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
-            return None
+            return None, None
 
-        return _parse_stage_response(text, 'stage3', metadata.get('doc_id', 'unknown'))
+        parsed = _parse_stage_response(text, 'stage3', metadata.get('doc_id', 'unknown'))
+        return parsed, (text or None)
 
     def _stage4_edit_final(self, stage1_result: Dict, stage2_result: Dict, stage3_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
         """Stage 4: Final article creation based on source_text, stage1, stage2, and stage3 evaluation."""
@@ -385,9 +439,10 @@ class ArticleTranslator:
                 temperature=self.stage3_temperature,
             )
         except Exception:
-            return None
+            return None, None
 
-        return _parse_stage_response(text, 'stage4', metadata.get('doc_id', 'unknown'))
+        parsed = _parse_stage_response(text, 'stage4', metadata.get('doc_id', 'unknown'))
+        return parsed, (text or None)
 
     def _stage5_publish_md(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
         """Stage 5: Generate markdown article for website based on stage4."""
@@ -419,17 +474,17 @@ class ArticleTranslator:
             )
         except Exception as e:
             _logger.exception(f'Stage5 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
-            return None
+            return None, None
 
         if not text:
-            return None
+            return None, None
             
         result = {'publish_md': text.strip()}
         import re
         if slug_match := re.search(r'^slug:\s*(.+?)\s*$', text, re.MULTILINE):
             slug = slug_match.group(1).strip().strip('"').strip("'")
             result['slug'] = slug
-        return result
+        return result, (text or None)
 
     def _stage6_telegram(self, stage4_result: Dict, metadata: Dict, slug: Optional[str] = None) -> Optional[Dict]:
         """Stage 6: Generate telegram text based on stage4."""
@@ -457,11 +512,11 @@ class ArticleTranslator:
                 temperature=0.6,
             )
         except Exception:
-            return None
+            return None, None
 
         parsed = _parse_stage_response(text, 'stage6', metadata.get('doc_id', 'unknown'))
         if not parsed or not isinstance(parsed, dict):
-            return parsed
+            return parsed, (text or None)
 
         if tg := parsed.get('tg_preview'):
             if isinstance(tg, str):
@@ -469,4 +524,4 @@ class ArticleTranslator:
                 tg = re.sub(r'\n{3,}', '\n\n', tg)
                 parsed['tg_preview'] = tg
 
-        return parsed
+        return parsed, (text or None)
