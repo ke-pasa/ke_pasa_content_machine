@@ -15,7 +15,6 @@ import re
 import json
 import time
 import requests
-import threading
 from workers.tools.url_utils import compute_article_id
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import traceback
@@ -24,8 +23,41 @@ from dateutil import parser as date_parser
 from urllib.parse import urlparse
 from typing import Dict, List, Optional, Any
 from bs4 import BeautifulSoup
-# Heavy optional runtime dependencies (feedparser, readability, slugify, dotenv)
-# are imported lazily inside functions to keep this module import-safe in CI.
+
+import feedparser
+
+# Configuration constants
+DEFAULT_REQUEST_TIMEOUT = 30
+FEED_FETCH_TIMEOUT = 20
+MIN_TEXT_LENGTH = 50
+MIN_CONTENT_LENGTH = 150
+MIN_CONTENT_DENSITY = 0.15
+MAX_SUMMARY_DISPLAY_LENGTH = 200
+MAX_CONTENT_DISPLAY_LENGTH = 500
+DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+DEFAULT_PER_HOST_DELAY_MS = 1500
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg')
+NON_IMAGE_PATTERNS = ('/ads/', '/banner/', '/logo/', '/icon/')
+AD_SELECTORS = [
+    '[class*="ad"]', '[class*="advertisement"]', '[class*="banner"]',
+    '[id*="ad"]', '[id*="advertisement"]', '[id*="banner"]',
+    '[class*="social"]', '[class*="share"]', '[class*="comment"]'
+]
+CONTENT_SELECTORS = [
+    'article',
+    '[class*="content"]',
+    '[class*="article"]',
+    '[class*="post"]',
+    '[class*="entry"]',
+    '.main-content',
+    '.article-content',
+    '.post-content',
+    '.entry-content',
+    '#content',
+    '#article',
+    '#post',
+    'div'
+]
 
 
 def load_env_file():
@@ -77,8 +109,81 @@ def save_json_cache(path: str, data: dict):
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️  Failed to save cache {path}: {e}")
+
+
+class EntryHelper:
+    """Helper class to extract data from feed entries with fallback support."""
+    
+    @staticmethod
+    def get_field(entry, field_name: str, default=''):
+        """Get field from entry, trying both dict-like and attribute access."""
+        try:
+            return entry.get(field_name, default)
+        except (AttributeError, TypeError):
+            return getattr(entry, field_name, default)
+    
+    @staticmethod
+    def get_summary(entry) -> str:
+        """Extract summary/description from entry with multiple fallbacks."""
+        # Try summary field
+        summary = EntryHelper.get_field(entry, 'summary', '')
+        if summary:
+            return summary
+        
+        # Try description field
+        summary = EntryHelper.get_field(entry, 'description', '')
+        if summary:
+            return summary
+        
+        # Try content field
+        content = EntryHelper.get_field(entry, 'content', [])
+        if content and len(content) > 0:
+            try:
+                return content[0].get('value', '')
+            except (AttributeError, TypeError):
+                return getattr(content[0], 'value', '') if hasattr(content[0], 'value') else ''
+        
+        return ''
+    
+    @staticmethod
+    def get_published_date(entry) -> Optional[str]:
+        """Extract published date in YYYY-MM-DD format."""
+        date_fields = ['published', 'pubDate', 'updated', 'date']
+        
+        for field in date_fields:
+            date_str = EntryHelper.get_field(entry, field, '')
+            if date_str:
+                try:
+                    parsed_date = date_parser.parse(date_str)
+                    return parsed_date.strftime('%Y-%m-%d')
+                except Exception:
+                    continue
+        
+        return None
+    
+    @staticmethod
+    def get_categories(entry) -> List[str]:
+        """Extract categories/tags from entry."""
+        categories = []
+        
+        # Try tags
+        tags = EntryHelper.get_field(entry, 'tags', []) or []
+        for tag in tags:
+            try:
+                term = tag.get('term') if hasattr(tag, 'get') else getattr(tag, 'term', None)
+                if term:
+                    categories.append(term)
+            except Exception:
+                pass
+        
+        # Try category
+        category = EntryHelper.get_field(entry, 'category', '')
+        if category:
+            categories.append(category)
+        
+        return list(set(categories))  # Remove duplicates
 
 
 class ImprovedFeedParser:
@@ -86,12 +191,12 @@ class ImprovedFeedParser:
     
     def __init__(self):
         self.session = requests.Session()
-        # Note: requests.Session does not support a persistent timeout; pass timeouts per request when needed
-        
-        # User-Agent for better compatibility
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': DEFAULT_USER_AGENT
         })
+        # Initialize attributes for per-host delay
+        self._host_last_time = {}
+        self._per_host_delay_ms = DEFAULT_PER_HOST_DELAY_MS
     
     def parse_feed(self, feed_url, max_retries=3):
         """Parse an RSS feed with improved error handling and fallbacks."""
@@ -104,10 +209,12 @@ class ImprovedFeedParser:
                     _feedparser = None
 
                 feed = None
-                # Fetch the URL ourselves first to get consistent behavior and
-                # to be able to inspect headers/content when parsing fails.
+                content_type = None
+                content_bytes = None
+                
+                # Fetch the URL ourselves first to get consistent behavior
                 try:
-                    resp = self.session.get(feed_url, timeout=20)
+                    resp = self.session.get(feed_url, timeout=FEED_FETCH_TIMEOUT)
                     resp.raise_for_status()
                     content_type = resp.headers.get('content-type')
                     content_bytes = resp.content
@@ -118,10 +225,7 @@ class ImprovedFeedParser:
                             feed = None
                             print(f"⚠️  feedparser.parse raised while parsing bytes: {e}")
                 except Exception as e:
-                    # If fetching fails, fall back to letting feedparser fetch itself
                     print(f"⚠️  HTTP fetch failed for {feed_url}: {e}")
-                    content_type = None
-                    content_bytes = None
                 
                 if not feed.bozo and feed.entries:
                     return feed
@@ -155,7 +259,7 @@ class ImprovedFeedParser:
     def _manual_xml_parse(self, feed_url):
         """Manual XML parsing for problematic feeds."""
         try:
-            response = self.session.get(feed_url)
+            response = self.session.get(feed_url, timeout=FEED_FETCH_TIMEOUT)
             response.raise_for_status()
             
             # Clean XML from invalid elements
@@ -188,6 +292,7 @@ class ImprovedFeedParser:
             return feed_data if feed_data['entries'] else None
             
         except Exception as e:
+            print(f"⚠️  Manual XML parsing failed for {feed_url}: {e}")
             return None
     
     def _clean_xml_content(self, xml_content):
@@ -224,8 +329,8 @@ class ImprovedFeedParser:
             if self._is_valid_entry(entry):
                 return entry
             
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️  Failed to create feed entry: {e}")
         
         return None
     
@@ -261,43 +366,6 @@ class ImprovedFeedParser:
         
         return original_url
     
-    def _process_improved_feed(self, improved_feed, feed_url):
-        """Process data returned by the improved feed parser."""
-        feed_info = {
-            'title': improved_feed.get('title', 'Untitled'),
-            'description': improved_feed.get('description', 'No description'),
-            'link': improved_feed.get('link', ''),
-            'entries': []
-        }
-        
-        # Process each entry
-        for entry in improved_feed.get('entries', []):
-            # Extract published date
-            published = None
-            if hasattr(entry, 'published') and entry.published:
-                try:
-                    published = date_parser.parse(entry.published).strftime('%Y-%m-%d')
-                except:
-                    published = entry.published
-            
-            # Create an article record for the improved parser
-            article = {
-                'title': getattr(entry, 'title', ''),
-                'link': getattr(entry, 'link', ''),
-                'summary': getattr(entry, 'description', ''),
-                'published': published,
-                'image': None,  # Improved parser does not extract images
-                'categories': [],  # Improved parser does not extract categories
-                'category': 'news',  # Default category
-                'feed_title': feed_info['title'],  # Add feed title
-                'feed_url': feed_url  # Add feed URL
-            }
-            
-            feed_info['entries'].append(article)
-        
-        return feed_info
-    
-
     def _respect_per_host_delay(self, feed_url: str):
         """Ensure we wait between requests to the same host to avoid throttling."""
         try:
@@ -313,76 +381,83 @@ class ImprovedFeedParser:
             pass
 
 
-def get_full_text(link: str) -> Optional[str]:
-    """
-    Extract the full text of an article given its URL.
+class ContentExtractor:
+    """Extracts full text content from web pages."""
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': DEFAULT_USER_AGENT
+        })
+    
+    def extract_full_text(self, link: str) -> Optional[str]:
+        """
+        Extract the full text of an article given its URL.
 
-    Args:
-        link: Article URL
+        Args:
+            link: Article URL
 
-    Returns:
-        Full text string or None if extraction failed
-    """
-    try:
-        # Load the page
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(link, headers=headers, timeout=30)
-        response.raise_for_status()
+        Returns:
+            Full text string or None if extraction failed
+        """
+        try:
+            response = self.session.get(link, timeout=DEFAULT_REQUEST_TIMEOUT)
+            response.raise_for_status()
 
-        # Determine encoding
-        if response.encoding == 'ISO-8859-1':
-            response.encoding = response.apparent_encoding
+            # Determine encoding
+            if response.encoding == 'ISO-8859-1':
+                response.encoding = response.apparent_encoding
 
-        # Parse HTML
-        soup = BeautifulSoup(response.content, 'html.parser')
+            # Parse HTML
+            soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Remove unwanted elements
-        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-            element.decompose()
-
-        # Remove advertisement blocks
-        ad_selectors = [
-            '[class*="ad"]', '[class*="advertisement"]', '[class*="banner"]',
-            '[id*="ad"]', '[id*="advertisement"]', '[id*="banner"]',
-            '[class*="social"]', '[class*="share"]', '[class*="comment"]'
-        ]
-        for selector in ad_selectors:
-            for element in soup.select(selector):
+            # Remove unwanted elements
+            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
                 element.decompose()
 
-        # Try to find the main content using BeautifulSoup heuristics first
-        content = None
+            # Remove advertisement blocks
+            for selector in AD_SELECTORS:
+                for element in soup.select(selector):
+                    element.decompose()
 
-        # Candidate selectors to inspect for main content
-        content_selectors = [
-            'article',
-            '[class*="content"]',
-            '[class*="article"]',
-            '[class*="post"]',
-            '[class*="entry"]',
-            '.main-content',
-            '.article-content',
-            '.post-content',
-            '.entry-content',
-            '#content',
-            '#article',
-            '#post',
-            'div'
-        ]
+            # Try to find the main content using BeautifulSoup heuristics first
+            content = self._find_best_content(soup, response.text)
 
+            if not content:
+                return None
+
+            # Extract and clean text
+            text = content.get_text(separator=' ', strip=True)
+            text = re.sub(r'\s+', ' ', text)  # Remove excessive whitespace
+            text = re.sub(r'\n\s*\n', '\n', text)  # Remove empty lines
+            text = text.strip()
+
+            # Verify text length is sufficient
+            if len(text) < MIN_TEXT_LENGTH:
+                return None
+
+            return text
+
+        except Exception as e:
+            print(f"⚠️  Error extracting text from {link}: {e}")
+            return None
+    
+    def _find_best_content(self, soup: BeautifulSoup, html_text: str) -> Optional[BeautifulSoup]:
+        """Find the best content element using heuristics and fallbacks."""
         candidates = []
-        for selector in content_selectors:
+        
+        for selector in CONTENT_SELECTORS:
             try:
                 elems = soup.select(selector)
             except Exception:
                 elems = []
+            
             for el in elems:
                 text = el.get_text(separator=' ', strip=True)
                 if not text:
                     continue
-                # score candidate by length and tag density (text / total length)
+                
+                # Score candidate by length and tag density
                 text_len = len(text)
                 html_len = len(str(el))
                 density = float(text_len) / max(1, html_len)
@@ -390,77 +465,65 @@ def get_full_text(link: str) -> Optional[str]:
                 candidates.append((score, text_len, density, el))
 
         if candidates:
-            # choose best candidate by score
             candidates.sort(key=lambda x: x[0], reverse=True)
             best = candidates[0]
-            if best[1] > 150 or best[2] > 0.15:
-                content = best[3]
+            if best[1] > MIN_CONTENT_LENGTH or best[2] > MIN_CONTENT_DENSITY:
+                return best[3]
 
-        # If BeautifulSoup heuristics didn't find good content, fall back to readability-lxml
-        if not content:
+        # Fallback to readability-lxml
+        return self._extract_with_readability(html_text)
+    
+    def _extract_with_readability(self, html_text: str) -> Optional[BeautifulSoup]:
+        """Try to extract content using readability-lxml library."""
+        try:
             try:
-                try:
-                    from readability import Document as _Document
-                except Exception:
-                    _Document = None
-
-                if _Document:
-                    doc = _Document(response.text)
-                    content_html = doc.summary()
-                    content_soup = BeautifulSoup(content_html, 'html.parser')
-                    content = content_soup
-                else:
-                    # readability not available; skip this fallback
-                    print("ℹ️  readability-lxml not installed; skipping fallback content extraction")
-            except Exception as e:
-                print(f"⚠️  readability-lxml failed to extract text: {e}")
+                from readability import Document as _Document
+            except ImportError:
+                print("ℹ️  readability-lxml not installed; skipping fallback content extraction")
                 return None
 
-        if not content:
+            doc = _Document(html_text)
+            content_html = doc.summary()
+            return BeautifulSoup(content_html, 'html.parser')
+            
+        except Exception as e:
+            print(f"⚠️  readability-lxml failed to extract text: {e}")
             return None
 
-        # Extract text
-        text = content.get_text(separator=' ', strip=True)
 
-        # Clean text
-        text = re.sub(r'\s+', ' ', text)  # Remove excessive whitespace
-        text = re.sub(r'\n\s*\n', '\n', text)  # Remove empty lines
-        text = text.strip()
+# Legacy function for backward compatibility
+def get_full_text(link: str) -> Optional[str]:
+    """
+    Extract the full text of an article given its URL.
+    Legacy wrapper around ContentExtractor.
+    
+    Args:
+        link: Article URL
 
-        # Verify text length is sufficient
-        if len(text) < 50:
-            return None
-
-        return text
-
-    except Exception as e:
-        print(f"⚠️  Error extracting text from {link}: {e}")
-        return None
+    Returns:
+        Full text string or None if extraction failed
+    """
+    extractor = ContentExtractor()
+    return extractor.extract_full_text(link)
 
 
 class RSSParser:
     """RSS parser class that extracts content and performs basic filtering."""
     
-    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_lock: threading.Lock = None, shared_uploaded_links: set = None):
+    def __init__(self, shared_host_last_time: dict = None, shared_processed_articles: set = None, shared_seen_links_runtime: set = None, shared_uploaded_links: set = None):
         # Load environment variables from .env file
         load_env_file()
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': os.getenv('RSS_USER_AGENT', 'Mozilla/5.0 (compatible; SpainQuePasaBot/1.0)')
+            'User-Agent': 'Mozilla/5.0 (compatible; SpainQuePasaBot/1.0)'
         })
-        # Anti-block: per-host delay, ETag/Last-Modified caches
-        # Allow sharing host timing between parser instances for correct per-host delay
-        self._host_last_time = shared_host_last_time if shared_host_last_time is not None else {}
-        # Shared lock to protect host timing and runtime sets when used concurrently
-        self._lock = shared_lock or threading.Lock()
 
-        self._bypass_db_cache = os.getenv('BYPASS_DB_CACHE', '0') == '1'
-        try:
-            self._per_host_delay_ms = int(os.getenv('RSS_PER_HOST_DELAY_MS', '1500'))
-        except Exception:
-            self._per_host_delay_ms = 1500
-        self._etag_cache_path = os.getenv('RSS_ETAG_CACHE', 'rss_etag_cache.json')
-        self._lm_cache_path = os.getenv('RSS_LM_CACHE', 'rss_lastmod_cache.json')
+        self._host_last_time = shared_host_last_time if shared_host_last_time is not None else {}
+
+        self._bypass_db_cache = False
+        self._per_host_delay_ms = 1500
+        self._etag_cache_path = 'rss_etag_cache.json'
+        self._lm_cache_path = 'rss_lastmod_cache.json'
         self._etag_cache = load_json_cache(self._etag_cache_path)
         self._lm_cache = load_json_cache(self._lm_cache_path)
 
@@ -482,73 +545,23 @@ class RSSParser:
             p = urlparse(feed_url)
             host = p.netloc
             now_ms = int(time.time() * 1000)
-            # Protect reads/writes to the shared host timing map
-            try:
-                # Compute required wait time while holding the lock, then sleep without the lock.
-                wait_ms = 0
-                with self._lock:
-                    last = self._host_last_time.get(host)
-                    if last:
-                        elapsed = now_ms - last
-                        if elapsed < self._per_host_delay_ms:
-                            wait_ms = self._per_host_delay_ms - elapsed
-                    else:
-                        # No previous access -> no wait
-                        wait_ms = 0
-
-                if wait_ms > 0:
-                    time.sleep(wait_ms / 1000.0)
-
-                # After sleeping (or immediately if no wait), update last access time under lock
-                with self._lock:
-                    self._host_last_time[host] = int(time.time() * 1000)
-            except Exception:
-                # Fallback: best-effort non-locked wait/update
-                last = self._host_last_time.get(host)
-                if last:
-                    elapsed = now_ms - last
-                    if elapsed < self._per_host_delay_ms:
-                        time.sleep((self._per_host_delay_ms - elapsed) / 1000.0)
-                self._host_last_time[host] = int(time.time() * 1000)
-        except Exception:
-            pass
-
-    
-    def _process_improved_feed(self, improved_feed, feed_url):
-        """Process data returned by the improved feed parser."""
-        feed_info = {
-            'title': improved_feed.get('title', 'Untitled'),
-            'description': improved_feed.get('description', 'No description'),
-            'link': improved_feed.get('link', ''),
-            'entries': []
-        }
-        
-        # Process each entry
-        for entry in improved_feed.get('entries', []):
-            # Extract published date
-            published = None
-            if hasattr(entry, 'published') and entry.published:
-                try:
-                    published = date_parser.parse(entry.published).strftime('%Y-%m-%d')
-                except:
-                    published = entry.published
             
-            # Create article record for improved parser
-            article = {
-                'title': getattr(entry, 'title', ''),
-                'link': getattr(entry, 'link', ''),
-                'summary': getattr(entry, 'description', ''),
-                'published': published,
-                'image': None,  # Improved parser does not extract images
-                'categories': [],  # Improved parser does not extract categories
-                'category': 'news',  # Default category
-                'feed_title': feed_info['title'],  # Add feed title
-                'feed_url': feed_url  # Add feed URL
-            }
-            
-            feed_info['entries'].append(article)
-        
-        return feed_info
+            # Check if we need to wait (dict access is atomic in Python)
+            last = self._host_last_time.get(host)
+            wait_ms = 0
+            if last:
+                elapsed = now_ms - last
+                if elapsed < self._per_host_delay_ms:
+                    wait_ms = self._per_host_delay_ms - elapsed
+
+            if wait_ms > 0:
+                time.sleep(wait_ms / 1000.0)
+
+            # Update last access time (dict write is atomic in Python)
+            self._host_last_time[host] = int(time.time() * 1000)
+                
+        except Exception as e:
+            print(f"⚠️  Error in per-host delay for {feed_url}: {e}")
 
     
     def save_article(self, article: Dict[str, Any]) -> Optional[str]:
@@ -600,13 +613,6 @@ class RSSParser:
                 status = self.pg.save_article(article_data)
                 # status is one of: 'inserted', 'exists', 'error'
                 if status == 'inserted':
-                    try:
-                        verbose = os.getenv('RSS_VERBOSE', '0')
-                        verbose = True if verbose.lower() in ('1', 'true', 'yes') else False
-                    except Exception:
-                        verbose = False
-                    if verbose:
-                        print(f"[RSS_VERBOSE] Article saved to Postgres: {article_id[:8]}")
                     return article_id
                 elif status == 'exists':
                     print(f"    🔁 Already in DB by id (Postgres): {article_id[:8]}")
@@ -640,7 +646,13 @@ class RSSParser:
             if feed_url in self._lm_cache:
                 headers['If-Modified-Since'] = self._lm_cache[feed_url]
 
-            response = self.session.get(feed_url, headers=headers, timeout=30)
+            response = self.session.get(feed_url, headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT)
+            
+            # Handle 304 Not Modified (no new content since last check)
+            if response.status_code == 304:
+                print(f"   ℹ️  Feed not modified since last check (304)")
+                return None
+            
             response.raise_for_status()
 
             # Save ETag/Last-Modified
@@ -654,27 +666,31 @@ class RSSParser:
                 save_json_cache(self._lm_cache_path, self._lm_cache)
 
             # Parse RSS with improved error handling
+            print(f"   🔍 Starting RSS parsing...")
             try:
                 # Use feedparser if available (lazy import)
-                try:
-                    import feedparser as _feedparser
-                except Exception:
-                    _feedparser = None
-
                 feed = None
-                if _feedparser:
-                    feed = _feedparser.parse(response.content)
+                content_type = response.headers.get('content-type', 'unknown')
+                content_bytes = response.content
+                
+                if feedparser:
+                    try:
+                        feed = feedparser.parse(content_bytes)
+                        print(f"   🔍 feedparser result: bozo={getattr(feed, 'bozo', 'N/A')}, entries={len(getattr(feed, 'entries', []))}")
+                    except Exception as fp_err:
+                        print(f"   ⚠️ feedparser.parse() exception: {fp_err}")
+                        feed = None
 
                 # If standard parsing failed or feedparser missing, try improved parser
                 if (not feed) or getattr(feed, 'bozo', False) or len(getattr(feed, 'entries', [])) == 0:
                     print(f"⚠️  Standard parsing failed or feedparser missing, trying improved parser...")
-                    # Diagnostic dump when content_bytes available
+                    # Diagnostic dump
                     try:
                         if content_bytes:
                             snippet = content_bytes[:800].decode('utf-8', 'replace')
                             print(f"⚠️  Response content-type={content_type}; snippet={snippet[:300].replace(chr(10),' ')}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"⚠️  Could not log diagnostic info: {e}")
 
                     # Try improved parser as a fallback which does manual XML parsing
                     try:
@@ -688,12 +704,12 @@ class RSSParser:
                             return None
                     except Exception as e:
                         print(f"❌ Improved parser exception: {e}")
-                        import traceback
                         traceback.print_exc()
                         return None
 
             except Exception as parse_error:
                 print(f"❌ RSS parsing error {feed_url}: {parse_error}")
+                traceback.print_exc()
 
                 # Try improved parser as a fallback
                 print(f"🔄 Trying improved parser as a fallback...")
@@ -710,6 +726,7 @@ class RSSParser:
 
                 except Exception as fallback_error:
                     print(f"❌ Fallback parser also failed: {fallback_error}")
+                    traceback.print_exc()
                     return None
 
             # Extract feed metadata
@@ -765,21 +782,14 @@ class RSSParser:
             Dictionary with article data
         """
         try:
-            # Helper to get field from both dict-like entries and SimpleNamespace
-            def _entry_get(name, default=''):
-                try:
-                    return entry.get(name, default)
-                except Exception:
-                    return getattr(entry, name, default)
-
-            # Extract main fields
+            # Extract main fields using EntryHelper
             parsed_entry = {
-                'title': _entry_get('title', ''),
-                'link': _entry_get('link', ''),
-                'summary': self._get_summary(entry),
-                'published': self._get_published_date(entry),
+                'title': EntryHelper.get_field(entry, 'title', ''),
+                'link': EntryHelper.get_field(entry, 'link', ''),
+                'summary': EntryHelper.get_summary(entry),
+                'published': EntryHelper.get_published_date(entry),
                 'image': self._get_image(entry),
-                'categories': self._get_categories(entry)
+                'categories': EntryHelper.get_categories(entry)
             }
             
             # Remove empty fields
@@ -788,56 +798,10 @@ class RSSParser:
             return parsed_entry
             
         except Exception as e:
-            print(f"Error parsing entry: {e}")
+            print(f"⚠️  Error parsing entry: {e}")
             return None
     
-    def _get_summary(self, entry) -> Optional[str]:
-        """Extract a short summary/description for an entry"""
-        # Try different fields for summary
-        try:
-            summary = entry.get('summary', '')
-        except Exception:
-            summary = getattr(entry, 'summary', '')
 
-        if not summary:
-            try:
-                summary = entry.get('description', '')
-            except Exception:
-                summary = getattr(entry, 'description', '')
-
-        if not summary:
-            # Try content
-            try:
-                content = entry.get('content', [])
-            except Exception:
-                content = getattr(entry, 'content', [])
-            if content and len(content) > 0:
-                try:
-                    summary = content[0].get('value', '')
-                except Exception:
-                    summary = getattr(content[0], 'value', '') if hasattr(content[0], 'value') else ''
-        
-        return summary
-    
-    def _get_published_date(self, entry) -> Optional[str]:
-        """Extract published date in YYYY-MM-DD format"""
-        date_fields = ['published', 'pubDate', 'updated', 'date']
-        
-        for field in date_fields:
-            try:
-                date_str = entry.get(field, '')
-            except Exception:
-                date_str = getattr(entry, field, '')
-
-            if date_str:
-                try:
-                    # Parse date using dateutil
-                    parsed_date = date_parser.parse(date_str)
-                    return parsed_date.strftime('%Y-%m-%d')
-                except:
-                    continue
-        
-        return None
     
     def _get_image(self, entry) -> Optional[str]:
         """
@@ -849,11 +813,8 @@ class RSSParser:
         Returns:
             Image URL or None if not found
         """
-    # 1. Try media:content (most reliable)
-        try:
-            media_content = entry.get('media_content', [])
-        except Exception:
-            media_content = getattr(entry, 'media_content', []) or []
+        # 1. Try media:content (most reliable)
+        media_content = EntryHelper.get_field(entry, 'media_content', []) or []
         for media in media_content:
             media_type = media.get('type', '')
             if media_type.startswith('image/'):
@@ -861,21 +822,15 @@ class RSSParser:
                 if url and self._is_valid_image_url(url):
                     return url
         
-    # 2. Try media:thumbnail
-        try:
-            media_thumbnail = entry.get('media_thumbnail', [])
-        except Exception:
-            media_thumbnail = getattr(entry, 'media_thumbnail', []) or []
+        # 2. Try media:thumbnail
+        media_thumbnail = EntryHelper.get_field(entry, 'media_thumbnail', []) or []
         if media_thumbnail:
             url = media_thumbnail[0].get('url')
             if url and self._is_valid_image_url(url):
                 return url
         
-    # 3. Try enclosures
-        try:
-            enclosures = entry.get('enclosures', [])
-        except Exception:
-            enclosures = getattr(entry, 'enclosures', []) or []
+        # 3. Try enclosures
+        enclosures = EntryHelper.get_field(entry, 'enclosures', []) or []
         for enclosure in enclosures:
             enclosure_type = enclosure.get('type', '')
             if enclosure_type.startswith('image/'):
@@ -883,11 +838,8 @@ class RSSParser:
                 if url and self._is_valid_image_url(url):
                     return url
         
-    # 4. Try links with image type
-        try:
-            links = entry.get('links', [])
-        except Exception:
-            links = getattr(entry, 'links', []) or []
+        # 4. Try links with image type
+        links = EntryHelper.get_field(entry, 'links', []) or []
         for link in links:
             link_type = link.get('type', '')
             if link_type.startswith('image/'):
@@ -895,21 +847,15 @@ class RSSParser:
                 if url and self._is_valid_image_url(url):
                     return url
         
-    # 5. Try extract from summary/description (look for img tags)
-        try:
-            summary = entry.get('summary', '') or entry.get('description', '')
-        except Exception:
-            summary = getattr(entry, 'summary', '') or getattr(entry, 'description', '')
+        # 5. Try extract from summary/description (look for img tags)
+        summary = EntryHelper.get_summary(entry)
         if summary:
             img_url = self._extract_image_from_html(summary)
             if img_url:
                 return img_url
         
-    # 6. Try content with HTML
-        try:
-            content = entry.get('content', [])
-        except Exception:
-            content = getattr(entry, 'content', []) or []
+        # 6. Try content with HTML
+        content = EntryHelper.get_field(entry, 'content', []) or []
         if content and len(content) > 0:
             content_value = content[0].get('value', '')
             if content_value:
@@ -917,11 +863,8 @@ class RSSParser:
                 if img_url:
                     return img_url
         
-    # 7. Try extract from title (if it contains HTML)
-        try:
-            title = entry.get('title', '')
-        except Exception:
-            title = getattr(entry, 'title', '')
+        # 7. Try extract from title (if it contains HTML)
+        title = EntryHelper.get_field(entry, 'title', '')
         if title:
             img_url = self._extract_image_from_html(title)
             if img_url:
@@ -942,20 +885,15 @@ class RSSParser:
         if not url:
             return False
         
-    # Check file extension
-        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
         url_lower = url.lower()
         
-    # Check extension in URL
-        for ext in image_extensions:
-            if ext in url_lower:
-                return True
+        # Check file extension
+        if any(ext in url_lower for ext in IMAGE_EXTENSIONS):
+            return True
         
-    # Ensure URL does not clearly point to a non-image
-        non_image_patterns = ['/ads/', '/banner/', '/logo/', '/icon/']
-        for pattern in non_image_patterns:
-            if pattern in url_lower:
-                return False
+        # Ensure URL does not clearly point to a non-image
+        if any(pattern in url_lower for pattern in NON_IMAGE_PATTERNS):
+            return False
         
         return True
     
@@ -994,35 +932,148 @@ class RSSParser:
         except Exception as e:
             print(f"⚠️  Error extracting image from HTML: {e}")
             return None
-    
-    def _get_categories(self, entry) -> List[str]:
-        """Extract categories/tags from entry"""
-        categories = []
-        
-    # Try tags
+
+    def _is_valuable_article(self, article: Dict[str, Any]) -> bool:
+        """
+        Heuristic to decide whether an article is worth full-text extraction.
+        Uses GPT-5-nano to classify news as trash or valuable.
+        """        
         try:
-            tags = entry.get('tags', [])
-        except Exception:
-            tags = getattr(entry, 'tags', []) or []
-        for tag in tags:
+
+            import openai
+            
+            # Get title and description (limit to first 300 chars to save tokens)
+            title = article.get('title', '')
+            
+            # Skip if title is empty
+            if not title:
+                return True
+            
+            # System prompt for spam detection
+            system_prompt = """
+ROLE: Spam Filter for Spain News.
+TASK: Output JSON {"trash": true} or {"trash": false}.
+
+TRASH RULES (true):
+1. SPORT: Scores, match results, transfers (Real Madrid, Barca, Nadal, F1).
+2. LIFESTYLE: Recipes ("Receta", "Gastronomía"), Fashion trends, "Best gifts", Shopping lists.
+3. ESOTERIC: "Santoral" (Saint of the day), Horoscopes, Tarot.
+4. GOSSIP: Royal family (Meghan, Harry, Felipe VI social), Celebrities, TV Shows ("Operación Triunfo").
+5. TRIVIA: "Curiosities", "Viral videos", "Funny animals".
+
+KEEP RULES (false):
+- Politics, Laws, Government decisions (Sánchez, Feijóo, Bruselas).
+- Economy, Taxes, Housing ("Vivienda"), Inflation, ERE (Layoffs).
+- Strikes ("Huelga"), Protests, Major Infrastructure.
+- Health alerts, Epidemics, Serious Crime (Drugs, Terrorism)."""
+            
+            # User prompt with examples
+            user_prompt = f"""Examples:
+Input: "Real Madrid won 3-0 against Betis" -> {{"trash": true}}
+Input: "New tax law for expats approved in Spain" -> {{"trash": false}}
+Input: "Shakira spotted in Miami" -> {{"trash": true}}
+Input: "Massive strike in Madrid Metro announced" -> {{"trash": false}}
+
+Analyze this:
+Title: {title}"""
+            
+            # Call OpenAI API with timeout
+            client = openai.OpenAI(
+                api_key=os.getenv('OPENAI_API_KEY'),
+                timeout=10.0  # 10 second timeout
+            )
+            response = client.chat.completions.create(
+                model='gpt-5-nano',
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_completion_tokens=50,
+                reasoning_effort='minimal',
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse response and get token usage
+            content = response.choices[0].message.content
+            
+            if not content or content.strip() == '':
+                print(f"    ⚠️ AI returned empty response, defaulting to valuable")
+                return True, 0
+
             try:
-                if tag.get('term'):
-                    categories.append(tag['term'])
-            except Exception:
-                # tag may be a SimpleNamespace
-                term = getattr(tag, 'term', None)
-                if term:
-                    categories.append(term)
+                result = json.loads(content)
+            except json.JSONDecodeError as json_err:
+                print(f"    ⚠️ AI returned invalid JSON: {content[:100]}, error: {json_err}")
+                return True, 0
+
+            is_trash = result.get('trash', False)
+
+            # Get token usage from response
+            tokens_used = 0
+            if hasattr(response, 'usage') and response.usage:
+                tokens_used = getattr(response.usage, 'total_tokens', 0)
+
+            if is_trash:
+                print(f"    🗑️ AI classified as trash: {title[:50]}")
+                return False, tokens_used
+            else:
+                print(f"    ✅ AI classified as valuable: {title[:50]}")
+                return True, tokens_used
+            
+        except openai.APITimeoutError as e:
+            print(f"    ⏱️ AI filter timeout after 10s: {e}, defaulting to valuable")
+            return True, 0  # On timeout, consider article valuable to avoid losing content
+        except openai.APIError as api_err:
+            print(f"    ⚠️ OpenAI API error: {api_err}, defaulting to valuable")
+            return True, 0
+        except Exception as e:
+            print(f"    ⚠️ AI filter error: {type(e).__name__}: {e}, defaulting to valuable")
+            return True, 0  # On error, consider article valuable to avoid losing content
+    
+    def _is_duplicate_by_various_checks(self, article_link: str, article_title: str, article_summary: str, article_link_norm: str) -> bool:
+        """
+        Consolidated duplicate check using multiple methods.
         
-    # Try category
-        try:
-            category = entry.get('category', '')
-        except Exception:
-            category = getattr(entry, 'category', '')
-        if category:
-            categories.append(category)
+        Returns:
+            True if article is a duplicate, False otherwise
+        """
+        # Check processed_articles (set membership check is atomic)
+        if article_link_norm and article_link_norm in self.processed_articles:
+            print(f"    ⚠️  Duplicate in processed_articles")
+            return True
         
-        return list(set(categories))  # Remove duplicates
+        # Check runtime seen links
+        if article_link_norm and article_link_norm in self._seen_links_runtime:
+            print(f"    ⚠️  Duplicate link in current run")
+            return True
+        
+        # Check recently uploaded (last 24h)
+        if article_link_norm and article_link_norm in self._uploaded_links:
+            print(f"    🔁 Recently processed within 24h")
+            return True
+        
+        # Check Postgres duplicate by link
+        if not self._bypass_db_cache and self.pg:
+            try:
+                if hasattr(self.pg, 'is_duplicate_by_link') and self.pg.is_duplicate_by_link(article_link):
+                    print(f"    🔁 Already in DB by link (Postgres)")
+                    return True
+            except Exception as e:
+                print(f"    ⚠️  Duplicate-by-link check error (Postgres): {e}")
+            
+            # Check recently skipped entries
+            try:
+                if hasattr(self.pg, 'was_skipped_recently') and self.pg.was_skipped_recently(article_link, article_title, article_summary):
+                    print(f"    🔁 Previously skipped (SKIPPED cache)")
+                    return True
+            except Exception as e:
+                print(f"    ⚠️  SKIPPED check error (Postgres): {e}")
+        
+        # Final comprehensive duplicate check
+        if not self._bypass_db_cache and self.is_duplicate({'link': article_link, 'title': article_title}):
+            return True
+        
+        return False
 
 
     def filter_articles(self, articles: List[Dict[str, Any]], feed_url: str = None, return_stats: bool = False):
@@ -1043,7 +1094,9 @@ class RSSParser:
             'valid': 0,
             'duplicates': 0,
             'text_extracted': 0,
-            'saved': 0
+            'saved': 0,
+            'wasted': 0,
+            'tokens_used': 0
         }
 
         # Limit number of articles only for tests (can be disabled)
@@ -1074,122 +1127,97 @@ class RSSParser:
         for i, article in enumerate(articles, 1):
             print(f"  Checking article {i}/{len(articles)}: {article.get('title', '')[:50]}...")
             
-            # Check article uniqueness by normalized link only
+            # Check article uniqueness by normalized link
             article_link = article.get('link', '')
             article_title = article.get('title', '')
+            article_summary = article.get('summary', '')
             article_link_norm = _norm_link(article_link) if article_link else ''
             stats['valid'] += 1
             
-            # Check processed_articles with lock when shared between threads (use normalized link)
-            try:
-                with self._lock:
-                    if article_link_norm and article_link_norm in self.processed_articles:
-                        print(f"    ⚠️  Duplicate: {article_title[:30]}...")
-                        stats['duplicates'] += 1
-                        duplicate_count += 1
-                        continue
-            except Exception:
-                if article_link_norm and article_link_norm in self.processed_articles:
-                    print(f"    ⚠️  Duplicate: {article_title[:30]}...")
-                    stats['duplicates'] += 1
-                    duplicate_count += 1
-                    continue
-
-            # Local duplicate in current run (use normalized link)
-            try:
-                with self._lock:
-                    if article_link_norm and article_link_norm in self._seen_links_runtime:
-                        print(f"    ⚠️  Duplicate link in current run, skipping")
-                        duplicate_count += 1
-                        continue
-                    if article_link_norm:
-                        self._seen_links_runtime.add(article_link_norm)
-            except Exception:
-                if article_link_norm and article_link_norm in self._seen_links_runtime:
-                    print(f"    ⚠️  Duplicate link in current run, skipping")
-                    duplicate_count += 1
-                    continue
-                if article_link_norm:
-                    self._seen_links_runtime.add(article_link_norm)
-
-            # QUICK CHECK: if link was seen in the last 24 hours (prefetched), skip
-            try:
-                if article_link_norm and article_link_norm in getattr(self, '_uploaded_links', set()):
-                    print(f"    🔁 Recently processed within 24h, skipping")
-                    duplicate_count += 1
-                    continue
-            except Exception:
-                # Fail-safe: if something goes wrong with recent-links set, continue normally
-                pass
-
-            # Check duplicate by link using Postgres (if available)
-            try:
-                if (not self._bypass_db_cache) and self.pg and hasattr(self.pg, 'is_duplicate_by_link'):
-                    try:
-                        if self.pg.is_duplicate_by_link(article_link):
-                            print(f"    🔁 Already in DB by link (Postgres), skipping")
-                            duplicate_count += 1
-                            continue
-                    except Exception as e:
-                        print(f"    ⚠️  Duplicate-by-link check error (Postgres): {e}")
-            except Exception:
-                pass
-
-            # Check: recently skipped entries (Postgres helper if available)
-            try:
-                if (not self._bypass_db_cache) and self.pg and hasattr(self.pg, 'was_skipped_recently'):
-                    try:
-                        if self.pg.was_skipped_recently(article_link, article_title, article.get('summary', '')):
-                            print(f"    🔁 Previously skipped (SKIPPED cache), skipping")
-                            duplicate_count += 1
-                            continue
-                    except Exception as e:
-                        print(f"    ⚠️  SKIPPED check error (Postgres): {e}")
-            except Exception:
-                pass
-
-            # Final duplicate check (Postgres-backed) — prefer link-only check
-            if (not self._bypass_db_cache) and self.is_duplicate(article):
+            # Consolidated duplicate check
+            if self._is_duplicate_by_various_checks(article_link, article_title, article_summary, article_link_norm):
+                stats['duplicates'] += 1
                 duplicate_count += 1
                 continue
             
-            # Attempt to extract full text for non-duplicate articles
-            print(f"    ⬇️ Extracting full text...")
-            if article.get('link'):
-                full_text = get_full_text(article['link'])
-                if full_text:
-                    article['content'] = full_text
-                    print(f"    📄 Full text extracted ({len(full_text)} characters)")
-                    stats['text_extracted'] += 1
+            # Add to seen links (set.add is atomic)
+            if article_link_norm:
+                self._seen_links_runtime.add(article_link_norm)
+            # Decide if article is valuable enough to fetch full text
+            try:
+                result = self._is_valuable_article(article)
+                if isinstance(result, tuple):
+                    valuable, tokens = result
+                    stats['tokens_used'] += tokens
+                else:
+                    valuable = result
+            except Exception:
+                valuable = True
 
-                    try:
-                        article_id = self.save_article(article)
-                        if article_id:
-                            article['article_id'] = article_id
-                            stats['saved'] += 1
-                            saved_count += 1
-                        else:
-                            print(f"    ⚠️  Failed to persist article to Postgres: {article.get('title','')[:40]}")
-                    except RuntimeError:
-                        raise
-                    except Exception as e:
-                        # Non-initialization errors when saving should be logged but
-                        # not crash the entire run.
-                        print(f"    ⚠️  Exception while saving article: {e}")
+            if not valuable:
+                print(f"    💤 Article considered low-value — saving as wasted")
+                # mark as wasted and save minimal record
+                article_min = {
+                    'title': article.get('title', ''),
+                    'link': article.get('link', ''),
+                    'summary': article.get('summary', ''),
+                    'published': article.get('published', None),
+                    'image': article.get('image', ''),
+                    'categories': article.get('categories', []),
+                    'feed_title': article.get('feed_title', ''),
+                    'feed_url': article.get('feed_url', ''),
+                    'status': 'WASTED'
+                }
 
-                    # Mark as processed in this run and append to results (protected by lock)
-                    try:
-                        with self._lock:
-                            # store normalized link as processed key
-                            self.processed_articles.add(article_link_norm)
-                            filtered_articles.append(article)
-                    except Exception:
+                try:
+                    article_id = self.save_article(article_min)
+                    if article_id:
+                        article_min['article_id'] = article_id
+                        stats['saved'] += 1
+                        stats['wasted'] += 1
+                        saved_count += 1
+                    else:
+                        print(f"    ⚠️  Failed to persist wasted article: {article.get('title','')[:40]}")
+                except Exception as e:
+                    print(f"    ⚠️  Exception while saving wasted article: {e}")
+
+                self.processed_articles.add(article_link_norm)
+                filtered_articles.append(article_min)
+
+                continue
+
+            # Attempt to extract full text only if article marked valuable
+            if valuable:
+                print(f"    ⬇️ Extracting full text...")
+                if article.get('link'):
+                    full_text = get_full_text(article['link'])
+                    if full_text:
+                        article['content'] = full_text
+                        print(f"    📄 Full text extracted ({len(full_text)} characters)")
+                        stats['text_extracted'] += 1
+
+                        try:
+                            article_id = self.save_article(article)
+                            if article_id:
+                                article['article_id'] = article_id
+                                stats['saved'] += 1
+                                saved_count += 1
+                            else:
+                                print(f"    ⚠️  Failed to persist article to Postgres: {article.get('title','')[:40]}")
+                        except RuntimeError:
+                            raise
+                        except Exception as e:
+                            print(f"    ⚠️  Exception while saving article: {e}")
+
                         self.processed_articles.add(article_link_norm)
                         filtered_articles.append(article)
+                    else:
+                        print(f"    ⚠️  Failed to extract full text")
                 else:
-                    print(f"    ⚠️  Failed to extract full text")
+                    print(f"    ⚠️  No link to extract text from")
             else:
-                print(f"    ⚠️  No link to extract text from")
+                # Defensive: should not reach here because non-valuable articles are continued above
+                print(f"    ⚠️  Skipping full-text extraction (article not valuable)")
         
         feed_stats = f"{feed_info} " if feed_info else ""
         print(f"\n{feed_stats}📊 PROCESSING STATISTICS:")
@@ -1198,6 +1226,8 @@ class RSSParser:
         print(f"   🔄 Duplicates skipped: {stats['duplicates']}")
         print(f"   📄 Full text extracted: {stats['text_extracted']}")
         print(f"   💾 Articles saved: {stats['saved']}")
+        print(f"   💭 Wasted (low-value): {stats['wasted']}")
+        print(f"   💰 Tokens used: {stats['tokens_used']}")
         print(f"ℹ️  Next step: generate articles from filtered announcements")
         if return_stats:
             return filtered_articles, stats
@@ -1258,8 +1288,8 @@ class RSSParser:
                 if article.get('summary'):
                     # Truncate long description
                     summary = article['summary']
-                    if len(summary) > 200:
-                        summary = summary[:200] + "..."
+                    if len(summary) > MAX_SUMMARY_DISPLAY_LENGTH:
+                        summary = summary[:MAX_SUMMARY_DISPLAY_LENGTH] + "..."
                     print(f"Description: {summary}")
                 
                 if article.get('image'):
@@ -1268,11 +1298,11 @@ class RSSParser:
                 if article.get('categories'):
                     print(f"Categories: {', '.join(article['categories'])}")
                 
-                # Show full text (truncated to 500 characters)
+                # Show full text (truncated)
                 if article.get('content'):
                     content = article['content']
-                    if len(content) > 500:
-                        content = content[:500] + "..."
+                    if len(content) > MAX_CONTENT_DISPLAY_LENGTH:
+                        content = content[:MAX_CONTENT_DISPLAY_LENGTH] + "..."
                     print(f"Full text: {content}")
             
             print()
@@ -1307,11 +1337,10 @@ class RSSParser:
         shared_host_last_time = {}
         shared_processed_articles = set()
         shared_seen_links_runtime = set()
-        shared_lock = threading.Lock()
 
         # Number of parallel feed workers (configurable)
         try:
-            max_workers = int(os.getenv('RSS_PARALLEL_FEEDS', '4'))
+            max_workers = 4
         except Exception:
             max_workers = 4
 
@@ -1319,45 +1348,42 @@ class RSSParser:
         total_processed = 0
         total_saved = 0
 
-        # Worker that processes a single feed using its own parser but shared runtime state
         def _process_feed(feed_url: str):
             try:
                 print(f"\n🔄 Processing (worker) feed: {feed_url}")
                 parser = RSSParser(shared_host_last_time=shared_host_last_time,
                                    shared_processed_articles=shared_processed_articles,
                                    shared_seen_links_runtime=shared_seen_links_runtime,
-                                   shared_lock=shared_lock,
                                    shared_uploaded_links=shared_uploaded_links)
 
                 feed_data = parser.parse_feed(feed_url)
                 if not feed_data or not feed_data.get('entries'):
                     print(f"   ⚠️  Failed to load RSS feed: {feed_url}")
-                    # Return empty filtered list and stats indicating zero
                     return [], {'url': feed_url, 'total': 0, 'removed': 0, 'saved': 0}
 
                 articles = feed_data['entries']
-                try:
-                    max_per_feed = int(os.getenv('RSS_MAX_ITEMS_PER_FEED', '0') or '0')
-                except Exception:
-                    max_per_feed = 0
+
+                max_per_feed = 0
                 total_in_feed = len(articles)
                 if max_per_feed and total_in_feed > max_per_feed:
                     print(f"   ⚖️ Limiting {total_in_feed} → {max_per_feed} items for this feed (RSS_MAX_ITEMS_PER_FEED)")
                     articles = articles[:max_per_feed]
 
                 filtered, stats = parser.filter_articles(articles, feed_url=feed_url, return_stats=True)
-                # Build a compact per-feed stats row
+
                 feed_stats = {
                     'url': feed_url,
                     'total': stats.get('total', len(articles)),
                     'removed': stats.get('total', len(articles)) - stats.get('saved', len(filtered)),
-                    'saved': stats.get('saved', len(filtered))
+                    'saved': stats.get('saved', len(filtered)),
+                    'wasted': stats.get('wasted', 0),
+                    'tokens': stats.get('tokens_used', 0)
                 }
                 print(f"   📊 Worker processed {len(filtered)} filtered articles for feed {feed_url} (saved={feed_stats['saved']})")
                 return filtered, feed_stats
             except Exception as e:
                 print(f"   ❌ Error processing {feed_url}: {e}")
-                return [], {'url': feed_url, 'total': 0, 'removed': 0, 'saved': 0}
+                return [], {'url': feed_url, 'total': 0, 'removed': 0, 'saved': 0, 'wasted': 0, 'tokens': 0}
 
         # Run feed processing in parallel
         futures = []
@@ -1365,7 +1391,6 @@ class RSSParser:
             for feed_url in feeds:
                 futures.append(ex.submit(_process_feed, feed_url))
 
-            # Collect results and per-feed stats from futures
             per_feed_stats = []
             for f in as_completed(futures):
                 try:
@@ -1386,7 +1411,10 @@ class RSSParser:
                         per_feed_stats.append(feed_stats)
                 except Exception as e:
                     print(f"   ❌ Worker future error: {e}")
-        # After processing all feeds, show final statistics
+
+        # Calculate total tokens used
+        total_tokens = sum(row.get('tokens', 0) for row in per_feed_stats)
+        
         print("\n" + "=" * 60)
         print(f"🎯 FINAL STATISTICS:")
         print(f"   📋 Feeds processed: {len(feeds)}")
@@ -1394,38 +1422,42 @@ class RSSParser:
         print(f"   🤖 Articles filtered: {total_processed}")
         print(f"   💾 Articles saved for generation: {total_saved}")
         print(f"   🔄 Unique processed articles: {len(shared_processed_articles)}")
+        print(f"   🪙 Total tokens used: {total_tokens:,}")
 
-        # Print per-feed table: URL : #of articles : # of removed : # of saved
+
         if per_feed_stats:
-            print('\n' + '-' * 80)
+            print('\n' + '-' * 105)
             print('Per-feed import summary:')
-            print(f"{'URL':60} {'#found':>7} {'#removed':>9} {'#saved':>7}")
-            print('-' * 80)
-            totals = {'total': 0, 'removed': 0, 'saved': 0}
+            print(f"{'URL':60} {'#found':>7} {'#removed':>9} {'#saved':>7} {'#wasted':>8} {'tokens':>10}")
+            print('-' * 105)
+            totals = {'total': 0, 'removed': 0, 'saved': 0, 'wasted': 0, 'tokens': 0}
             for row in per_feed_stats:
                 url = (row.get('url') or '')[:60]
                 found = int(row.get('total', 0))
                 removed = int(row.get('removed', 0))
                 saved = int(row.get('saved', 0))
-                print(f"{url:60} {found:7d} {removed:9d} {saved:7d}")
+                wasted = int(row.get('wasted', 0))
+                tokens = int(row.get('tokens', 0))
+                print(f"{url:60} {found:7d} {removed:9d} {saved:7d} {wasted:8d} {tokens:10d}")
                 totals['total'] += found
                 totals['removed'] += removed
                 totals['saved'] += saved
+                totals['wasted'] += wasted
+                totals['tokens'] += tokens
 
             # Totals row
-            print('-' * 80)
-            print(f"{'TOTAL':60} {totals['total']:7d} {totals['removed']:9d} {totals['saved']:7d}")
-            print('-' * 80)
+            print('-' * 105)
+            print(f"{'TOTAL':60} {totals['total']:7d} {totals['removed']:9d} {totals['saved']:7d} {totals['wasted']:8d} {totals['tokens']:10d}")
+            print('-' * 105)
 
         print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
-        # Optional cleanup: purge old articles older than 15 days from Postgres
         try:
-            if hasattr(self, 'pg') and self.pg:
+            if self.pg:
                 try:
-                    deleted = self.pg.purge_older_than(15)
+                    deleted = self.pg.purge_older_than(7)
                     if deleted >= 0:
-                        print(f"   🧹 Purged {deleted} articles older than 15 days from Postgres")
+                        print(f"   🧹 Purged {deleted} articles older than 8 days from Postgres")
                     else:
                         print("   🧹 Purge executed but rowcount unknown")
                 except Exception as e:
@@ -1453,6 +1485,7 @@ class RSSParser:
             print(f"❌ Error loading file {filename}: {e}")
             return []
 
+
     def is_duplicate(self, article: Dict[str, Any]) -> bool:
         """
         Check whether the article already exists in the Firebase database.
@@ -1466,7 +1499,6 @@ class RSSParser:
         article_link = article.get('link', '')
         article_title = article.get('title', '')
 
-        # Prefer Postgres duplicate checks
         try:
             if not self.pg:
                 from workers.tools.pg_client import get_pg_client
@@ -1490,11 +1522,9 @@ def main():
     parser = argparse.ArgumentParser(description='RSS Parser for Russian-speaking migrants in Spain')
     parser.add_argument('url', nargs='?', help='RSS feed URL to parse')
     parser.add_argument('--feeds', '-f', default='feeds.txt', help='File with list of RSS feed URLs (default: feeds.txt)')
-    parser.add_argument('--no-filter', action='store_true', help='Skip filtering')
     parser.add_argument('--display-all', action='store_true', help='Display all items, including not interesting ones')
     
     args = parser.parse_args()
-    
     rss_parser = RSSParser()
     
     if args.url:
@@ -1510,26 +1540,19 @@ def main():
             print(f"Link: {feed_data.get('link', 'No link')}")
             print("=" * 80)
             
-            if args.no_filter:
-                rss_parser.display_feed(feed_data['entries'], show_all=True)
+            result = rss_parser.filter_articles(feed_data['entries'])
+
+            if isinstance(result, tuple):
+                filtered_articles = result[0]
             else:
-                result = rss_parser.filter_articles(feed_data['entries'])
-                # filter_articles may return (filtered, stats) if return_stats=True; keep compatibility
-                if isinstance(result, tuple):
-                    filtered_articles = result[0]
-                else:
-                    filtered_articles = result
-                rss_parser.display_feed(filtered_articles, show_all=args.display_all)
+                filtered_articles = result
+            rss_parser.display_feed(filtered_articles, show_all=args.display_all)
         else:
             print("❌ Failed to load RSS feed")
     else:
         # Process multiple RSS feeds
         print("🚀 Starting processing multiple RSS feeds")
         print("=" * 60)
-
-        if args.no_filter:
-            print("⚠️  --no-filter mode is not supported for multiple RSS feeds")
-            return
 
         all_articles = rss_parser.process_multiple_feeds(args.feeds)
 
