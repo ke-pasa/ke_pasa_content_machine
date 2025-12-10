@@ -57,10 +57,7 @@ def sync_to_git_repo(article_ids: list[str] = None) -> dict:
         subprocess.run(['git', 'clone', '--depth', '1', '--branch', branch, repo_url, temp_dir], check=True, capture_output=True)
         
         target_dir = os.path.join(temp_dir, 'src', 'content', 'news')
-        
-        # Ensure target directory exists (clean it first)
-        if os.path.exists(target_dir):
-            shutil.rmtree(target_dir)
+
         os.makedirs(target_dir, exist_ok=True)
         
         # 3. Write files
@@ -102,6 +99,43 @@ def sync_to_git_repo(article_ids: list[str] = None) -> dict:
             subprocess.run(['git', 'commit', '-m', msg], cwd=temp_dir, check=True)
             logging.info("Pushing changes...")
             subprocess.run(['git', 'push', repo_url, branch], cwd=temp_dir, check=True)
+            # After successful push, remove local article files that were the source
+            try:
+                local_articles_dir = 'articles'
+                local_root = os.path.join(str(root_dir), local_articles_dir)
+                removed_count = 0
+                import re as _re
+                for art in articles_to_sync:
+                    try:
+                        md = art.get('publish_md')
+                        slug = None
+                        if isinstance(md, str):
+                            m = _re.search(r'^slug:\s*(.+)$', md, _re.MULTILINE)
+                            if m:
+                                slug = m.group(1).strip().strip('"\'')
+                        if not slug:
+                            title = art.get('title_ru') or 'article'
+                            slug = _re.sub(r'[^a-z0-9\-]', '-', (title or '').lower())
+                            slug = _re.sub(r'-{2,}', '-', slug).strip('-')
+                            if not slug:
+                                slug = str(art.get('article_id') or art.get('id'))
+
+                        filename = f"{slug}_{art.get('article_id') or art.get('id')}.md"
+                        local_path = os.path.join(local_root, filename)
+                        if os.path.exists(local_path):
+                            try:
+                                os.remove(local_path)
+                                removed_count += 1
+                            except Exception as rm_err:
+                                logging.warning(f"Failed to remove local article file {local_path}: {rm_err}")
+                                results['errors'].append(f"Failed to remove local article file {local_path}: {rm_err}")
+                    except Exception as perr:
+                        logging.warning(f"Error while pruning local file for article {art.get('id')}: {perr}")
+                        results['errors'].append(f"Prune error for {art.get('id')}: {perr}")
+                if removed_count:
+                    logging.info(f"Removed {removed_count} local article file(s) from {local_root} after sync")
+            except Exception:
+                logging.exception('Failed during local articles pruning step')
             logging.info("✅ Git sync successful")
 
     except subprocess.CalledProcessError as e:
