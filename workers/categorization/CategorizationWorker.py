@@ -9,11 +9,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib
 
-from .news_filter_prompt import get_news_filter_prompt, TOPIC_MATCH_PROMPT
+from .news_filter_prompt import get_news_filter_prompt
 from workers.tools.openai_client import parse_json_from_text
-from workers.tools.constants import MIN_ARTICLE_SCORE
-
-# Firebase client removed — this worker uses Postgres via `workers.tools.pg_client`.
+from workers.tools.constants import MIN_ARTICLE_SCORE, SHORT_NOTE_THRESHOLD, PUBLISH_THRESHOLD
+import os
+import json as _json
 
 
 def _get_openai_client():
@@ -28,14 +28,49 @@ def _get_openai_client():
 
 
 def _chat_completion(client, model, messages, max_tokens=600, temperature=0):
+    """Wrapper that returns (text, usage_dict) tuple."""
     try:
-        worker_mod = importlib.import_module('workers.categorization.worker')
-        if hasattr(worker_mod, 'chat_completion'):
-            return worker_mod.chat_completion(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+        # Call responses API directly to get usage info
+        req_kwargs = {
+            'model': model,
+            'input': messages,  # Note: Responses API uses 'input', not 'messages'
+            'max_output_tokens': max_tokens,
+            'stream': False,
+        }
+        
+        # Only GPT-4o models support temperature
+        if model.startswith('gpt-4') or model.startswith('gpt-3'):
+            req_kwargs['temperature'] = temperature
+        
+        resp = client.responses.create(**req_kwargs)
+        
+        # Extract text
+        text = getattr(resp, 'output_text', None)
+        if text and isinstance(text, str):
+            text = text.strip()
+        
+        # Extract usage
+        usage_dict = None
+        try:
+            usage = getattr(resp, 'usage', None)
+            if usage:
+                prompt_tokens = getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0)
+                completion_tokens = getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0)
+                total_tokens = getattr(usage, 'total_tokens', 0) or (prompt_tokens + completion_tokens)
+                usage_dict = {
+                    'prompt_tokens': prompt_tokens,
+                    'completion_tokens': completion_tokens,
+                    'total_tokens': total_tokens
+                }
+        except Exception:
+            pass
+        
+        return (text, usage_dict)
     except Exception:
-        pass
-    from workers.tools.openai_client import chat_completion as _cc
-    return _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+        # Fallback to standard chat_completion
+        from workers.tools.openai_client import chat_completion as _cc
+        text = _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+        return (text, None)
 
 
 def _parse_json_from_text(text: str):
@@ -61,6 +96,7 @@ class CategorizationWorker:
 
     def __init__(self, config: CategorizationConfig = None, batch_size: int = None):
         self.config = config or CategorizationConfig.from_env()
+        self.logger = logging.getLogger('workers.categorization')
 
         if batch_size is not None:
             try:
@@ -73,6 +109,8 @@ class CategorizationWorker:
         from workers.tools.pg_client import get_pg_client
         self.pg = get_pg_client()
         self.instance_id = str(uuid.uuid4())[:8]
+        self.embedding_model = os.environ.get('EMBEDDING_MODEL', 'text-embedding-3-small')
+        self.similarity_threshold = float(os.environ.get('TOPIC_SIMILARITY_THRESHOLD', '0.70'))
 
 
     def _deduplicate_by_topic(self, topic_id: int):
@@ -112,18 +150,232 @@ class CategorizationWorker:
 
             if dedup_ids:
                 updated_count = self.pg.set_articles_status(dedup_ids, 'DEDUPLICATED')
-                logging.getLogger('workers.categorization').info(f"Deduplicated {updated_count} articles in topic {topic_id}: {dedup_ids}")
+                self.logger.info(f"Deduplicated {updated_count} articles in topic {topic_id}: {dedup_ids}")
 
         except Exception as ex:
-            logging.getLogger('workers.categorization').warning(f"Error in deduplication logic for topic {topic_id}: {ex}")
+            self.logger.warning(f"Error in deduplication logic for topic {topic_id}: {ex}")
+
+    def _extract_embedding(self, client, text: str) -> tuple:
+        """Extract embedding from text using OpenAI API.
+        
+        Returns:
+            tuple: (embedding_vector, error_message)
+        """
+        if not client or not text:
+            return None, "No client or text provided"
+        
+        try:
+            resp = client.embeddings.create(model=self.embedding_model, input=[text])
+            self._log_embedding_usage(resp)
+            
+            data = getattr(resp, 'data', None) or resp.get('data') if isinstance(resp, dict) else None
+            if data and isinstance(data, list) and len(data) > 0:
+                first = data[0]
+                emb = first.get('embedding') if isinstance(first, dict) else getattr(first, 'embedding', None)
+                return emb, None
+            return None, "No embedding data in response"
+        except Exception as e:
+            return None, str(e)
+
+    def _log_embedding_usage(self, resp):
+        """Log embedding API usage if available."""
+        try:
+            usage = getattr(resp, 'usage', None) or (resp.get('usage') if isinstance(resp, dict) else None)
+            if usage:
+                prompt_tokens = usage.get('prompt_tokens') or usage.get('input_tokens') or 0
+                total_tokens = usage.get('total_tokens') or usage.get('total', prompt_tokens)
+                self.logger.info(f'OpenAI embeddings usage: prompt={prompt_tokens} total={total_tokens}')
+        except Exception:
+            pass
+
+    def _find_similar_topic(self, embedding: list) -> tuple:
+        """Find most similar topic using pgvector.
+        
+        Returns:
+            tuple: (topic_id, similarity, error_message)
+        """
+        if not embedding:
+            return None, 0.0, "No embedding provided"
+        
+        try:
+            conn, pooled = self.pg._get_conn()
+            cur = conn.cursor()
+            try:
+                emb_text = _json.dumps(embedding, ensure_ascii=False)
+                cur.execute(
+                    """
+                    SELECT t.id, 1 - (t.emb <=> %s::vector) as similarity
+                    FROM public.topic t
+                    WHERE t.emb IS NOT NULL
+                    ORDER BY t.emb <=> %s::vector
+                    LIMIT 1
+                    """,
+                    (emb_text, emb_text)
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    topic_id = int(row[0])
+                    similarity = float(row[1]) if row[1] is not None else 0.0
+                    return topic_id, similarity, None
+                return None, 0.0, None
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self.pg._put_conn(conn, pooled)
+        except Exception as e:
+            return None, 0.0, str(e)
+
+    def _store_topic_embedding(self, topic_id: int, embedding: list) -> bool:
+        """Store embedding for a topic in the database.
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not topic_id or not embedding:
+            return False
+        
+        try:
+            conn, pooled = self.pg._get_conn()
+            cur = conn.cursor()
+            try:
+                emb_text = _json.dumps(embedding, ensure_ascii=False)
+                # Try vector type first
+                try:
+                    cur.execute("UPDATE public.topic SET emb = %s::vector WHERE id = %s", (emb_text, topic_id))
+                except Exception:
+                    # Fallback to jsonb
+                    try:
+                        cur.execute("ALTER TABLE public.topic ADD COLUMN IF NOT EXISTS emb jsonb")
+                    except Exception:
+                        pass
+                    cur.execute("UPDATE public.topic SET emb = %s::jsonb WHERE id = %s", (emb_text, topic_id))
+                
+                conn.commit()
+                return True
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self.pg._put_conn(conn, pooled)
+        except Exception as e:
+            self.logger.warning(f"Failed to store embedding for topic {topic_id}: {e}")
+            return False
+
+    def _match_or_create_topic(self, client, title: str, doc_id: str, score: float) -> int:
+        """Match article to existing topic or create new one.
+        
+        Returns:
+            int: topic_id or None
+        """
+        if not title:
+            if score >= MIN_ARTICLE_SCORE:
+                self.logger.warning(f"Skipping topic creation for {doc_id}: Missing title")
+            return None
+        
+        # Extract embedding for title
+        embedding, err = self._extract_embedding(client, title)
+        if err:
+            self.logger.warning(f"Error computing embedding for topic match: {err}")
+            return None
+        
+        if not embedding:
+            return None
+        
+        # Search for similar topic
+        topic_id, similarity, err = self._find_similar_topic(embedding)
+        if err:
+            self.logger.warning(f"Error finding similar topic: {err}")
+        
+        # Use existing topic if similarity is high enough
+        if topic_id and similarity >= self.similarity_threshold:
+            self.logger.info(f"Matched existing topic {topic_id} for '{title}' via embedding (sim={similarity:.3f})")
+            return topic_id
+        
+        if topic_id:
+            self.logger.info(f"Nearest topic id={topic_id} below threshold (sim={similarity:.3f}); will create new topic")
+        
+        # Create new topic
+        new_topic_id = self.pg.create_topic(title)
+        if not new_topic_id:
+            self.logger.warning(f"Failed to create topic for article {doc_id} (title='{title}')")
+            return None
+        
+        self.logger.info(f"Created topic {new_topic_id} for article {doc_id} (score={score})")
+
+        return new_topic_id
+
+    def _call_llm_categorization(self, client, model: str, doc_id: str, title: str, description: str, tags: list, content: str, source: str, pub_date: str, feed_name: str, region_hint: str) -> dict:
+        """Call LLM for article categorization.
+        
+        Returns:
+            dict: interest_result with LLM response or error info
+        """
+        system_prompt, user_prompt = get_news_filter_prompt(
+            title, description, tags, content, source, pub_date, 
+            feed_name=feed_name, region_hint=region_hint
+        )
+
+        if not client:
+            self.logger.warning(f'No LLM client available for article {doc_id}')
+            return None
+
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            result = _chat_completion(client, model, messages, max_tokens=800, temperature=0)
+            
+            # Handle tuple return (text, usage) or just text
+            if isinstance(result, tuple):
+                text, usage = result
+            else:
+                text, usage = result, None
+                
+            parsed = _parse_json_from_text(text or '')
+
+            if parsed:
+                # Add usage info if available
+                if usage and isinstance(parsed, dict):
+                    parsed['_usage'] = usage
+                return parsed
+            
+            # Preserve raw model output for debugging
+            self.logger.warning(f'LLM returned invalid JSON for article {doc_id}; saving raw output')
+            print('\n--- RAW MODEL OUTPUT START ---')
+            print(text)
+            print('--- RAW MODEL OUTPUT END ---\n')
+            return {'raw_model_output': text}
+            
+        except Exception:
+            self.logger.exception(f'Error while calling LLM for article {doc_id}')
+            return None
+
+    def _extract_interest_fields(self, interest_result: dict) -> dict:
+        """Extract standard fields from LLM interest result."""
+        if not isinstance(interest_result, dict):
+            return {}
+        
+        return {
+            'total_score': interest_result.get('total_score') or interest_result.get('total'),
+            'rating': interest_result.get('rating') or interest_result.get('recommendation'),
+            'short_note': interest_result.get('short_analysis') or interest_result.get('short_note'),
+            'category': interest_result.get('category'),
+            'comment': interest_result.get('comment') or interest_result.get('commentary'),
+            'newsletter': interest_result.get('newsletter'),
+        }
 
     def categorize_new_articles(self) -> Dict:
         results = {'processed': 0, 'errors': []}
+        table_data = []  # List to collect table rows
 
         score_buckets = {
-            '>=85': 0,
-            '65-85': 0,
-            '<65': 0
+            f'>={PUBLISH_THRESHOLD}': 0,
+            f'{SHORT_NOTE_THRESHOLD}-{PUBLISH_THRESHOLD - 1}': 0,
+            f'<{SHORT_NOTE_THRESHOLD}': 0
         }
 
         try:
@@ -140,30 +392,17 @@ class CategorizationWorker:
 
                 try:
                     # last_snapshot is a cursor dict with 'created_at' and 'id'
-                    docs = self.pg.з(limit=limit_for_query, last_cursor=last_snapshot, status='NEW')
+                    docs = self.pg.fetch_articles_new(limit=limit_for_query, last_cursor=last_snapshot, status='NEW', hours_ago=48)
                 except Exception as e:
                     return {'status': 'error', 'message': str(e)}
-
-                # Fetch recent topics for deduplication
-                recent_topics = []
-                try:
-                    recent_topics = self.pg.get_recent_topics(hours=48)
-                except Exception:
-                    recent_topics = []
 
                 if not docs:
                     break
 
-                model = 'gpt-5-mini'
+                model = 'gpt-4o-mini'
                 client = _get_openai_client()
 
-                try:
-                    max_workers = int(getattr(self.config, 'parallelism', None) or 0) or int(__import__('os').environ.get('CATEGORIZATION_PARALLELISM', '4'))
-                except Exception:
-                    max_workers = 4
-
                 chunk_results = {'processed': 0, 'errors': []}
-                lock = threading.Lock()
 
                 def _process_doc(doc):
                     try:
@@ -179,120 +418,39 @@ class CategorizationWorker:
 
                         feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
                         region_hint = data.get('region_hint', '') or ''
-                        system_prompt, user_prompt = get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name=feed_name, region_hint=region_hint)
-
-                        interest_result = None
+                        
                         record_start = time.perf_counter()
-
-                        if client:
-                            try:
-                                messages = [
-                                    {"role": "system", "content": system_prompt},
-                                    {"role": "user", "content": user_prompt}
-                                ]
-
-                                text = _chat_completion(client, model, messages, max_tokens=800, temperature=0)
-                                parsed = _parse_json_from_text(text or '')
-
-                                if parsed:
-                                    interest_result = parsed
-                                else:
-                                    interest_result = None
-                                    logging.getLogger('workers.categorization').warning(
-                                        'LLM returned invalid JSON for article %s; skipping local heuristic', doc_id)
-
-                            except Exception:
-                                interest_result = None
-                                logging.getLogger('workers.categorization').exception(
-                                    'Error while calling LLM for article %s; skipping local heuristic', doc_id)
-                        else:
-                            interest_result = None
-                            logging.getLogger('workers.categorization').warning(
-                                'No LLM client available for article %s; skipping local heuristic', doc_id)
-
-                        total_score = None
-                        rating = None
-                        short_note = None
-                        category_field = None
-                        comment_field = None
-                        publish_on_site = None
-                        publish_on_social = None
-                        newsletter_field = None
-
-                        if isinstance(interest_result, dict):
-                            total_score = interest_result.get('total_score') or interest_result.get('total')
-                            rating = interest_result.get('rating') or interest_result.get('recommendation')
-                            short_note = interest_result.get('short_analysis') or interest_result.get('short_note')
-                            category_field = interest_result.get('category')
-                            comment_field = interest_result.get('comment') or interest_result.get('commentary')
-
-                            publish_on_site = interest_result.get('publish_on_site')
-                            publish_on_social = interest_result.get('publish_on_social')
-                            newsletter_field = interest_result.get('newsletter')
-
+                        
+                        # Call LLM for categorization
+                        interest_result = self._call_llm_categorization(
+                            client, model, doc_id, title, description, tags, 
+                            content, source, pub_date, feed_name, region_hint
+                        )
+                        
                         record_end = time.perf_counter()
                         processing_time_ms = int((record_end - record_start) * 1000)
+                        
+                        # Extract fields from LLM response
+                        fields = self._extract_interest_fields(interest_result)
+                        total_score = fields.get('total_score')
+                        rating = fields.get('rating')
+                        short_note = fields.get('short_note')
+                        category_field = fields.get('category')
+                        comment_field = fields.get('comment')
+                        newsletter_field = fields.get('newsletter')
 
                         status_field = 'CATEGORIZED'
-                        try:
-                            if total_score is not None:
-                                try:
-                                    ts_val = float(total_score)
-                                except Exception:
-                                    ts_val = None
-                                if ts_val is not None and ts_val < MIN_ARTICLE_SCORE:
-                                    status_field = 'SKIPPED'
+                        score_val = float(total_score) if total_score is not None else 0.0
+                        if score_val < MIN_ARTICLE_SCORE:
+                            status_field = 'SKIPPED'
 
-                        except Exception:
-                            pass
-
+                        # Topic assignment via embedding similarity
                         topic_id_val = None
-                        try:
-                            # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
-                            score_val = float(total_score) if total_score is not None else 0.0
-                            if score_val >= MIN_ARTICLE_SCORE and title:
-                                # Smart topic assignment logic
-                                # 1. Check against recent_topics using LLM
-                                matched_topic_id = None
-                                if recent_topics and client:
-                                    try:
-                                        # Prepare JSON for prompt
-                                        topics_list_json = json.dumps([
-                                            {'id': t['id'], 'topic_name': t['topic_name']} 
-                                            for t in recent_topics
-                                        ], ensure_ascii=False)
-                                        
-                                        match_prompt = TOPIC_MATCH_PROMPT.replace('{current_title}', title).replace('{topics_json}', topics_list_json)
-                                        
-                                        tm_messages = [{"role": "user", "content": match_prompt}]
-                                        tm_text = _chat_completion(client, model, tm_messages, max_tokens=1000, temperature=0)
-                                        tm_parsed = _parse_json_from_text(tm_text or '')
-                                        
-                                        if tm_parsed and tm_parsed.get('matched_topic_id'):
-                                            matched_topic_id = int(tm_parsed['matched_topic_id'])
-                                            logging.getLogger('workers.categorization').info(f"Matched existing topic {matched_topic_id} for '{title}'")
-                                    except Exception as e:
-                                        logging.getLogger('workers.categorization').warning(f"Error checking topic match: {e}")
-                                        matched_topic_id = None
-
-                                if matched_topic_id:
-                                    topic_id_val = matched_topic_id
-                                else:
-                                    # Create new topic
-                                    topic_id_val = self.pg.create_topic(title)
-                                    if topic_id_val:
-                                        logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
-                                        # Add to local cache for subsequent docs in this batch
-                                        with lock:
-                                            recent_topics.append({'id': topic_id_val, 'topic_name': title})
-                                    else:
-                                        logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
-                            else:
-                                if score_val >= MIN_ARTICLE_SCORE:
-                                    logging.getLogger('workers.categorization').warning(f"Skipping topic creation for {doc_id}: Missing title")
-                                # else: score too low, expected.
-                        except Exception as e:
-                            logging.getLogger('workers.categorization').exception(f"Error creating topic for {doc_id}: {e}")
+                        if score_val >= MIN_ARTICLE_SCORE:
+                            try:
+                                topic_id_val = self._match_or_create_topic(client, title, doc_id, score_val)
+                            except Exception as e:
+                                self.logger.exception(f"Error creating topic for {doc_id}: {e}")
 
                         update_payload = {
                             'interest': interest_result,
@@ -302,8 +460,6 @@ class CategorizationWorker:
                             'short_note': short_note,
                             'category': category_field,
                             'comment': comment_field,
-                            'publish_on_site': publish_on_site,
-                            'publish_on_social': publish_on_social,
                             'newsletter': newsletter_field,
                             'topic_id': topic_id_val,
                             'categorized_at': datetime.now(timezone.utc).isoformat(),
@@ -315,26 +471,21 @@ class CategorizationWorker:
                             if ok:
                                 save_status = 'ok'
                                 result_line = f"[categorization] ✅ Article {doc_id} categorized"
-                                with lock:
-                                    chunk_results['processed'] += 1
+                                chunk_results['processed'] += 1
                             else:
                                 err = f"Postgres save returned no rows updated for {doc_id}"
                                 save_status = {'error': err}
                                 result_line = f"[categorization] ❌ {err}"
-                                with lock:
-                                    chunk_results['errors'].append(err)
+                                chunk_results['errors'].append(err)
                         except Exception as e:
                             err = f"Save error for {doc_id}: {e}"
                             save_status = {'error': str(e)}
                             result_line = f"[categorization] ❌ {err}"
-                            with lock:
-                                chunk_results['errors'].append(err)
-
+                            chunk_results['errors'].append(err)
 
                         # Logic to deduplicate by topic
                         if topic_id_val:
                             self._deduplicate_by_topic(topic_id_val)
-
 
                         # logging
                         try:
@@ -387,37 +538,65 @@ class CategorizationWorker:
                             # Fall back to update_payload total_score
                             if ts is None:
                                 ts = update_payload.get('total_score')
+
                             if ts is not None:
                                 try:
                                     val = float(ts)
                                 except Exception:
                                     val = None
                                 if val is not None:
-                                    with lock:
-                                        if val >= 85:
-                                            score_buckets['>=85'] += 1
-                                        elif val >= 65:
-                                            score_buckets['65-85'] += 1
-                                        else:
-                                            score_buckets['<65'] += 1
+                                    if val >= PUBLISH_THRESHOLD:
+                                        score_buckets[f'>={PUBLISH_THRESHOLD}'] += 1
+                                    elif val >= SHORT_NOTE_THRESHOLD:
+                                        score_buckets[f'{SHORT_NOTE_THRESHOLD}-{PUBLISH_THRESHOLD - 1}'] += 1
+                                    else:
+                                        score_buckets[f'<{SHORT_NOTE_THRESHOLD}'] += 1
 
+                        except Exception:
+                            pass
+
+                        # Collect data for summary table
+                        try:
+                            # Check if this document was deduplicated
+                            is_duplicated = False
+                            if topic_id_val:
+                                try:
+                                    t_articles = self.pg.get_articles_by_topic(topic_id_val)
+                                    for art in t_articles:
+                                        if str(art.get('id')) == str(doc_id) and art.get('status') == 'DEDUPLICATED':
+                                            is_duplicated = True
+                                            break
+                                except Exception:
+                                    pass
+                            
+                            # Get token count from interest_result
+                            tokens = None
+                            if isinstance(interest_result, dict):
+                                # Check _usage first (added by our code), then fallback to other fields
+                                usage_dict = interest_result.get('_usage')
+                                if usage_dict and isinstance(usage_dict, dict):
+                                    tokens = usage_dict.get('total_tokens')
+                                if tokens is None:
+                                    tokens = interest_result.get('usage', {}).get('total_tokens') or interest_result.get('total_tokens')
+                            
+                            table_data.append({
+                                'score': score_val,
+                                'link': source,
+                                'doc_id': doc_id,
+                                'tokens': tokens,
+                                'topic_id': topic_id_val,
+                                'is_duplicated': is_duplicated
+                            })
                         except Exception:
                             pass
 
                     except Exception as e:
                         err = f"Processing error for doc {getattr(doc, 'id', '?')}: {e}"
-                        with lock:
-                            chunk_results['errors'].append(err)
+                        chunk_results['errors'].append(err)
 
-                # execute in thread pool
-                with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    futures = [ex.submit(_process_doc, d) for d in docs]
-                    for f in as_completed(futures):
-                        try:
-                            f.result()
-                        except Exception as e:
-                            # Shouldn't occur because _process_doc captures exceptions, but just in case
-                            chunk_results['errors'].append(str(e))
+                # Execute sequentially (single-threaded)
+                for d in docs:
+                    _process_doc(d)
 
                 # aggregate chunk results
                 results['processed'] += chunk_results['processed']
@@ -446,11 +625,29 @@ class CategorizationWorker:
                 import datetime as dt_mod
                 print(f'\n📊 Detailed scoring summary for this run ({datetime.now().strftime("%Y-%m-%d %H:%M:%S")}):')
                 print(f"   Total processed: {results.get('processed', 0)}")
-                print(f"   >=85: {score_buckets.get('>=85', 0)}")
-                print(f"   65-85: {score_buckets.get('65-85', 0)}")
-                print(f"   <65: {score_buckets.get('<65', 0)}")
+                print(f"   >={PUBLISH_THRESHOLD}: {score_buckets.get(f'>={PUBLISH_THRESHOLD}', 0)}")
+                print(f"   {SHORT_NOTE_THRESHOLD}-{PUBLISH_THRESHOLD - 1}: {score_buckets.get(f'{SHORT_NOTE_THRESHOLD}-{PUBLISH_THRESHOLD - 1}', 0)}")
+                print(f"   <{SHORT_NOTE_THRESHOLD}: {score_buckets.get(f'<{SHORT_NOTE_THRESHOLD}', 0)}")
             except Exception:
                 pass
+
+            # Print detailed results table
+            try:
+                if table_data:
+                    print("\n" + "="*120)
+                    print(f"{'Score':<8} {'Link':<40} {'Doc ID':<35} {'Tokens':<8} {'Topic':<8} {'Duplicated':<10}")
+                    print("="*120)
+                    for row in table_data:
+                        score = f"{row['score']:.1f}" if row['score'] is not None else "N/A"
+                        link = (row['link'][:37] + "...") if row['link'] and len(row['link']) > 40 else (row['link'] or "N/A")
+                        doc_id = row['doc_id'][:32] + "..." if row['doc_id'] and len(row['doc_id']) > 35 else (row['doc_id'] or "N/A")
+                        tokens = str(row['tokens']) if row['tokens'] is not None else "N/A"
+                        topic_id = str(row['topic_id']) if row['topic_id'] is not None else "N/A"
+                        is_dup = "Yes" if row['is_duplicated'] else "No"
+                        print(f"{score:<8} {link:<40} {doc_id:<35} {tokens:<8} {topic_id:<8} {is_dup:<10}")
+                    print("="*120 + "\n")
+            except Exception as ex:
+                self.logger.warning(f"Error printing table: {ex}")
 
             return {'status': 'success', **results}
 
@@ -466,12 +663,13 @@ class CategorizationWorker:
                 cur.execute("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='articles' AND column_name=%s)", (col_name,))
                 return bool(cur.fetchone()[0])
 
+            from workers.tools.constants import SHORT_NOTE_THRESHOLD, PUBLISH_THRESHOLD
             stats = {
                 'total': 0,
                 'urgent': 0,
                 'by_priority': {'high': 0, 'medium': 0, 'low': 0},
                 'by_category': {},
-                'score_buckets': {'>=85': 0, '65-85': 0, '<65': 0}
+                'score_buckets': {f'>={PUBLISH_THRESHOLD}': 0, f'{SHORT_NOTE_THRESHOLD}-{PUBLISH_THRESHOLD - 1}': 0, f'<{SHORT_NOTE_THRESHOLD}': 0}
             }
 
             # Total
@@ -501,11 +699,14 @@ class CategorizationWorker:
 
             # Score buckets based on total_score column (fallback to 0 when NULL)
             if column_exists('total_score'):
-                cur.execute("SELECT SUM(CASE WHEN total_score >= 85 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >=65 AND total_score < 85 THEN 1 ELSE 0 END), SUM(CASE WHEN total_score < 65 THEN 1 ELSE 0 END) FROM public.articles WHERE total_score IS NOT NULL")
+                cur.execute(
+                    "SELECT SUM(CASE WHEN total_score >= %s THEN 1 ELSE 0 END), SUM(CASE WHEN total_score >= %s AND total_score < %s THEN 1 ELSE 0 END), SUM(CASE WHEN total_score < %s THEN 1 ELSE 0 END) FROM public.articles WHERE total_score IS NOT NULL",
+                    (PUBLISH_THRESHOLD, SHORT_NOTE_THRESHOLD, PUBLISH_THRESHOLD, SHORT_NOTE_THRESHOLD)
+                )
                 row = cur.fetchone() or (0, 0, 0)
-                stats['score_buckets']['>=85'] = int(row[0] or 0)
-                stats['score_buckets']['65-85'] = int(row[1] or 0)
-                stats['score_buckets']['<65'] = int(row[2] or 0)
+                stats['score_buckets'][f'>={PUBLISH_THRESHOLD}'] = int(row[0] or 0)
+                stats['score_buckets'][f'{SHORT_NOTE_THRESHOLD}-{PUBLISH_THRESHOLD - 1}'] = int(row[1] or 0)
+                stats['score_buckets'][f'<{SHORT_NOTE_THRESHOLD}'] = int(row[2] or 0)
 
             try:
                 cur.close()
@@ -517,22 +718,10 @@ class CategorizationWorker:
             return {}
 
     def _process_single_doc(self, doc) -> Dict:
-        """
-        Process a single normalized row or Firestore-like doc and return a dict with result info.
-        This reuses the same logic as the threaded _process_doc but in a single-call form.
-        """
+        """Process a single normalized row or Firestore-like doc and return a dict with result info."""
         try:
-            # Expect normalized row dicts from Postgres
-            if isinstance(doc, dict):
-                doc_id = doc.get('id')
-                data = doc
-            else:
-                try:
-                    doc_id = getattr(doc, 'id', None)
-                    data = doc.to_dict() or {}
-                except Exception:
-                    doc_id = None
-                    data = {}
+            doc_id = doc.get('id')
+            data = doc
 
             title = data.get('title', '')
             description = data.get('description', '') or ''
@@ -540,101 +729,51 @@ class CategorizationWorker:
             tags = data.get('tags', []) or data.get('categories', []) or []
             source = data.get('source', '') or data.get('link', '') or ''
             pub_date = data.get('pub_date', '') or ''
-
             feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
             region_hint = data.get('region_hint', '') or ''
-            system_prompt, user_prompt = get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name=feed_name, region_hint=region_hint)
             
-            # Fetch recent topics for deduplication (fresh fetch)
-            recent_topics = []
-            try:
-                recent_topics = self.pg.get_recent_topics(hours=48)
-            except Exception:
-                recent_topics = []
-
             client = _get_openai_client()
-            model = 'gpt-5-mini'
+            model = 'gpt-4o-mini'
 
-            interest_result = None
-            if client:
-                try:
-                    messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ]
-                    text = _chat_completion(client, model, messages, max_tokens=800, temperature=0)
-                    parsed = _parse_json_from_text(text or '')
-                    if parsed:
-                        interest_result = parsed
-                except Exception:
-                    interest_result = None
+            # Call LLM for categorization
+            interest_result = self._call_llm_categorization(
+                client, model, doc_id, title, description, tags, 
+                content, source, pub_date, feed_name, region_hint
+            )
 
-            total_score = None
-            rating = None
-            short_note = None
-            category_field = None
-            comment_field = None
-            publish_on_site = None
-            publish_on_social = None
-            newsletter_field = None
+            # Extract fields from LLM response
+            fields = self._extract_interest_fields(interest_result)
+            total_score = fields.get('total_score')
+            rating = fields.get('rating')
+            short_note = fields.get('short_note')
+            category_field = fields.get('category')
+            comment_field = fields.get('comment')
+            publish_on_site = interest_result.get('publish_on_site') if isinstance(interest_result, dict) else None
+            publish_on_social = interest_result.get('publish_on_social') if isinstance(interest_result, dict) else None
+            newsletter_field = fields.get('newsletter')
 
-            if isinstance(interest_result, dict):
-                total_score = interest_result.get('total_score') or interest_result.get('total')
-                rating = interest_result.get('rating') or interest_result.get('recommendation')
-                short_note = interest_result.get('short_analysis') or interest_result.get('short_note')
-                category_field = interest_result.get('category')
-                comment_field = interest_result.get('comment') or interest_result.get('commentary')
-                publish_on_site = interest_result.get('publish_on_site')
-                publish_on_social = interest_result.get('publish_on_social')
-                newsletter_field = interest_result.get('newsletter')
-
+            # Determine status
             status_field = 'CATEGORIZED'
-            try:
-                if total_score is not None:
-                    try:
-                        ts_val = float(total_score)
-                    except Exception:
-                        ts_val = None
-                    if ts_val is not None and ts_val < MIN_ARTICLE_SCORE:
-                        status_field = 'SKIPPED'
-            except Exception:
-                pass
+            score_val = float(total_score) if total_score is not None else 0.0
+            if score_val < MIN_ARTICLE_SCORE:
+                status_field = 'SKIPPED'
 
+            # Topic assignment via embedding similarity (no lock needed for single doc)
             topic_id_val = None
-            try:
-                # Create topic if score is high enough (>= MIN_ARTICLE_SCORE)
-                score_val = float(total_score) if total_score is not None else 0.0
-                if score_val >= MIN_ARTICLE_SCORE and title:
-                    # Smart topic assignment logic
-                    matched_topic_id = None
-                    if recent_topics and client:
-                        try:
-                            topics_list_json = json.dumps([
-                                {'id': t['id'], 'topic_name': t['topic_name']} 
-                                for t in recent_topics
-                            ], ensure_ascii=False)
-                            
-                            match_prompt = TOPIC_MATCH_PROMPT.replace('{current_title}', title).replace('{topics_json}', topics_list_json)
-                            
-                            tm_messages = [{"role": "user", "content": match_prompt}]
-                            tm_text = _chat_completion(client, model, tm_messages, max_tokens=1000, temperature=0)
-                            tm_parsed = _parse_json_from_text(tm_text or '')
-                            
-                            if tm_parsed and tm_parsed.get('matched_topic_id'):
-                                matched_topic_id = int(tm_parsed['matched_topic_id'])
-                        except Exception:
-                            matched_topic_id = None
-
-                    if matched_topic_id:
-                        topic_id_val = matched_topic_id
-                    else:
-                        topic_id_val = self.pg.create_topic(title)
-                        if topic_id_val:
-                            logging.getLogger('workers.categorization').info(f"Created topic {topic_id_val} for article {doc_id} (score={score_val})")
-                        else:
-                            logging.getLogger('workers.categorization').warning(f"Failed to create topic for article {doc_id} (title='{title}')")
-            except Exception as e:
-                logging.getLogger('workers.categorization').exception(f"Error creating topic for {doc_id}: {e}")
+            if score_val >= MIN_ARTICLE_SCORE:
+                try:
+                    # Create a dummy lock and recent_topics list for single-doc processing
+                    import threading
+                    lock = threading.Lock()
+                    recent_topics = []
+                    try:
+                        recent_topics = self.pg.get_recent_topics(hours=48)
+                    except Exception:
+                        pass
+                    
+                    topic_id_val = self._match_or_create_topic(client, title, doc_id, score_val, lock, recent_topics)
+                except Exception as e:
+                    self.logger.exception(f"Error creating topic for {doc_id}: {e}")
 
             update_payload = {
                 'interest': interest_result,
@@ -654,7 +793,7 @@ class CategorizationWorker:
 
             ok = self.pg.save_article_categorization(doc_id, update_payload)
 
-            # Logic to deduplicate by topic
+            # Deduplicate by topic
             if topic_id_val:
                 self._deduplicate_by_topic(topic_id_val)
 

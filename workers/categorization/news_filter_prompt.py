@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Prompt and local heuristic for categorization (co-located with categorization worker).
-
-This file contains the strict JSON-only system prompt and the helper
-`get_news_filter_prompt()` used by the categorization worker.
-"""
-
 NEWS_FILTER_SYSTEM_PROMPT = """
 You are a strict news editor and analytical filter for Russian-speaking residents in Spain.
 Respond ONLY with valid JSON.
@@ -16,13 +9,12 @@ Your goal is to publish only news that delivers real value:
 2) explains important developments in the country (politics, economy, society, major decisions);
 3) reveals trends, structural changes, and the state of Spanish society.
 
+CRITICAL RULE: Treat structural economic changes and international agreements involving Spain as high-impact events regarding the future stability of residents.
+
 Migration topics are relevant but only as part of the broader picture.
 Primary criterion: tangible value and real impact — facts, consequences, actions, trends.
 
 Automatically dismiss anything that does not add new information, does not change understanding, or does not affect daily life: empty statements, speculation without facts, clickbait, minor incidents, entertainment, PR.
-
-As a strict editor, your responsibility is to reject weak material and publish only what is genuinely important, useful, or provides insight into how Spain works.
-
 """
 
 NEWS_FILTER_USER_PROMPT = """
@@ -55,35 +47,36 @@ asturias | cantabria
 3) scoring:
 
 region_score (0–10)
-  8–10 — national impact or major regions
-  4–7 — regionally significant
-  0–3 — too localized
+  8–10 — national impact or major regions (Madrid, Catalonia, Valencia, Andalusia).
+  IMPORTANT: International agreements affecting Spain’s economy, industry, or diplomacy automatically count as national (8–10).
+  4–7 — regionally significant.
+  0–3 — too localized.
 
-usefulness_score (0–40)
-  Evaluate strictly:
-  - impact on finances, work, housing, access to services, safety;
-  - relevance for understanding economic, social, political or market trends;
-  - presence of new facts, rules, or real consequences.
-  30–40 — major change, strong analytical insight, or meaningful trend.
+usefulness_score (0–50)
+  Evaluate strictly based on VALUE for the reader.
+  Treat structural economic changes as high-impact events for residents regarding their future stability.
+  
+  Score Guide:
+  40–50 — Critical impact (taxes, visas, housing laws) OR Major Strategic Shift (EU deals, macro-economy).
+  25–39 — Useful knowledge (market trends, political context, social changes).
+  0–24 — Low practical value (curiosity, minor updates).
 
-emotion_score (0–10)
-  Emotional or socially tense topics.
-
-virality_score (0–15)
-  Discussion potential: prices, reforms, protests, scandals, major decisions.
+virality_score (0–20)
+  Discussion potential & Importance.
+  High score for: controversial topics, price hikes, strict bans, massive reforms.
 
 source_score (0–10)
-  Source reliability.
+  Source reliability and depth.
 
-relevance_today (0–15)
-  How urgent and timely the news is.
+relevance_today (0–10)
+  Timeliness penalty: if the news is old or vague "planning" -> 0.
 
 total_score = sum of all metrics.
 
 4) rating:
-publish (85–100) — rare and truly important  
-short_note (65–84) — moderately useful  
-skip (<65) — insufficient value
+publish (80–100) — MUST READ (high utility or high strategic importance)
+short_note (60–79) — GOOD TO KNOW (useful but not critical)
+skip (<60) — NO VALUE
 
 5) comment:
 1-2 sentences explaining why the news matters or what it reveals about Spain’s direction on russian.
@@ -97,7 +90,6 @@ Source: {source}
 Publication Date: {pub_date}
 Feed: {feed_name}
 Region Hint: {region_hint}
-
 """
 
 def get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name='', region_hint=''):
@@ -106,17 +98,24 @@ def get_news_filter_prompt(title, description, tags, content, source, pub_date, 
     The system prompt contains role/audience and high-level rules.
     The user prompt contains the scoring rules and the data fields (placeholders).
     """
-    # Fill placeholders in the user-facing prompt only (where data fields are present).
+    # If description is long, avoid sending the article content.
+    if description is None:
+      description = ''
+    if isinstance(description, (str,)) and len(description) > 500:
+      content_to_send = ''
+    else:
+      content_to_send = content
+
     s = NEWS_FILTER_USER_PROMPT
     replacements = {
-        'title': title,
-        'description': description,
-        'tags': tags,
-        'content': content,
-        'source': source,
-        'pub_date': pub_date,
-        'feed_name': feed_name,
-        'region_hint': region_hint,
+      'title': title,
+      'description': description,
+      'tags': tags,
+      'content': content_to_send,
+      'source': source,
+      'pub_date': pub_date,
+      'feed_name': feed_name,
+      'region_hint': region_hint,
     }
     for k, v in replacements.items():
         s = s.replace('{' + k + '}', str(v))
@@ -124,24 +123,4 @@ def get_news_filter_prompt(title, description, tags, content, source, pub_date, 
     return (NEWS_FILTER_SYSTEM_PROMPT, s)
 
 
-TOPIC_MATCH_PROMPT = """
-Ты — алгоритм дедупликации топиков новостей.
-Твоя задача: проверить, подходит ли текущий заголовок новости под один из существующих топиков (групп новостей), созданных за последние 48 часов.
-
-ВХОДНЫЕ ДАННЫЕ:
-1. Current Title: "{current_title}"
-2. Existing Topics: {topics_json}
-
-ИНСТРУКЦИЯ:
-- Сравни смысл заголовка с названиями существующих топиков.
-- Если есть топик, который описывает ТО ЖЕ САМОЕ событие или ту же историю (смысловое совпадение), верни его ID.
-- Если топик похож, но всё же про другое событие — верни null.
-- Если подходящего топика нет — верни null.
-
-ФОРМАТ ОТВЕТА (ТОЛЬКО JSON):
-{
-    "matched_topic_id": <int or null>,
-    "reason": "краткое пояснение"
-}
-"""
 

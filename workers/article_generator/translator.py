@@ -193,15 +193,16 @@ class ArticleTranslator:
             total_score_meta = float(metadata.get('total_score', 0))
         except Exception:
             total_score_meta = 0.0
-        if total_score_meta >= 80 and metadata.get('url'):
+        from workers.tools.constants import PUBLISH_THRESHOLD
+        if total_score_meta >= PUBLISH_THRESHOLD and metadata.get('url'):
             _logger.info('[%s] Stage 6: Telegram preview (score=%.1f)...', doc_id, total_score_meta)
             t0 = time.time()
             slug = stage5.get('slug') if stage5 and isinstance(stage5, dict) else None
             stage6 = self._stage6_telegram(stage4, metadata, slug)
             _logger.info('[%s] Stage 6 completed in %.1fs', doc_id, time.time() - t0)
         else:
-            _logger.info('[%s] Stage6 skipped: total_score=%.1f (need >=80), has_url=%s', 
-                        doc_id, total_score_meta, bool(metadata.get('url')))
+            _logger.info('[%s] Stage6 skipped: total_score=%.1f (need >=%d), has_url=%s', 
+                        doc_id, total_score_meta, PUBLISH_THRESHOLD, bool(metadata.get('url')))
 
         return (stage1, stage2, stage3, stage4, stage5, stage6)
 
@@ -394,7 +395,6 @@ class ArticleTranslator:
         if not stage4_result:
             return None
 
-        # Build tech_meta for frontmatter
         tech_meta = {
             'source_url': metadata.get('url') or metadata.get('link') or '',
             'image_hint': metadata.get('image_url') or metadata.get('image') or '',

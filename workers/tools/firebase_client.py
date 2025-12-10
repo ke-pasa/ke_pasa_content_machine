@@ -305,7 +305,7 @@ class FirebaseClient:
             if not doc.exists:
                 default_settings = {
                     'cluster_batch_size': 20,
-                    'llm_model': 'gpt-5-mini',
+                    'llm_model': 'gpt-4o-mini',
                     'publishing_times': ['09:00', '14:00', '20:00'],
                     'publishing_windows': [
                         {"start": "09:00", "end": "11:00"},

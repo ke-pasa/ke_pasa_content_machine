@@ -249,7 +249,7 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
-    def fetch_articles_new(self, limit: int = 30, last_cursor: dict = None, status: str = 'NEW', order_by: str = 'created_at') -> List[Dict[str, Any]]:
+    def fetch_articles_new(self, limit: int = 30, last_cursor: dict = None, status: str = 'NEW', order_by: str = 'created_at', hours_ago: int = None) -> List[Dict[str, Any]]:
         # Let connection/driver errors propagate so callers (workers) can see and log them.
         self._connect()
         from psycopg2.extras import RealDictCursor
@@ -263,6 +263,9 @@ class PGClient:
                 "WHERE status = %s"
             ]
             params = [status]
+            if hours_ago is not None:
+                sql.append("AND created_at >= NOW() - INTERVAL '%s hours'")
+                params.append(hours_ago)
             if last_cursor:
                 sql.append("AND (created_at, id) > (%s::timestamptz, %s)")
                 params.extend([last_cursor.get('created_at'), last_cursor.get('id')])
@@ -489,28 +492,6 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
-    def get_recent_topics(self, hours: int = 48) -> List[Dict[str, Any]]:
-        results = []
-        try:
-            self._connect()
-        except Exception:
-            return results
-        
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
-        conn, pooled = self._get_conn()
-        cur = conn.cursor()
-        try:
-            cur.execute('SELECT id, topic_name FROM public.topic WHERE created_at >= %s', (cutoff,))
-            rows = cur.fetchall()
-            for r in rows:
-                results.append({'id': r[0], 'topic_name': r[1]})
-            return results
-        finally:
-            try:
-                cur.close()
-            except Exception:
-                pass
-            self._put_conn(conn, pooled)
 
     def get_articles_by_topic(self, topic_id: int) -> List[Dict[str, Any]]:
         results = []
@@ -571,8 +552,6 @@ class PGClient:
             total_score = COALESCE(%s, total_score),
             rating = COALESCE(%s, rating),
             category = COALESCE(%s, category),
-            publish_on_site = COALESCE(%s, publish_on_site),
-            publish_on_social = COALESCE(%s, publish_on_social),
             topic_id = COALESCE(%s, topic_id),
             categorized_at = now(),
             updated_at = now()
@@ -584,8 +563,6 @@ class PGClient:
             payload.get('total_score'),
             payload.get('rating'),
             payload.get('category'),
-            payload.get('publish_on_site'),
-            payload.get('publish_on_social'),
             payload.get('topic_id'),
             article_id,
         )
@@ -607,10 +584,6 @@ class PGClient:
         except Exception:
             return False
         telegram_final = payload.get('telegram_final')
-        # If telegram_final is a plain string/bytes, store it as a JSON object
-        # with key `tg_preview` so the DB contains a structured object instead
-        # of a JSON string. This prevents double-encoding and extra quotes
-        # when the value is later read and re-saved by the publisher.
         try:
             if isinstance(telegram_final, bytes):
                 try:
@@ -672,9 +645,10 @@ class PGClient:
                     total_score = None
 
                 status_to_set = None
+                from workers.tools.constants import SHORT_NOTE_THRESHOLD
                 if forced_skipped:
                     status_to_set = 'SKIPPED'
-                elif total_score is not None and total_score < 60:
+                elif total_score is not None and total_score < SHORT_NOTE_THRESHOLD:
                     status_to_set = 'SKIPPED'
                 else:
                     # check created_at age: prefer payload.created_at, otherwise fetch existing created_at
