@@ -3,7 +3,7 @@ Shared constants for workers.
 """
 
 # Minimum total_score threshold for article processing
-MIN_ARTICLE_SCORE = 60
+MIN_ARTICLE_SCORE = 63
 
 # Minimum total_score threshold for publishing to Telegram
 MIN_PUBLISH_SCORE = 80
