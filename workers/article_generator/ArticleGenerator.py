@@ -3,6 +3,7 @@ import json
 import time
 import math
 import re
+import os
 import logging
 import threading
 from datetime import datetime, timezone, timedelta
@@ -816,12 +817,40 @@ class ArticleGenerator:
         git_sync_interval_seconds = git_sync_interval_minutes * 60
         article_pause_seconds = 5
         
+        # Articles directory path
+        articles_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'articles')
+        
         cycle_count = 0
         
         while True:
             try:
                 cycle_count += 1
                 self.logger.info(f'📊 Cycle {cycle_count}: Fetching top CATEGORIZED article from last 24h...')
+                
+                # Check if we should sync to git before processing next article
+                current_time = time.time()
+                time_since_last_sync = current_time - last_git_sync
+                
+                # Count markdown files in articles directory
+                articles_count = 0
+                if os.path.exists(articles_dir):
+                    articles_count = len([f for f in os.listdir(articles_dir) if f.endswith('.md')])
+                
+                # Sync conditions:
+                # 1. More than 20 articles in directory
+                # 2. More than 1 hour (3600 seconds) since last sync
+                should_sync = (articles_count > 20) or (time_since_last_sync >= 3600)
+                
+                if should_sync and (processed_ids or articles_count > 0):
+                    self.logger.info(f'🔄 Git sync triggered: articles_count={articles_count}, time_since_last_sync={int(time_since_last_sync)}s')
+                    try:
+                        sync_result = sync_to_git_repo(article_ids=processed_ids if processed_ids else None)
+                        self.logger.info(f'✅ Git sync completed: {sync_result}')
+                        processed_ids = []  # Clear the list after successful sync
+                        last_git_sync = current_time
+                    except Exception as sync_err:
+                        self.logger.exception(f'❌ Git sync failed: {sync_err}')
+                        # Don't clear processed_ids on error, will retry next cycle
                 
                 # Fetch the top article from last 24 hours
                 article = self.pg.fetch_top_categorized_article_24h()
@@ -874,21 +903,6 @@ class ArticleGenerator:
                     # Still mark as processed to avoid infinite retries
                     processed_in_session.add(article_id)
                     break
-                
-                # Check if it's time for git sync
-                current_time = time.time()
-                time_since_last_sync = current_time - last_git_sync
-                
-                if time_since_last_sync >= git_sync_interval_seconds and processed_ids:
-                    self.logger.info(f'🔄 Performing git sync for {len(processed_ids)} articles...')
-                    try:
-                        sync_result = sync_to_git_repo(article_ids=processed_ids)
-                        self.logger.info(f'✅ Git sync completed: {sync_result}')
-                        processed_ids = []  # Clear the list after successful sync
-                        last_git_sync = current_time
-                    except Exception as sync_err:
-                        self.logger.exception(f'❌ Git sync failed: {sync_err}')
-                        # Don't clear processed_ids on error, will retry next cycle
                 
                 # Wait before fetching next article
                 self.logger.info(f'⏸️  Waiting {article_pause_seconds} seconds before next article...')
