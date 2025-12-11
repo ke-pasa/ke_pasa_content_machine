@@ -887,9 +887,9 @@ class ArticleGenerator:
             except KeyboardInterrupt:
                 self.logger.info('🛑 Received shutdown signal. Requesting final sync via git-sync daemon...')
                 try:
-                    # Create a simple trigger file the daemon watches for
+                    # Create a simple trigger file in repo root the daemon watches for
                     repo_root = Path(__file__).resolve().parent.parent.parent
-                    trigger_file = repo_root / 'articles' / 'sync_now.flag'
+                    trigger_file = repo_root / 'sync_now.flag'
                     articles_dir = repo_root / 'articles'
                     if articles_dir.exists() and any(articles_dir.glob('*.md')):
                         try:

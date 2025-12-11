@@ -17,7 +17,8 @@ startsecs=10
 stopwaitsecs=30
 
 [program:git-sync]
-command=python scripts/git_sync_daemon.py --interval 30
+; Use the daemon script under workers/article_generator (scripts/ path does not exist in image)
+command=python workers/article_generator/git_sync_daemon.py --interval 30 --trigger-file sync_now.flag
 directory=/app
 user=root
 autostart=true
