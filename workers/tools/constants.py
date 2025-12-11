@@ -6,7 +6,7 @@ Shared constants for workers.
 MIN_ARTICLE_SCORE = 65
 
 # Minimum total_score threshold for publishing to Telegram
-MIN_PUBLISH_SCORE = 85
+MIN_PUBLISH_SCORE = 80
 
 # Derived thresholds used by categorization buckets.
 # short note threshold is slightly above the minimum article score.

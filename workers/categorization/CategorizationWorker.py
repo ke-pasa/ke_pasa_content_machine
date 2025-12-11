@@ -143,8 +143,7 @@ class CategorizationWorker:
                 
                 # Sort descending by score. First one stays, others become DEDUPLICATED.
                 sorted_arts = sorted(t_articles, key=get_score, reverse=True)
-                # Best one is sorted_arts[0] - do nothing
-                # Others
+
                 if len(sorted_arts) > 1:
                     dedup_ids = [str(a['id']) for a in sorted_arts[1:]]
 
@@ -163,19 +162,72 @@ class CategorizationWorker:
         """
         if not client or not text:
             return None, "No client or text provided"
-        
-        try:
-            resp = client.embeddings.create(model=self.embedding_model, input=[text])
-            self._log_embedding_usage(resp)
-            
-            data = getattr(resp, 'data', None) or resp.get('data') if isinstance(resp, dict) else None
-            if data and isinstance(data, list) and len(data) > 0:
-                first = data[0]
-                emb = first.get('embedding') if isinstance(first, dict) else getattr(first, 'embedding', None)
-                return emb, None
-            return None, "No embedding data in response"
-        except Exception as e:
-            return None, str(e)
+        # Try a couple of times on transient failures and be defensive about response shape
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                resp = client.embeddings.create(model=self.embedding_model, input=[text])
+                self._log_embedding_usage(resp)
+
+                # Normalize data extraction for both dict-like and object-like responses
+                if isinstance(resp, dict):
+                    data = resp.get('data')
+                else:
+                    data = getattr(resp, 'data', None)
+
+                if data and isinstance(data, list) and len(data) > 0:
+                    first = data[0]
+                    if isinstance(first, dict):
+                        emb = first.get('embedding') or first.get('vector')
+                    else:
+                        emb = getattr(first, 'embedding', None) or getattr(first, 'vector', None)
+
+                    if emb:
+                        return emb, None
+
+                    resp_summary = None
+                    try:
+                        if isinstance(resp, dict):
+                            resp_summary = {k: (v if k != 'data' else f'<data len={len(data)}>') for k, v in resp.items()}
+                        else:
+                            resp_summary = str(resp)
+                    except Exception:
+                        resp_summary = '<unserializable response>'
+
+                    err_msg = f"Missing embedding field in response data (model={self.embedding_model}) - {resp_summary}"
+                    # If final attempt, return error
+                    if attempt == max_attempts - 1:
+                        return None, err_msg
+                    # otherwise retry
+                else:
+                    # No data array present; try to surface any error info
+                    err_info = None
+                    if isinstance(resp, dict):
+                        err_info = resp.get('error') or resp.get('message')
+                    else:
+                        err_info = getattr(resp, 'error', None)
+
+                    resp_str = None
+                    try:
+                        resp_str = str(resp)[:600]
+                    except Exception:
+                        resp_str = '<unserializable response>'
+
+                    err_msg = f"No embedding data in response (model={self.embedding_model})"
+                    if err_info:
+                        err_msg += f": {err_info}"
+                    else:
+                        err_msg += f" - resp_summary={resp_str}"
+
+                    if attempt == max_attempts - 1:
+                        return None, err_msg
+
+                # short backoff before retrying
+                time.sleep(0.5)
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    return None, str(e)
+                time.sleep(0.5)
 
     def _log_embedding_usage(self, resp):
         """Log embedding API usage if available."""

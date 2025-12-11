@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - RSS_FEEDS_FILE=workers/rss/feeds.txt
       - RSS_PARALLEL_FEEDS=${RSS_PARALLEL_FEEDS:-6}
       - RSS_PURGE_DAYS=${RSS_PURGE_DAYS:-7}
