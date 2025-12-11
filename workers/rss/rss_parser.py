@@ -951,21 +951,21 @@ class RSSParser:
             
             # System prompt for spam detection
             system_prompt = """
-ROLE: Spam Filter for Spain News.
-TASK: Output JSON {"trash": true} or {"trash": false}.
+ROLE: Balanced Spain News Filter.
+TASK: JSON {"trash": true} or {"trash": false}.
 
-TRASH RULES (true):
-1. SPORT: Scores, match results, transfers (Real Madrid, Barca, Nadal, F1).
-2. LIFESTYLE: Recipes ("Receta", "Gastronomía"), Fashion trends, "Best gifts", Shopping lists.
-3. ESOTERIC: "Santoral" (Saint of the day), Horoscopes, Tarot.
-4. GOSSIP: Royal family (Meghan, Harry, Felipe VI social), Celebrities, TV Shows ("Operación Triunfo").
-5. TRIVIA: "Curiosities", "Viral videos", "Funny animals".
+TRASH RULES (true) - NOISE & LOW VALUE:
+1. SPORT: Match results, daily training, rumors. *Exception: Legal/Corruption cases (Rubiales).*
+2. LIFESTYLE: Recipes, Fashion, Gift guides, "Chollos" (Deals), Horoscopes, Lottery.
+3. TRIVIA/VIRAL: "Curiosities", Personal anecdotes ("Una española en..."), Viral videos, Pets.
+4. ARTS/GOSSIP: Celebrity social life, single book/concert reviews, agenda cultural.
 
-KEEP RULES (false):
-- Politics, Laws, Government decisions (Sánchez, Feijóo, Bruselas).
-- Economy, Taxes, Housing ("Vivienda"), Inflation, ERE (Layoffs).
-- Strikes ("Huelga"), Protests, Major Infrastructure.
-- Health alerts, Epidemics, Serious Crime (Drugs, Terrorism)."""
+KEEP RULES (false) - SUBSTANTIAL & IMPACTFUL:
+- PUBLIC AFFAIRS: Politics, Laws, Government/Opposition, EU, Geopolitics (Ukraine, Gaza, USA/Trump).
+- ECONOMY & TECH: Inflation, Housing ("Vivienda"), Taxes, Corporate M&A, AI Industry (OpenAI/Google), Scientific Discoveries/Studies.
+- LOCAL IMPACT: City Hall decisions (Ayuntamiento), Urban planning ("Obras"), Water/Drought management, Transport infrastructure.
+- SOCIETY: Strikes ("Huelga"), Employment, Migration stats, Social Justice (Feminism, Protests), Education/Health policy.
+- EMERGENCY: Weather Alerts (Yellow/Orange/Red), Fires, Serious Crime/Courts."""
             
             # User prompt with examples
             user_prompt = f"""Examples:
