@@ -45,7 +45,6 @@ https://periodicoclm.publico.es/rss/
 https://periodicoclm.publico.es/rss/region/
 https://periodicoclm.publico.es/rss/medio-ambiente/
 https://euroweeklynews.com/feed/
-https://www.bde.es/wbe/en/inicio/rss/rss-noticias/
 https://www.tuexperto.com/feed/
 https://www.muypymes.com/feed
 https://e00-expansion.uecdn.es/rss/portada.xml
