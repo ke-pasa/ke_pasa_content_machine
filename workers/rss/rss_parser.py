@@ -1213,6 +1213,35 @@ Title: {title}"""
                         filtered_articles.append(article)
                     else:
                         print(f"    ⚠️  Failed to extract full text")
+                        # Persist a minimal record marking extraction failure
+                        article_failed = {
+                            'title': article.get('title', ''),
+                            'link': article.get('link', ''),
+                            'summary': article.get('summary', ''),
+                            'published': article.get('published', None),
+                            'image': article.get('image', ''),
+                            'categories': article.get('categories', []),
+                            'feed_title': article.get('feed_title', ''),
+                            'feed_url': article.get('feed_url', ''),
+                            'status': 'FAILED'
+                        }
+
+                        try:
+                            article_id = self.save_article(article_failed)
+                            if article_id:
+                                article_failed['article_id'] = article_id
+                                stats['saved'] += 1
+                                saved_count += 1
+                                print(f"    💾 Saved record with status FAILED: {article_id[:8]}")
+                            else:
+                                print(f"    ⚠️  Failed to persist FAILED article: {article.get('title','')[:40]}")
+                        except Exception as e:
+                            print(f"    ⚠️  Exception while saving FAILED article: {e}")
+
+                        # Mark as processed to avoid reprocessing in the same run
+                        if article_link_norm:
+                            self.processed_articles.add(article_link_norm)
+                        filtered_articles.append(article_failed)
                 else:
                     print(f"    ⚠️  No link to extract text from")
             else:

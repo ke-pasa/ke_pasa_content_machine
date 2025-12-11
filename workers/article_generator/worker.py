@@ -18,7 +18,7 @@ load_dotenv()
 from .ArticleGenerator import ArticleGenerator
 
 
-def sync_to_git_repo(article_ids: list[str] = None) -> dict:
+def sync_to_git_repo() -> dict:
     results = {'synced': 0, 'errors': []}
     pat = os.getenv('GIT_KE_PASA_PAT')
     if not pat:
@@ -29,21 +29,6 @@ def sync_to_git_repo(article_ids: list[str] = None) -> dict:
     branch = os.getenv('ARTICLES_REPO_BRANCH') or 'main'
     
     logging.info(f"🔄 Starting git sync to {repo} ({branch})...")
-    
-    try:
-        from workers.tools.pg_client import get_pg_client
-        pg = get_pg_client()
-
-        rows = pg.fetch_articles_with_markdown(limit=10000, article_ids=article_ids)
-        articles_to_sync = rows
-        
-        mode_str = f"incremental ({len(article_ids)} articles)" if article_ids else "full"
-        logging.info(f"Found {len(articles_to_sync)} articles with markdown content for {mode_str} sync")
-    except Exception as e:
-        err = f"Failed to fetch articles for sync: {e}"
-        logging.error(err)
-        results['errors'].append(err)
-        return results
 
     temp_dir = tempfile.mkdtemp()
     try:
@@ -55,41 +40,44 @@ def sync_to_git_repo(article_ids: list[str] = None) -> dict:
         # Clone
         logging.info("Cloning repo...")
         subprocess.run(['git', 'clone', '--depth', '1', '--branch', branch, repo_url, temp_dir], check=True, capture_output=True)
+        # Ensure the cloned repo is up-to-date with remote branch
+        try:
+            logging.info(f"Updating cloned repo to latest {branch} (git pull)")
+            subprocess.run(['git', 'pull', '--ff-only', 'origin', branch], cwd=temp_dir, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            logging.warning(f"git pull failed (continuing with cloned snapshot): {e}")
         
         target_dir = os.path.join(temp_dir, 'src', 'content', 'news')
 
         os.makedirs(target_dir, exist_ok=True)
-        
-        # 3. Write files
-        for art in articles_to_sync:
+
+        # 2. Copy local articles -> target repo
+        local_articles_dir = os.path.join(str(root_dir), 'articles')
+        copied_files = []
+        if os.path.exists(local_articles_dir):
             try:
-                md = art.get('publish_md')
-                # Regex to extract slug from frontmatter
-                import re
-                slug_match = re.search(r'^slug:\s*(.+)$', md, re.MULTILINE)
-                if slug_match:
-                    # Strip quotes if present
-                    slug = slug_match.group(1).strip().strip('"\'')
-                else:
-                    title = art.get('title_ru') or 'article'
-                    slug = re.sub(r'[^a-z0-9\-]', '-', title.lower())
-                    slug = re.sub(r'-{2,}', '-', slug).strip('-')
-                    if not slug:
-                        slug = str(art.get('article_id') or art.get('id'))
-
-                filename = f"{slug}_{art.get('article_id') or art.get('id')}.md"
-                file_path = os.path.join(target_dir, filename)
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(md)
-                    
-                results['synced'] += 1
+                for name in os.listdir(local_articles_dir):
+                    if not name.lower().endswith('.md'):
+                        continue
+                    src_path = os.path.join(local_articles_dir, name)
+                    dst_path = os.path.join(target_dir, name)
+                    try:
+                        shutil.copy2(src_path, dst_path)
+                        copied_files.append(name)
+                        results['synced'] += 1
+                    except Exception as cp_err:
+                        logging.warning(f"Failed to copy {src_path} -> {dst_path}: {cp_err}")
+                        results['errors'].append(f"Copy error for {name}: {cp_err}")
             except Exception as e:
-                logging.error(f"Failed to write file for article {art.get('id')}: {e}")
+                logging.error(f"Failed to enumerate local articles at {local_articles_dir}: {e}")
+                results['errors'].append(f"Local articles read error: {e}")
+        else:
+            logging.info(f"Local articles directory not found: {local_articles_dir}")
 
-        # 4. Git commit and push
-        logging.info("Checking for changes...")
-        subprocess.run(['git', 'add', '.'], cwd=temp_dir, check=True)
+        # 3. Git commit and push
+        logging.info("Checking for changes (only news folder)...")
+        # Add only the generated articles folder to avoid adding unrelated files
+        subprocess.run(['git', 'add', '--all', 'src/content/news'], cwd=temp_dir, check=True)
         
         status = subprocess.run(['git', 'status', '--porcelain'], cwd=temp_dir, capture_output=True, text=True)
         if not status.stdout.strip():
@@ -101,39 +89,20 @@ def sync_to_git_repo(article_ids: list[str] = None) -> dict:
             subprocess.run(['git', 'push', repo_url, branch], cwd=temp_dir, check=True)
             # After successful push, remove local article files that were the source
             try:
-                local_articles_dir = 'articles'
-                local_root = os.path.join(str(root_dir), local_articles_dir)
-                removed_count = 0
-                import re as _re
-                for art in articles_to_sync:
-                    try:
-                        md = art.get('publish_md')
-                        slug = None
-                        if isinstance(md, str):
-                            m = _re.search(r'^slug:\s*(.+)$', md, _re.MULTILINE)
-                            if m:
-                                slug = m.group(1).strip().strip('"\'')
-                        if not slug:
-                            title = art.get('title_ru') or 'article'
-                            slug = _re.sub(r'[^a-z0-9\-]', '-', (title or '').lower())
-                            slug = _re.sub(r'-{2,}', '-', slug).strip('-')
-                            if not slug:
-                                slug = str(art.get('article_id') or art.get('id'))
-
-                        filename = f"{slug}_{art.get('article_id') or art.get('id')}.md"
-                        local_path = os.path.join(local_root, filename)
-                        if os.path.exists(local_path):
-                            try:
+                if copied_files:
+                    local_root = os.path.join(str(root_dir), 'articles')
+                    removed_count = 0
+                    for name in copied_files:
+                        try:
+                            local_path = os.path.join(local_root, name)
+                            if os.path.exists(local_path):
                                 os.remove(local_path)
                                 removed_count += 1
-                            except Exception as rm_err:
-                                logging.warning(f"Failed to remove local article file {local_path}: {rm_err}")
-                                results['errors'].append(f"Failed to remove local article file {local_path}: {rm_err}")
-                    except Exception as perr:
-                        logging.warning(f"Error while pruning local file for article {art.get('id')}: {perr}")
-                        results['errors'].append(f"Prune error for {art.get('id')}: {perr}")
-                if removed_count:
-                    logging.info(f"Removed {removed_count} local article file(s) from {local_root} after sync")
+                        except Exception as rm_err:
+                            logging.warning(f"Failed to remove local article file {local_path}: {rm_err}")
+                            results['errors'].append(f"Failed to remove local article file {local_path}: {rm_err}")
+                    if removed_count:
+                        logging.info(f"Removed {removed_count} local article file(s) from {local_root} after sync")
             except Exception:
                 logging.exception('Failed during local articles pruning step')
             logging.info("✅ Git sync successful")
@@ -209,14 +178,9 @@ def main() -> None:
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     
-    if not args.article_id:
-        translated_ids = result.get('translated_ids') or []
-        if translated_ids:
-            logging.info(f"Processing incremental git sync for {len(translated_ids)} articles...")
-            sync_result = sync_to_git_repo(article_ids=translated_ids)
-            logging.info(f"Sync result: {sync_result}")
-        else:
-             logging.info("No new translated articles to sync.")
+    logging.info(f"Processing incremental git sync for {len(translated_ids)} articles...")
+    sync_result = sync_to_git_repo()
+    logging.info(f"Sync result: {sync_result}")
 
     # Treat any non-success status or any collected errors as a failure for CI
     has_errors = bool(result.get('errors'))
