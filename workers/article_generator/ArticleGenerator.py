@@ -809,12 +809,8 @@ class ArticleGenerator:
         self.logger.info('🔄 Starting continuous article processing mode')
         self.logger.info(f'Git sync interval: {git_sync_interval_minutes} minutes')
         
-        from workers.article_generator.worker import sync_to_git_repo
-        
         processed_ids = []
         processed_in_session = set()  # Track all IDs processed in this session
-        last_git_sync = time.time()
-        git_sync_interval_seconds = git_sync_interval_minutes * 60
         article_pause_seconds = 5
         
         # Articles directory path
@@ -827,31 +823,11 @@ class ArticleGenerator:
                 cycle_count += 1
                 self.logger.info(f'📊 Cycle {cycle_count}: Fetching top CATEGORIZED article from last 24h...')
                 
-                # Check if we should sync to git before processing next article
-                current_time = time.time()
-                time_since_last_sync = current_time - last_git_sync
-                
                 # Count markdown files in articles directory
                 articles_count = 0
                 if os.path.exists(articles_dir):
                     articles_count = len([f for f in os.listdir(articles_dir) if f.endswith('.md')])
-                
-                # Sync conditions:
-                # 1. More than 20 articles in directory
-                # 2. More than 1 hour (3600 seconds) since last sync
-                should_sync = (articles_count > 20) or (time_since_last_sync >= 3600)
-                
-                if should_sync and (processed_ids or articles_count > 0):
-                    self.logger.info(f'🔄 Git sync triggered: articles_count={articles_count}, time_since_last_sync={int(time_since_last_sync)}s')
-                    try:
-                        sync_result = sync_to_git_repo(article_ids=processed_ids if processed_ids else None)
-                        self.logger.info(f'✅ Git sync completed: {sync_result}')
-                        processed_ids = []  # Clear the list after successful sync
-                        last_git_sync = current_time
-                    except Exception as sync_err:
-                        self.logger.exception(f'❌ Git sync failed: {sync_err}')
-                        # Don't clear processed_ids on error, will retry next cycle
-                
+                                
                 # Fetch the top article from last 24 hours
                 article = self.pg.fetch_top_categorized_article_24h()
                 
@@ -909,13 +885,22 @@ class ArticleGenerator:
                 time.sleep(article_pause_seconds)
                 
             except KeyboardInterrupt:
-                self.logger.info('🛑 Received shutdown signal. Performing final git sync...')
-                if processed_ids:
-                    try:
-                        sync_result = sync_to_git_repo(article_ids=processed_ids)
-                        self.logger.info(f'✅ Final git sync completed: {sync_result}')
-                    except Exception as sync_err:
-                        self.logger.exception(f'❌ Final git sync failed: {sync_err}')
+                self.logger.info('🛑 Received shutdown signal. Requesting final sync via git-sync daemon...')
+                try:
+                    # Create a simple trigger file the daemon watches for
+                    repo_root = Path(__file__).resolve().parent.parent.parent
+                    trigger_file = repo_root / 'articles' / 'sync_now.flag'
+                    articles_dir = repo_root / 'articles'
+                    if articles_dir.exists() and any(articles_dir.glob('*.md')):
+                        try:
+                            trigger_file.write_text(datetime.now(timezone.utc).isoformat(), encoding='utf-8')
+                            self.logger.info('Wrote trigger file %s to request immediate sync', trigger_file)
+                        except Exception:
+                            self.logger.exception('Failed to write trigger file %s', trigger_file)
+                    else:
+                        self.logger.info('No markdown files present; no trigger file created')
+                except Exception:
+                    self.logger.exception('Error while creating trigger file')
                 self.logger.info('👋 Shutting down gracefully')
                 break
             
