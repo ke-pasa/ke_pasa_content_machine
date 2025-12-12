@@ -75,7 +75,7 @@ virality_score (0-20)
 relevance_today (0-10)
   Timeliness penalty: if the news is old or vague "planning" -> 0.
 
-total_score = sum of all metrics. if usefulness_score < 30: total_score is 0
+total_score = sum of all metrics. if usefulness_score < 20: total_score is 0
 
 4) rating:
 publish (85-100) — MUST READ (high utility or high strategic importance)

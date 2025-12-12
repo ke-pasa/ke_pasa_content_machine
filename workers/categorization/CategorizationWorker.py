@@ -268,7 +268,17 @@ class CategorizationWorker:
                 if row and row[0] is not None:
                     topic_id = int(row[0])
                     similarity = float(row[1]) if row[1] is not None else 0.0
+                    try:
+                        self.logger.info(
+                            "Embedding similarity: topic_id=%s similarity=%.4f" % (topic_id, similarity)
+                        )
+                    except Exception:
+                        pass
                     return topic_id, similarity, None
+                try:
+                    self.logger.info("Embedding similarity: no topic match found")
+                except Exception:
+                    pass
                 return None, 0.0, None
             finally:
                 try:
@@ -296,16 +306,28 @@ class CategorizationWorker:
                 # Try vector type first
                 try:
                     cur.execute("UPDATE public.topic SET emb = %s::vector WHERE id = %s", (emb_text, topic_id))
-                except Exception:
-                    # Fallback to jsonb
+                    conn.commit()
+                    preview = (emb_text[:200] + '...') if len(emb_text) > 200 else emb_text
+                    self.logger.info(f"Stored topic embedding for topic {topic_id} as vector (preview={preview})")
+                    return True
+                except Exception as ve:
+                    # Vector cast failed; log the reason and fallback to jsonb
+                    self.logger.debug(f"Vector update failed for topic {topic_id}: {ve}")
                     try:
                         cur.execute("ALTER TABLE public.topic ADD COLUMN IF NOT EXISTS emb jsonb")
                     except Exception:
                         pass
-                    cur.execute("UPDATE public.topic SET emb = %s::jsonb WHERE id = %s", (emb_text, topic_id))
-                
-                conn.commit()
-                return True
+                    try:
+                        cur.execute("UPDATE public.topic SET emb = %s::jsonb WHERE id = %s", (emb_text, topic_id))
+                        conn.commit()
+                        preview = (emb_text[:200] + '...') if len(emb_text) > 200 else emb_text
+                        self.logger.info(f"Stored topic embedding for topic {topic_id} as jsonb (preview={preview})")
+                        return True
+                    except Exception as je:
+                        # Fallback update failed too
+                        self.logger.warning(f"JSONB update failed for topic {topic_id}: {je}")
+                        conn.rollback()
+                        return False
             finally:
                 try:
                     cur.close()
@@ -316,25 +338,42 @@ class CategorizationWorker:
             self.logger.warning(f"Failed to store embedding for topic {topic_id}: {e}")
             return False
 
-    def _match_or_create_topic(self, client, title: str, doc_id: str, score: float) -> int:
+    def _match_or_create_topic(self, client, title: str, doc_id: str, score: float, description: str = '', lock=None, recent_topics=None) -> int:
         """Match article to existing topic or create new one.
         
         Returns:
             int: topic_id or None
         """
+        self.logger.debug(f"_match_or_create_topic start: doc_id={doc_id} title_present={bool(title)} score={score}")
         if not title:
             if score >= MIN_ARTICLE_SCORE:
                 self.logger.warning(f"Skipping topic creation for {doc_id}: Missing title")
             return None
         
-        # Extract embedding for title
-        embedding, err = self._extract_embedding(client, title)
+        # Extract embedding for title + description (prefer richer context)
+        combo_text = title or ''
+        try:
+            if description:
+                combo_text = f"{title}\n\n{description}"
+        except Exception:
+            combo_text = title or ''
+
+        embedding, err = self._extract_embedding(client, combo_text)
         if err:
             self.logger.warning(f"Error computing embedding for topic match: {err}")
             return None
         
         if not embedding:
+            self.logger.warning(f"Embedding empty for doc {doc_id}; skipping topic match")
             return None
+
+        try:
+            emb_len = len(embedding) if hasattr(embedding, '__len__') else 'unknown'
+            self.logger.info(
+                f"Embedding ready for doc {doc_id}: topic_score={score:.2f} vector_len={emb_len}"
+            )
+        except Exception:
+            pass
         
         # Search for similar topic
         topic_id, similarity, err = self._find_similar_topic(embedding)
@@ -343,19 +382,36 @@ class CategorizationWorker:
         
         # Use existing topic if similarity is high enough
         if topic_id and similarity >= self.similarity_threshold:
-            self.logger.info(f"Matched existing topic {topic_id} for '{title}' via embedding (sim={similarity:.3f})")
+            self.logger.info(
+                f"Topic decision for doc {doc_id}: reuse topic {topic_id} (sim={similarity:.3f} >= threshold={self.similarity_threshold:.3f})"
+            )
             return topic_id
         
         if topic_id:
-            self.logger.info(f"Nearest topic id={topic_id} below threshold (sim={similarity:.3f}); will create new topic")
+            self.logger.info(
+                f"Topic decision for doc {doc_id}: candidate {topic_id} below threshold (sim={similarity:.3f} < threshold={self.similarity_threshold:.3f}), creating new"
+            )
         
         # Create new topic
+        self.logger.debug(f"Creating new topic for doc {doc_id} title='{title}'")
         new_topic_id = self.pg.create_topic(title)
         if not new_topic_id:
             self.logger.warning(f"Failed to create topic for article {doc_id} (title='{title}')")
             return None
-        
+
         self.logger.info(f"Created topic {new_topic_id} for article {doc_id} (score={score})")
+
+        try:
+            stored = self._store_topic_embedding(new_topic_id, embedding)
+            if not stored:
+                self.logger.warning(f"Embedding not stored for topic {new_topic_id}")
+            else:
+                try:
+                    self.logger.info(f"Topic decision for doc {doc_id}: embedding persisted for topic {new_topic_id}")
+                except Exception:
+                    pass
+        except Exception as e:
+            self.logger.warning(f"Error storing embedding for topic {new_topic_id}: {e}")
 
         return new_topic_id
 
@@ -494,13 +550,26 @@ class CategorizationWorker:
                         status_field = 'CATEGORIZED'
                         score_val = float(total_score) if total_score is not None else 0.0
                         if score_val < MIN_ARTICLE_SCORE:
+                            try:
+                                self.logger.info(
+                                    f"Article {doc_id} has total_score={score_val:.2f} < threshold {MIN_ARTICLE_SCORE}; topic assignment disabled"
+                                )
+                            except Exception:
+                                pass
                             status_field = 'SKIPPED'
+                        else:
+                            try:
+                                self.logger.info(
+                                    f"Article {doc_id} has total_score={score_val:.2f} >= threshold {MIN_ARTICLE_SCORE}; attempting topic match"
+                                )
+                            except Exception:
+                                pass
 
                         # Topic assignment via embedding similarity
                         topic_id_val = None
                         if score_val >= MIN_ARTICLE_SCORE:
                             try:
-                                topic_id_val = self._match_or_create_topic(client, title, doc_id, score_val)
+                                    topic_id_val = self._match_or_create_topic(client, title, doc_id, score_val, description=description)
                             except Exception as e:
                                 self.logger.exception(f"Error creating topic for {doc_id}: {e}")
 
@@ -808,7 +877,20 @@ class CategorizationWorker:
             status_field = 'CATEGORIZED'
             score_val = float(total_score) if total_score is not None else 0.0
             if score_val < MIN_ARTICLE_SCORE:
+                try:
+                    self.logger.info(
+                        f"Article {doc_id} has total_score={score_val:.2f} < threshold {MIN_ARTICLE_SCORE}; topic assignment disabled"
+                    )
+                except Exception:
+                    pass
                 status_field = 'SKIPPED'
+            else:
+                try:
+                    self.logger.info(
+                        f"Article {doc_id} has total_score={score_val:.2f} >= threshold {MIN_ARTICLE_SCORE}; attempting topic match"
+                    )
+                except Exception:
+                    pass
 
             # Topic assignment via embedding similarity (no lock needed for single doc)
             topic_id_val = None
@@ -823,7 +905,7 @@ class CategorizationWorker:
                     except Exception:
                         pass
                     
-                    topic_id_val = self._match_or_create_topic(client, title, doc_id, score_val, lock, recent_topics)
+                    topic_id_val = self._match_or_create_topic(client, title, doc_id, score_val, description=description, lock=lock, recent_topics=recent_topics)
                 except Exception as e:
                     self.logger.exception(f"Error creating topic for {doc_id}: {e}")
 
