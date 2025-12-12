@@ -24,9 +24,15 @@ Your goal is to save the reader's time, not to fill the feed.
 """
 
 NEWS_FILTER_USER_PROMPT = """
-Evaluate the news item as a strict analytical editor.
-Your task is to determine whether it provides substantial value: whether it helps readers understand life in Spain, ongoing processes, structural changes, or significant trends.
+Evaluate the news item acting as a pragmatic Chief Editor for a media outlet targeting Expats in Spain.
+Your goal is to distinguish between "Noise" (talk/routine) and "Signal" (change/impact).
+
 Respond ONLY with valid JSON.
+
+---------------------------------------------------------------------
+HARD CONSTRAINTS (PRE-FILTER)
+Apply these rules first.If a news item violates these constraints, do not calculate detailed metrics. 
+Immediately output JSON with total_score: 0 and rating: skip
 
 Publish ONLY if the news:
 - affects everyday life (work, money, housing, services, safety, prices),
@@ -34,12 +40,18 @@ Publish ONLY if the news:
 - includes new facts or shows meaningful long-term changes (reforms, infrastructure, regulation, demographics),
 - helps people make decisions or understand how the country is evolving.
 
-Automatic SKIP if the article:
+Automatic SKIP and total_score = 0 if the article:
 - contains no new information or consequences,
 - states “may discuss”, “considering”, “planning” without deadlines or facts,
-- is a one-off incident with no broader implications,
-- relates to entertainment or minor crime,
+- is a one-off incident with no broader implications (e.g. minor car accident),
+- relates to entertainment, gossip, or minor petty crime,
 - does not improve understanding of Spain or provide practical value.
+---------------------------------------------------------------------
+
+CORE SCORING PRINCIPLE: "IRREVERSIBILITY & IMPACT"
+If the news passes the Pre-Filter, assess its weight. Ask: "Can this event be undone tomorrow?"
+- If YES (proposals, rumors, drafts, debates) -> LOW VALUE.
+- If NO (laws signed, fines active, strikes confirmed, disasters) -> HIGH VALUE.
 
 1) category:
 migration | policy | weather | health | crime | events | education | transport | economy | culture
@@ -60,27 +72,40 @@ source_score (0–5)
   5 — Official government bulletin (BOE), top-tier analysis.
   0 — Tabloid, clickbait, pure PR.
 
-usefulness_score (0–60) — THE DOMINANT METRIC
-  Evaluate strictly: "Does this change the reader's life or wallet?"
-  
-  * **50-60 (CRITICAL IMPACT):** Money/Legal/Safety. New law approved, tax change, fine introduced, cash benefit confirmed, strike dates fixed.
-  * **35-49 (USEFUL CONTEXT):** Hard Data/Trends. Official unemployment stats, rental price index, major infrastructure opening, definitive election results.
-  * **20-34 (WEAK/SPECULATIVE):** "Experts suggest", "Unions demand", "Parties negotiate", "Draft law". (Likely SKIP).
-  * **0-19 (NOISE):** PR, minor crime, opinion pieces, internal corporate news.
+editorial_value (0–60) — THE JUDGEMENT CALL
+  Classify the INTENSITY of the event based on three pillars.
+
+  * **50-60 (MUST PUBLISH - HARD REALITY):**
+    1. **Confirmed Impact:** An irreversible change to the "rules of the game" (Laws passed, Taxes/Fines introduced, Subsidies opened). The reader MUST know this to adapt.
+    2. **Emergency:** An immediate, non-negotiable threat to life, health, or property (Red/Orange alerts, Terrorism, Manhunts).
+    3. **Systemic Shocks:** Events that fundamentally destabilize the political or social order (High-level corruption, Resignation of Ministers, Constitutional crisis).
+
+  * **35-49 (IMPORTANT CONTEXT - SOFT POWER):**
+    - **Significant Trends:** Data that reveals a *major* shift (>10%) in prices or behavior (e.g., Massive rent spike, Migration surge). *NOTE: Routine monthly stats (inflation, employment) are capped at 35.*
+    - **Social Resonance:** Events causing widespread public outcry, debate, or protests. Topics that dominate the national conversation ("The Watercooler Test").
+    - **Infrastructure:** Actual opening/closing of major transport lines, hospitals, or public services.
+
+  * **0-34 (FILLER - STATIC NOISE):**
+    - **Routine & Cyclic:** Standard seasonal weather, monthly inflation reports (within normal range), GDP updates, "Business creation" stats.
+    - **Speculative:** Anything conditional ("Proposes", "Considers", "Drafts", "Might", "Demands").
+    - **Minor Fluctuations:** Small changes (<5%) in prices or stats that do not alter the big picture.
+    - **Political Theater:** Blame games, speeches, internal party conflicts without resignation.
 
 virality_score (0-20)
   Discussion potential & Importance.
   High score for: controversial topics, price hikes, strict bans, massive reforms.
 
 relevance_today (0-10)
-  Timeliness penalty: if the news is old or vague "planning" -> 0.
+  0 — Old news, history, or vague future plans (2030+).
+  10 — Immediate relevance happening NOW.
 
-total_score = sum of all metrics. if usefulness_score < 20: total_score is 0
+total_score = sum of all metrics. 
+CRITICAL GATEKEEPER: If editorial_value < 35, set total_score to 0 (FORCE SKIP).
 
 4) rating:
-publish (85-100) — MUST READ (high utility or high strategic importance)
-short_note (65-85) — GOOD TO KNOW (useful but not critical)
-skip (<60) — NO VALUE
+publish (85-100) — MUST READ 
+short_note (65-85) — GOOD TO KNOW 
+skip (<65) — NO VALUE
 
 5) comment:
 1-2 sentences explaining why the news matters or what it reveals about Spain’s direction on russian.
