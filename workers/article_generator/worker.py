@@ -177,10 +177,26 @@ def main() -> None:
         result = worker.process_articles()
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    
+
+    # Safely obtain list of translated ids from the result (fallback to empty list)
+    try:
+        translated_ids = result.get('translated_ids') if isinstance(result, dict) else []
+        if not isinstance(translated_ids, list):
+            translated_ids = []
+    except Exception:
+        translated_ids = []
+
     logging.info(f"Processing incremental git sync for {len(translated_ids)} articles...")
-    sync_result = sync_to_git_repo()
-    logging.info(f"Sync result: {sync_result}")
+    # Allow skipping git sync for local testing via SKIP_GIT_SYNC=1
+    skip_sync = os.getenv('SKIP_GIT_SYNC')
+    if skip_sync and skip_sync.strip() == '1':
+        logging.info('SKIP_GIT_SYNC is set; skipping git sync (local test mode)')
+    else:
+        if translated_ids:
+            sync_result = sync_to_git_repo()
+            logging.info(f"Sync result: {sync_result}")
+        else:
+            logging.info('No translated articles to sync; skipping git sync')
 
     # Treat any non-success status or any collected errors as a failure for CI
     has_errors = bool(result.get('errors'))

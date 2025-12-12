@@ -139,12 +139,12 @@ class ArticleGenerator:
 
 
     def _phase1_prescan_and_skip(self) -> int:
-        """Mark CATEGORIZED articles with score < MIN_ARTICLE_SCORE or age > 3 days as SKIPPED."""
+        """Mark CATEGORIZED articles with score < MIN_ARTICLE_SCORE or age > 2 days as SKIPPED."""
         low_score_count = 0
         page_size = 500
         last_snapshot = None
         page_index = 0
-        
+
         try:
             while True:
                 rows = self.pg.fetch_articles_new(limit=page_size, last_cursor=last_snapshot, status='CATEGORIZED')
@@ -638,11 +638,73 @@ class ArticleGenerator:
                 fm_text = _re.sub(r'^slug:.*$', f'slug: {slug}', fm_text, flags=_re.MULTILINE)
             else:
                 fm_text = fm_text + f'\nslug: {slug}'
+            # Replace or add pubDate with current UTC ISO datetime
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+            except Exception:
+                now_iso = datetime.now().isoformat()
+
+            if _re.search(r'^pubDate:.*$', fm_text, flags=_re.MULTILINE):
+                fm_text = _re.sub(r'^pubDate:.*$', f'pubDate: "{now_iso}"', fm_text, flags=_re.MULTILINE)
+            else:
+                fm_text = fm_text + f'\npubDate: "{now_iso}"'
+            # Replace or add score (numeric) from translation_result or article_metadata
+            try:
+                score_val = None
+                # prefer explicit score in translation_result metadata
+                if isinstance(translation_result, dict):
+                    score_val = translation_result.get('score') or translation_result.get('total_score')
+                if score_val is None:
+                    score_val = article_metadata.get('total_score') if isinstance(article_metadata, dict) else None
+                # fallback: attempt to read numeric total_score from data
+                if score_val is None:
+                    try:
+                        score_val = float(data.get('total_score') or data.get('interest', {}).get('total_score'))
+                    except Exception:
+                        score_val = None
+                # write numeric value (default 0.0)
+                if score_val is None:
+                    score_str = '0.0'
+                else:
+                    try:
+                        score_str = f"{float(score_val):.2f}"
+                    except Exception:
+                        score_str = str(score_val)
+
+                if _re.search(r'^score:.*$', fm_text, flags=_re.MULTILINE):
+                    fm_text = _re.sub(r'^score:.*$', f'score: {score_str}', fm_text, flags=_re.MULTILINE)
+                else:
+                    fm_text = fm_text + f'\nscore: {score_str}'
+            except Exception:
+                pass
             new_md = '---' + fm_text + '\n---' + rest
         else:
             esc_title2 = title_val.replace('"', '\\"') if isinstance(title_val, str) else ''
             esc_desc2 = desc_val.replace('"', '\\"') if isinstance(desc_val, str) else ''
+            # Set pubDate to current UTC ISO datetime for new frontmatter
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+            except Exception:
+                now_iso = datetime.now().isoformat()
+
             new_fm_lines = [f'title: "{esc_title2}"', f'description: "{esc_desc2}"', f'slug: {slug}', f'image: {image_val or ""}']
+            new_fm_lines.append(f'pubDate: "{now_iso}"')
+            # Add score field for new frontmatter (attempt to read from article_metadata or translation_result)
+            try:
+                score_val2 = None
+                if isinstance(translation_result, dict):
+                    score_val2 = translation_result.get('score') or translation_result.get('total_score')
+                if score_val2 is None:
+                    score_val2 = article_metadata.get('total_score') if isinstance(article_metadata, dict) else None
+                if score_val2 is None:
+                    try:
+                        score_val2 = float(data.get('total_score') or data.get('interest', {}).get('total_score'))
+                    except Exception:
+                        score_val2 = None
+                score_line = f'score: {float(score_val2):.2f}' if score_val2 is not None else 'score: 0.00'
+            except Exception:
+                score_line = 'score: 0.00'
+            new_fm_lines.append(score_line)
             new_md = '---\n' + '\n'.join(new_fm_lines) + '\n---\n\n' + md
 
         repo_root = Path(__file__).resolve().parent.parent.parent
