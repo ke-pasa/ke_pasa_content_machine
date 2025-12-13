@@ -24,37 +24,33 @@ Your goal is to save the reader's time, not to fill the feed.
 """
 
 NEWS_FILTER_USER_PROMPT = """
-Evaluate the news item acting as a pragmatic Chief Editor for a media outlet targeting Expats in Spain.
-Your goal is to distinguish between "Noise" (talk/routine) and "Signal" (change/impact).
+Evaluate the news item acting as a Chief Editor for a popular Expat News Portal in Spain.
+Your goal is to populate the feed with stories that are either **USEFUL** (affecting life/wallet) or **ENGAGING** (topics people want to discuss).
 
 Respond ONLY with valid JSON.
 
 ---------------------------------------------------------------------
 HARD CONSTRAINTS (PRE-FILTER)
-Apply these rules first.If a news item violates these constraints, do not calculate detailed metrics. 
-Immediately output JSON with total_score: 0 and rating: skip
+Apply these rules first. If a news item violates these constraints, do not calculate detailed metrics. 
+Immediately output JSON with total_score: 0 and rating: skip.
 
-Publish ONLY if the news:
-- affects everyday life (work, money, housing, services, safety, prices),
-- explains important decisions, economic conditions, political context, or societal dynamics,
-- includes new facts or shows meaningful long-term changes (reforms, infrastructure, regulation, demographics),
-- helps people make decisions or understand how the country is evolving.
-
-Automatic SKIP and total_score = 0 if the article:
-- contains no new information or consequences,
-- states “may discuss”, “considering”, “planning” without deadlines or facts,
-- is a one-off incident with no broader implications (e.g. minor car accident),
-- relates to entertainment, gossip, or minor petty crime,
-- does not improve understanding of Spain or provide practical value.
+Automatic SKIP if the article is:
+- **Hyper-local trivia:** Small events in villages, minor municipal repairs (e.g. "bench painted").
+- **Routine administrative PR:** "Minister visits factory", "City hall holds meeting" (unless a decision is made).
+- **Minor routine crime:** Isolated thefts or fights without broader social significance.
+- **Pure "Filler":** Horoscopes, single recipes, celebrity gossip (unless related to serious legal issues).
+- **Old News:** Recycled stories from previous years without new updates.
 ---------------------------------------------------------------------
 
-CORE SCORING PRINCIPLE: "IRREVERSIBILITY & IMPACT"
-If the news passes the Pre-Filter, assess its weight. Ask: "Can this event be undone tomorrow?"
-- If YES (proposals, rumors, drafts, debates) -> LOW VALUE.
-- If NO (laws signed, fines active, strikes confirmed, disasters) -> HIGH VALUE.
+SCORING PRINCIPLE: "THE COFFEE & WALLET TEST"
+If the news passes the Pre-Filter, assess its value.
+Ask: "Does this impact the reader's wallet/safety OR is it a topic expats would discuss over coffee?"
+- If **Impact** (Laws, Money) -> HIGH SCORE.
+- If **Discussion** (Scandals, Trends, Curiosity) -> MEDIUM SCORE.
+- If **Boredom** (Routine stats, bureaucracy) -> LOW SCORE.
 
 1) category:
-migration | policy | weather | health | crime | events | education | transport | economy | culture
+migration | policy | weather | health | crime | events | education | transport | economy | culture | society
 
 2) region:
 spain | madrid | catalonia | valencia | andalusia | basque-country |
@@ -65,58 +61,56 @@ asturias | cantabria
 3) scoring:
 
 region_score (0–5)
-  5 — National level or Major Hubs (Madrid/BCN/Valencia/Malaga).
-  0 — Small towns or irrelevant regions.
+  5 — National impact or Major Expat Hubs (Madrid/BCN/Valencia/Malaga/Alicante).
+  0 — Irrelevant / Remote areas.
 
 source_score (0–5)
-  5 — Official government bulletin (BOE), top-tier analysis.
-  0 — Tabloid, clickbait, pure PR.
+  5 — Reliable/Official sources.
+  0 — Tabloid/Clickbait.
 
-editorial_value (0–60) — THE JUDGEMENT CALL
-  Classify the INTENSITY of the event based on three pillars.
+editorial_value (0–60) — THE PORTAL METRIC
+  Assess the quality based on these abstract categories:
 
-  * **50-60 (MUST PUBLISH - HARD REALITY):**
-    1. **Confirmed Impact:** An irreversible change to the "rules of the game" (Laws passed, Taxes/Fines introduced, Subsidies opened). The reader MUST know this to adapt.
-    2. **Emergency:** An immediate, non-negotiable threat to life, health, or property (Red/Orange alerts, Terrorism, Manhunts).
-    3. **Systemic Shocks:** Events that fundamentally destabilize the political or social order (High-level corruption, Resignation of Ministers, Constitutional crisis).
+  * **50-60 (MUST PUBLISH - HARD IMPACT):**
+    - **Crystallized Reality:** Laws passed, fines introduced, taxes changed, deadlines set.
+    - **Physical Disruption:** Confirmed strikes, infrastructure closures, extreme weather (Red/Orange alerts).
+    - **Direct Financial Benefit/Loss:** Subsidies opened, confirmed price hikes on utilities/transport.
 
-  * **35-49 (IMPORTANT CONTEXT - SOFT POWER):**
-    - **Significant Trends:** Data that reveals a *major* shift (>10%) in prices or behavior (e.g., Massive rent spike, Migration surge). *NOTE: Routine monthly stats (inflation, employment) are capped at 35.*
-    - **Social Resonance:** Events causing widespread public outcry, debate, or protests. Topics that dominate the national conversation ("The Watercooler Test").
-    - **Infrastructure:** Actual opening/closing of major transport lines, hospitals, or public services.
+  * **30-49 (HIGH INTEREST - SOCIAL FUEL):**
+    - **Political Tension & Scandals:** High-level corruption, open conflict between government partners, ultimatums that threaten stability. (Readers care about the "drama" of power).
+    - **Economic Relatability:** Trends in cost of living, housing market analysis, or food prices. (Stories that validate the reader's daily economic experience).
+    - **Environmental & Curiosity:** Invasive species, unusual natural phenomena, significant archeological finds, or unique cultural events. (Topics that spark curiosity).
+    - **Seasonal Relevance:** Weather warnings (Yellow) that impact upcoming weekends or holidays.
 
-  * **0-34 (FILLER - STATIC NOISE):**
-    - **Routine & Cyclic:** Standard seasonal weather, monthly inflation reports (within normal range), GDP updates, "Business creation" stats.
-    - **Speculative:** Anything conditional ("Proposes", "Considers", "Drafts", "Might", "Demands").
-    - **Minor Fluctuations:** Small changes (<5%) in prices or stats that do not alter the big picture.
-    - **Political Theater:** Blame games, speeches, internal party conflicts without resignation.
+  * **0-29 (NOISE - SKIP):**
+    - **Routine Statistics:** Standard monthly reports (inflation/unemployment) without a shocking deviation or record-breaking numbers.
+    - **Vague Speculation:** "Proposals", "Drafts", "Suggestions" from minor parties with no chance of passing.
+    - **Political "Noise":** Routine criticism between politicians without consequences (no resignations, no legal action).
 
 virality_score (0-20)
-  Discussion potential & Importance.
-  High score for: controversial topics, price hikes, strict bans, massive reforms.
+  High score for topics triggering emotion: Outrage (Corruption/Squatters), Anxiety (Prices), Fascination (Nature/History).
 
 relevance_today (0-10)
-  0 — Old news, history, or vague future plans (2030+).
-  10 — Immediate relevance happening NOW.
+  10 — Happening NOW.
+  0 — Old news/History.
 
 total_score = sum of all metrics. 
-CRITICAL GATEKEEPER: If editorial_value < 35, set total_score to 0 (FORCE SKIP).
+CRITICAL GATEKEEPER: If editorial_value < 30, set total_score to 0 (FORCE SKIP).
 
 4) rating:
-publish (85-100) — MUST READ 
-short_note (65-85) — GOOD TO KNOW 
-skip (<65) — NO VALUE
+publish (85-100) — COVER STORY (Hard Impact or Major Scandal)
+short_note (60-85) — INTERESTING READ (Social/Trends/Curiosity)
+skip (<60) — TRASH
 
 5) comment:
-1-2 sentences explaining why the news matters or what it reveals about Spain’s direction on russian.
+1 sentence in Russian explaining the value. (e.g., "Политический кризис", "Полезная статистика цен", "Любопытное открытие", "Важное изменение закона").
 
 Input fields:
 Title: {title}
 Description: {description}
-Tags: {tags}
 Content: {content}
 Source: {source}
-Publication Date: {pub_date}
+Date: {pub_date}
 Feed: {feed_name}
 Region Hint: {region_hint}
 """
