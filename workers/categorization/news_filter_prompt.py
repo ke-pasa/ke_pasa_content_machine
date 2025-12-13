@@ -24,65 +24,86 @@ Your goal is to save the reader's time, not to fill the feed.
 """
 
 NEWS_FILTER_USER_PROMPT = """
-Evaluate the news item acting as a Chief Editor for a Spain-based Expat News Portal.
-Your Goal: Curate a feed that balances **UTILITY** (Survival/Legal) and **ENGAGEMENT** (Social Context).
+Evaluate the news item acting as a Chief Editor for a News Portal for Foreign Residents in Spain.
+Your audience lives in Spain but needs help understanding the context.
+Your Goal: **EXPLAIN REALITY**, **SAVE NERVES**, and **WARN ABOUT RISKS**.
 
 Respond ONLY with valid JSON.
 
 ---------------------------------------------------------------------
 HARD CONSTRAINTS (PRE-FILTER)
-Apply first. Immediate SKIP (Score 0) if the content is:
-- **Hyper-local / Irrelevant:** Events in villages with no expat community, minor municipal repairs.
-- **Internal Bureaucracy:** Administrative updates relevant only to Spanish civil servants or military.
-- **Routine/Minor Crime:** Isolated petty theft or fights without broader social significance.
-- **Pure Filler:** Horoscopes, generic recipes, celebrity gossip (unless involving tax/legal scandals).
-- **Outdated:** Recycled news without new developments.
+IMMEDIATE SKIP (Score 0) if the content is:
+- **Hyper-local noise:** Events in tiny villages, minor municipal repairs.
+- **Internal Bureaucracy:** Updates relevant only to Spanish civil servants/military.
+- **Routine Crime:** Pocket theft, fights (unless indicating a new dangerous trend).
+- **Pure Filler:** Horoscopes, recipes, celebrity gossip (unless involving tax/legal scandals).
+- **Archive:** Old news without any new angle or upcoming deadline.
 ---------------------------------------------------------------------
 
-SCORING METRICS (Use Semantic Understanding)
+SCORING METRICS (Max Total = 100)
 
-1) region_score (0–5)
-   5 — National scope OR Regions with high expat density (Coastal areas, Islands, Major Cities).
-   0 — Remote rural areas.
+1) region_score (0–10)
+   10 — National scope OR Major Hubs (Madrid, BCN, Valencia, Malaga, Alicante, Islands).
+   0 — Irrelevant rural areas.
 
-2) source_score (0–5)
-   5 — Official sources (Government/Police) or Top-tier Media.
+2) source_score (0–10)
+   10 — Official Laws (BOE), Top-tier Media, Police Reports.
    0 — Unverified rumors, Tabloids.
 
-3) editorial_value (0–60) — VALUE ASSESSMENT
+3) editorial_value (0–50) — VALUE ASSESSMENT
    Classify based on the **nature** of the event:
 
-   * **50-60 (CRITICAL IMPACT):**
-     - **Legal & Admin:** Any change to immigration rules, residency status, citizenship, or required documentation.
-     - **Financial:** Confirmed new taxes, subsidies, or significant price regulations (rent/utilities).
-     - **Safety:** Red/Orange weather alerts, confirmed transport strikes, health emergencies.
+   * **40-50 (CRITICAL IMPACT):**
+     - **Bureaucracy & Status:** Changes to Residency, NIE/TIE, Citizenship, Nomad Visas.
+     - **Money & Assets:** New Taxes, confirmed utility price hikes, Rental price laws, Banking blocks/compliance rules.
+     - **Safety:** Transport strikes (dates set), Red/Orange Weather alerts, Epidemics.
 
-   * **30-49 (HIGH INTEREST / SOCIAL CONTEXT):**
-     - **Political Instability:** Corruption scandals, resignations, election calls, or conflicts threatening governance.
-     - **Social Friction:** Major protests (farmers, doctors) or housing crisis trends (explaining the "mood" of the country).
-     - **Security Trends:** Large-scale police operations against organized crime (Drugs/Trafficking).
-     - **Curiosity:** Invasive species, unique natural phenomena, or cultural anomalies.
+   * **25-39 (HIGH INTEREST / SOCIAL CONTEXT):**
+     - **Political Drama:** Corruption scandals, Resignations, Election calls, Government instability.
+     - **Social Friction:** Major protests (farmers, doctors, housing) explaining the "mood" of the country.
+     - **Expat Pain Points:** Schooling/Education issues, Healthcare access (waiting lists), International Connectivity (New flights/Airport chaos).
+     - **Security:** Major police operations (Drugs/Mafia) with large seizures.
+     - **Curiosity:** Invasive species, unique phenomena, cultural anomalies.
 
-   * **0-29 (NOISE - SKIP):**
-     - **Routine Stats:** Standard economic indicators without shock value.
-     - **Political Noise:** Criticism/Debates without legislative action.
-     - **Speculation:** Proposals/Drafts with no immediate chance of passing.
+   * **0-24 (NOISE - SKIP):**
+     - **Routine Stats:** Standard inflation/unemployment updates.
+     - **Political Noise:** Criticism without legislative action.
+     - **Vague Plans:** Proposals for distant future (2026+).
 
-4) expat_relevance_bonus (0-10)
-   **ADD +10 POINTS** if the topic specifically targets the **foreign population** or **international connectivity** (e.g., airports, digital nomad lifestyle, international tax treaties), even if the event is minor.
+4) expat_relevance_bonus (0-15)
+   **ADD +15 POINTS** if the topic specifically targets **foreigners** or **international lifestyle**:
+   - Immigration offices / Cita Previa.
+   - International Tax (Beckham Law, Crypto reporting).
+   - Connectivity (Airports, Trains to France/Portugal).
+   - English-speaking services or International Schools.
+
+5) urgency_score (0-15)
+   **ADD  POINTS** if:
+   - **Happening NOW:** This week's events (Strikes, Storms).
+   - **Deadline Alert:** Old law, but the *deadline to apply* is approaching.
+   - **Emotion:** Triggers strong Outrage (Corruption) or Fear (Crime).
 
 total_score = sum of metrics.
-CRITICAL GATEKEEPER: If (editorial_value + expat_relevance_bonus) < 30, set total_score to 0.
+
+---------------------------------------------------------------------
+DYNAMIC GATEKEEPER LOGIC
+Calculate the Threshold:
+- Base Threshold = 30.
+- IF source_score == 10 (Top Tier Media), REDUCE Threshold to 25 (Trust their context).
+
+DECISION:
+- IF total_score < Threshold -> Set total_score = 0 (SKIP).
+---------------------------------------------------------------------
 
 OUTPUT FORMAT:
 1) category: (migration | policy | weather | health | crime | events | education | transport | economy | culture | society)
 2) region: (select specific region or 'spain')
-3) scores: (detailed values)
+3) scores: (detailed values for region, source, editorial, expat, urgency)
 4) rating:
    - publish (85-100) — COVER STORY
-   - short_note (60-85) — WORTH READING
+   - short_note (60-84) — WORTH READING
    - skip (<60) — TRASH
-5) comment: 1 sentence in Russian explaining the value (e.g., "Касается ВНЖ", "Политический контекст", "Важный тренд цен").
+5) comment: 1 sentence in Russian explaining the value (e.g., "Важно для ВНЖ", "Политический контекст", "Полезная статистика цен", "Напоминание о дедлайне").
 
 Input fields:
 Title: {title}
