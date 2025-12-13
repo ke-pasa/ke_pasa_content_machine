@@ -24,86 +24,65 @@ Your goal is to save the reader's time, not to fill the feed.
 """
 
 NEWS_FILTER_USER_PROMPT = """
-Evaluate the news item acting as a Chief Editor for a popular Expat News Portal in Spain.
-Your goal is to populate the feed with stories that are either **USEFUL** (affecting life/wallet) or **ENGAGING** (topics people want to discuss).
+Evaluate the news item acting as a Chief Editor for a Spain-based Expat News Portal.
+Your Goal: Curate a feed that balances **UTILITY** (Survival/Legal) and **ENGAGEMENT** (Social Context).
 
 Respond ONLY with valid JSON.
 
 ---------------------------------------------------------------------
 HARD CONSTRAINTS (PRE-FILTER)
-Apply these rules first. If a news item violates these constraints, do not calculate detailed metrics. 
-Immediately output JSON with total_score: 0 and rating: skip.
-
-Automatic SKIP if the article is:
-- **Hyper-local trivia:** Small events in villages, minor municipal repairs (e.g. "bench painted").
-- **Routine administrative PR:** "Minister visits factory", "City hall holds meeting" (unless a decision is made).
-- **Minor routine crime:** Isolated thefts or fights without broader social significance.
-- **Pure "Filler":** Horoscopes, single recipes, celebrity gossip (unless related to serious legal issues).
-- **Old News:** Recycled stories from previous years without new updates.
+Apply first. Immediate SKIP (Score 0) if the content is:
+- **Hyper-local / Irrelevant:** Events in villages with no expat community, minor municipal repairs.
+- **Internal Bureaucracy:** Administrative updates relevant only to Spanish civil servants or military.
+- **Routine/Minor Crime:** Isolated petty theft or fights without broader social significance.
+- **Pure Filler:** Horoscopes, generic recipes, celebrity gossip (unless involving tax/legal scandals).
+- **Outdated:** Recycled news without new developments.
 ---------------------------------------------------------------------
 
-SCORING PRINCIPLE: "THE COFFEE & WALLET TEST"
-If the news passes the Pre-Filter, assess its value.
-Ask: "Does this impact the reader's wallet/safety OR is it a topic expats would discuss over coffee?"
-- If **Impact** (Laws, Money) -> HIGH SCORE.
-- If **Discussion** (Scandals, Trends, Curiosity) -> MEDIUM SCORE.
-- If **Boredom** (Routine stats, bureaucracy) -> LOW SCORE.
+SCORING METRICS (Use Semantic Understanding)
 
-1) category:
-migration | policy | weather | health | crime | events | education | transport | economy | culture | society
+1) region_score (0–5)
+   5 — National scope OR Regions with high expat density (Coastal areas, Islands, Major Cities).
+   0 — Remote rural areas.
 
-2) region:
-spain | madrid | catalonia | valencia | andalusia | basque-country |
-galicia | murcia | aragon | castile-and-leon | castile-la-mancha |
-canary-islands | balearic-islands | navarre | la-rioja | extremadura |
-asturias | cantabria
+2) source_score (0–5)
+   5 — Official sources (Government/Police) or Top-tier Media.
+   0 — Unverified rumors, Tabloids.
 
-3) scoring:
+3) editorial_value (0–60) — VALUE ASSESSMENT
+   Classify based on the **nature** of the event:
 
-region_score (0–5)
-  5 — National impact or Major Expat Hubs (Madrid/BCN/Valencia/Malaga/Alicante).
-  0 — Irrelevant / Remote areas.
+   * **50-60 (CRITICAL IMPACT):**
+     - **Legal & Admin:** Any change to immigration rules, residency status, citizenship, or required documentation.
+     - **Financial:** Confirmed new taxes, subsidies, or significant price regulations (rent/utilities).
+     - **Safety:** Red/Orange weather alerts, confirmed transport strikes, health emergencies.
 
-source_score (0–5)
-  5 — Reliable/Official sources.
-  0 — Tabloid/Clickbait.
+   * **30-49 (HIGH INTEREST / SOCIAL CONTEXT):**
+     - **Political Instability:** Corruption scandals, resignations, election calls, or conflicts threatening governance.
+     - **Social Friction:** Major protests (farmers, doctors) or housing crisis trends (explaining the "mood" of the country).
+     - **Security Trends:** Large-scale police operations against organized crime (Drugs/Trafficking).
+     - **Curiosity:** Invasive species, unique natural phenomena, or cultural anomalies.
 
-editorial_value (0–60) — THE PORTAL METRIC
-  Assess the quality based on these abstract categories:
+   * **0-29 (NOISE - SKIP):**
+     - **Routine Stats:** Standard economic indicators without shock value.
+     - **Political Noise:** Criticism/Debates without legislative action.
+     - **Speculation:** Proposals/Drafts with no immediate chance of passing.
 
-  * **50-60 (MUST PUBLISH - HARD IMPACT):**
-    - **Crystallized Reality:** Laws passed, fines introduced, taxes changed, deadlines set.
-    - **Physical Disruption:** Confirmed strikes, infrastructure closures, extreme weather (Red/Orange alerts).
-    - **Direct Financial Benefit/Loss:** Subsidies opened, confirmed price hikes on utilities/transport.
+4) expat_relevance_bonus (0-10)
+   **ADD +10 POINTS** if the topic specifically targets the **foreign population** or **international connectivity** (e.g., airports, digital nomad lifestyle, international tax treaties), even if the event is minor.
 
-  * **30-49 (HIGH INTEREST - SOCIAL FUEL):**
-    - **Political Tension & Scandals:** High-level corruption, open conflict between government partners, ultimatums that threaten stability. (Readers care about the "drama" of power).
-    - **Economic Relatability:** Trends in cost of living, housing market analysis, or food prices. (Stories that validate the reader's daily economic experience).
-    - **Environmental & Curiosity:** Invasive species, unusual natural phenomena, significant archeological finds, or unique cultural events. (Topics that spark curiosity).
-    - **Seasonal Relevance:** Weather warnings (Yellow) that impact upcoming weekends or holidays.
+total_score = sum of metrics.
+CRITICAL GATEKEEPER: If (editorial_value + expat_relevance_bonus) < 30, set total_score to 0.
 
-  * **0-29 (NOISE - SKIP):**
-    - **Routine Statistics:** Standard monthly reports (inflation/unemployment) without a shocking deviation or record-breaking numbers.
-    - **Vague Speculation:** "Proposals", "Drafts", "Suggestions" from minor parties with no chance of passing.
-    - **Political "Noise":** Routine criticism between politicians without consequences (no resignations, no legal action).
-
-virality_score (0-20)
-  High score for topics triggering emotion: Outrage (Corruption/Squatters), Anxiety (Prices), Fascination (Nature/History).
-
-relevance_today (0-10)
-  10 — Happening NOW.
-  0 — Old news/History.
-
-total_score = sum of all metrics. 
-CRITICAL GATEKEEPER: If editorial_value < 30, set total_score to 0 (FORCE SKIP).
-
+OUTPUT FORMAT:
+1) category: (migration | policy | weather | health | crime | events | education | transport | economy | culture | society)
+2) region: (select specific region or 'spain')
+3) scores: (detailed values)
 4) rating:
-publish (85-100) — COVER STORY (Hard Impact or Major Scandal)
-short_note (60-85) — INTERESTING READ (Social/Trends/Curiosity)
-skip (<60) — TRASH
-
-5) comment:
-1 sentence in Russian explaining the value. (e.g., "Политический кризис", "Полезная статистика цен", "Любопытное открытие", "Важное изменение закона").
+   - publish (85-100) — COVER STORY
+   - short_note (60-85) — WORTH READING
+   - skip (<60) — TRASH
+5) comment: 1 sentence in Russian explaining the value (e.g., "Касается ВНЖ", "Политический контекст", "Важный тренд цен").
 
 Input fields:
 Title: {title}
@@ -111,8 +90,6 @@ Description: {description}
 Content: {content}
 Source: {source}
 Date: {pub_date}
-Feed: {feed_name}
-Region Hint: {region_hint}
 """
 
 def get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name='', region_hint=''):
