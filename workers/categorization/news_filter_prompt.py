@@ -31,14 +31,6 @@ Your Goal: **EXPLAIN REALITY**, **SAVE NERVES**, and **WARN ABOUT RISKS**.
 Respond ONLY with valid JSON.
 
 ---------------------------------------------------------------------
-HARD CONSTRAINTS (PRE-FILTER)
-IMMEDIATE SKIP (Score 0) if the content is:
-- **Hyper-local noise:** Events in tiny villages, minor municipal repairs.
-- **Internal Bureaucracy:** Updates relevant only to Spanish civil servants/military.
-- **Routine Crime:** Pocket theft, fights (unless indicating a new dangerous trend).
-- **Pure Filler:** Horoscopes, recipes, celebrity gossip (unless involving tax/legal scandals).
-- **Archive:** Old news without any new angle or upcoming deadline.
----------------------------------------------------------------------
 
 SCORING METRICS (Max Total = 100)
 
@@ -58,10 +50,10 @@ SCORING METRICS (Max Total = 100)
      - **Bureaucracy & Status:** Changes to Residency, NIE/TIE, Citizenship, Nomad Visas.
      - **Money & Assets:** New Taxes, confirmed utility price hikes, Rental price laws, Banking blocks/compliance rules.
      - **Safety:** Transport strikes (dates set), Red/Orange Weather alerts, Epidemics.
+    - **Disruptions:** Confirmed strikes (transport, health, education), road closures, water restrictions.
 
    * **35-55 (HIGH INTEREST / SOCIAL CONTEXT):**
      - **Political Drama:** Corruption scandals, Resignations, Election calls, Government instability.
-     - **Social Friction:** Major protests (farmers, doctors, housing) explaining the "mood" of the country.
      - **Expat Pain Points:** Schooling/Education issues, Healthcare access (waiting lists), International Connectivity (New flights/Airport chaos).
      - **Security:** Major police operations (Drugs/Mafia) with large seizures.
      - **Curiosity:** Invasive species, unique phenomena, cultural anomalies.
@@ -76,14 +68,13 @@ SCORING METRICS (Max Total = 100)
    - Immigration offices / Cita Previa.
    - International Tax (Beckham Law, Crypto reporting).
    - Connectivity (Airports, Trains to France/Portugal).
-   - English-speaking services or International Schools.
+   - **Housing Market:** Rent prices, Eviction laws (Okupas/Desahucio), Buying property nuances
 
 5) urgency_score (0-15)
-   **ADD  POINTS** if:
-   - **Happening NOW:** This week's events (Strikes, Storms).
-   - **Deadline Alert:** Old law, but the *deadline to apply* is approaching.
-   - **Emotion:** Triggers strong Outrage (Corruption) or Fear (Crime).
-
+   **ADD more POINTS** if:
+   - **Happening NOW:** This week's events.
+   - **Deadline Alert:** Approaching dates for laws OR specific social deadlines (end of year).
+   - **High Emotion:** Scandals, Social Injustice (Evictions/Families), Crimes causing public alarm. 
 total_score = sum of metrics.
 
 ---------------------------------------------------------------------

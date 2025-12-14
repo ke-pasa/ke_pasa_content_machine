@@ -436,13 +436,35 @@ class CategorizationWorker:
                 {"role": "user", "content": user_prompt}
             ]
             result = _chat_completion(client, model, messages, max_tokens=1200, temperature=0)
-            
+
             # Handle tuple return (text, usage) or just text
             if isinstance(result, tuple):
                 text, usage = result
             else:
                 text, usage = result, None
-                
+
+            # Save raw model response for debugging (both text and structured if available)
+            try:
+                raw_dir = Path(__file__).parent.parent.parent / 'logs' / 'openai_raw'
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                raw_file = raw_dir / f"{doc_id or 'unknown'}_{int(time.time())}.json"
+                raw_payload = {
+                    'doc_id': doc_id,
+                    'model': model,
+                    'messages': messages,
+                    'raw_text': text,
+                    '_usage': usage,
+                    'raw_result_repr': repr(result)
+                }
+                with raw_file.open('w', encoding='utf-8') as rf:
+                    rf.write(json.dumps(raw_payload, ensure_ascii=False, indent=2))
+                try:
+                    self.logger.info(f'Saved raw LLM response to {raw_file}')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             parsed = _parse_json_from_text(text or '')
 
             if parsed:
@@ -466,9 +488,39 @@ class CategorizationWorker:
         """Extract standard fields from LLM interest result."""
         if not isinstance(interest_result, dict):
             return {}
-        
+        # If the model returned a `scores` object, compute total_score from its components.
+        total = None
+        try:
+            # Prefer explicit total fields if present
+            total = interest_result.get('total_score') or interest_result.get('total')
+            if total is None and isinstance(interest_result.get('scores'), dict):
+                s = interest_result.get('scores') or {}
+                # Sum known score components defensively
+                comps = [
+                    s.get('region_score'),
+                    s.get('source_score'),
+                    s.get('editorial_value'),
+                    s.get('expat_relevance_bonus'),
+                    s.get('urgency_score')
+                ]
+                total_sum = 0
+                any_numeric = False
+                for v in comps:
+                    try:
+                        if v is None:
+                            continue
+                        nv = float(v)
+                        total_sum += nv
+                        any_numeric = True
+                    except Exception:
+                        continue
+                if any_numeric:
+                    total = total_sum
+        except Exception:
+            total = None
+
         return {
-            'total_score': interest_result.get('total_score') or interest_result.get('total'),
+            'total_score': total,
             'rating': interest_result.get('rating') or interest_result.get('recommendation'),
             'short_note': interest_result.get('short_analysis') or interest_result.get('short_note'),
             'category': interest_result.get('category'),
