@@ -87,7 +87,7 @@ def generate_digest() -> str:
 
 КРИТИЧЕСКИ ВАЖНО:
 - Ответ должен быть выведен СТРОГО в формате Markdown, совместимом с Telegram.
-- Общая длина поста — не более 1 000 символов.
+- Общая длина поста — не более 700 символов.
 
 Отбор и приоритет:
 - Используй НЕ БОЛЕЕ 5 новостей.
@@ -135,15 +135,20 @@ def generate_digest() -> str:
         logger.info(f"Generating digest from {len(news_items)} items...")
         response_text = chat_completion(
             client=client,
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=messages,
             temperature=0.7
         )
 
         if not response_text:
             return "Error: Failed to generate digest text from OpenAI"
+        promo_line = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
 
-        return response_text
+        # Append promo and return. The system prompt requests the model to keep message <=700 chars.
+        try:
+            return (response_text + promo_line).strip()
+        except Exception:
+            return response_text
 
     except Exception as e:
         logger.error(f"Error generating evening brief: {e}")
