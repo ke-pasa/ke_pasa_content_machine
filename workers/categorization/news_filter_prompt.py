@@ -26,12 +26,10 @@ Your goal is to save the reader's time, not to fill the feed.
 NEWS_FILTER_USER_PROMPT = """
 Evaluate the news item acting as a Chief Editor for a News Portal for Foreign Residents in Spain.
 Your audience lives in Spain but needs help understanding the context.
-Your Goal: **EXPLAIN REALITY**, **SAVE NERVES**, and **WARN ABOUT RISKS**.
-
+Your Goal: **IMPROVE QUALITY OF LIFE**, **EXPLAIN REALITY**, and **WARN ONLY ABOUT MAJOR RISKS**.
+Tone: Balanced. Do not overwhelm the reader with "Doomscrolling". Prioritize Constructive & Enjoyable content over Police Reports.
 Respond ONLY with valid JSON.
-
----------------------------------------------------------------------
-
+-------------------------
 SCORING METRICS (Max Total = 100)
 
 1) region_score (0–10)
@@ -43,25 +41,30 @@ SCORING METRICS (Max Total = 100)
    10 — Official Laws (BOE), Top-tier Media, Police Reports.
    0 — Unverified rumors, Tabloids.
 
-3) editorial_value (0–50) — VALUE ASSESSMENT
-   Classify based on the **nature** of the event:
+3) editorial_value (0–60) — VALUE ASSESSMENT
+   Criteria: IMPACT (Does it change life?), SCALE (Who cares?), and CONSTRUCTIVENESS (Is it useful?).
 
-   * **50-60 (CRITICAL IMPACT):**
-     - **Bureaucracy & Status:** Changes to Residency, NIE/TIE, Citizenship, Nomad Visas.
-     - **Money & Assets:** New Taxes, confirmed utility price hikes, Rental price laws, Banking blocks/compliance rules.
-     - **Safety:** Transport strikes (dates set), Red/Orange Weather alerts, Epidemics.
-    - **Disruptions:** Confirmed strikes (transport, health, education), road closures, water restrictions.
+   * **55-60 (ACTIONABLE / MUST READ):**
+     *Events requiring immediate user action or awareness.*
+     - **Legal & Fiscal:** Official changes to Residency, Visas, Taxes, or Property Rights.
+     - **Major Disruptions:** Confirmed national strikes, severe weather alerts (Red/Orange), Infrastructure paralysis.
+     - **High-Impact Benefits:** New direct flights, bureaucracy simplification, free services.
 
-   * **35-55 (HIGH INTEREST / SOCIAL CONTEXT):**
-     - **Political Drama:** Corruption scandals, Resignations, Election calls, Government instability.
-     - **Expat Pain Points:** Schooling/Education issues, Healthcare access (waiting lists), International Connectivity (New flights/Airport chaos).
-     - **Security:** Major police operations (Drugs/Mafia) with large seizures.
-     - **Curiosity:** Invasive species, unique phenomena, cultural anomalies.
+   * **35-54 (LIFESTYLE & CONTEXT):**
+     *Events that improve quality of life or explain "The Big Picture".*
+     - **Living Well:** Festivals, Gastronomy, Travel routes (Trains/Air), Culture & Leisure.
+     - **Systemic Positives:** Economic growth, Tourism records, Safety rankings, Employment stats.
+     - **Major Politics:** Passed laws (BOE) or High-level resignations (No rumors).
 
-   * **0-24 (NOISE - SKIP):**
-     - **Routine Stats:** Standard inflation/unemployment updates.
-     - **Political Noise:** Criticism without legislative action.
-     - **Vague Plans:** Proposals for distant future (2026+).
+   * **20-34 (PASSIVE INTEREST):**
+     *Good-to-know info with no immediate call to action.*
+     - **Market Trends:** General Housing/Inflation stats (Systemic only).
+     - **Curiosities:** Nature, Weather records (safe), Viral topics.
+
+   * **0-19 (NOISE - MANDATORY SKIP):**
+     *Events with NO systemic value.*
+     - **Hyper-Local/Isolated:** Routine crime (thefts/drugs), Individual evictions/squatters (unless new law), Local fires.
+     - **Political Noise:** Opposition statements, Opinions without legislative power.
 
 4) expat_relevance_bonus (0-15)
    **ADD +15 POINTS** if the topic specifically targets **foreigners** or **international lifestyle**:
@@ -77,7 +80,7 @@ SCORING METRICS (Max Total = 100)
    - **High Emotion:** Scandals, Social Injustice (Evictions/Families), Crimes causing public alarm. 
 total_score = sum of metrics.
 
----------------------------------------------------------------------
+-------------------------
 DYNAMIC GATEKEEPER LOGIC
 Calculate the Threshold:
 - Base Threshold = 30.
@@ -85,7 +88,7 @@ Calculate the Threshold:
 
 DECISION:
 - IF total_score < Threshold -> Set total_score = 0 (SKIP).
----------------------------------------------------------------------
+-------------------------
 
 OUTPUT FORMAT:
 1) category: (migration | policy | weather | health | crime | events | education | transport | economy | culture | society)
@@ -100,12 +103,12 @@ OUTPUT FORMAT:
 Input fields:
 Title: {title}
 Description: {description}
-Content: {content}
 Source: {source}
 Date: {pub_date}
 """
 
 def get_news_filter_prompt(title, description, tags, content, source, pub_date, feed_name='', region_hint=''):
+    
     """Return a tuple (system_prompt, user_prompt).
 
     The system prompt contains role/audience and high-level rules.
