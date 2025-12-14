@@ -43,8 +43,9 @@ IMMEDIATE SKIP (Score 0) if the content is:
 SCORING METRICS (Max Total = 100)
 
 1) region_score (0–10)
-   10 — National scope OR Major Hubs (Madrid, BCN, Valencia, Malaga, Alicante, Islands).
-   0 — Irrelevant rural areas.
+10 — National scope OR Major Hubs (Madrid, BCN, Valencia, Costa del Sol).
+   7 — High Expat Concentration Areas (Costa Blanca, Islands, Alicante province).
+   0 — Isolated rural areas with no foreign community.
 
 2) source_score (0–10)
    10 — Official Laws (BOE), Top-tier Media, Police Reports.
@@ -53,12 +54,12 @@ SCORING METRICS (Max Total = 100)
 3) editorial_value (0–50) — VALUE ASSESSMENT
    Classify based on the **nature** of the event:
 
-   * **40-50 (CRITICAL IMPACT):**
+   * **50-60 (CRITICAL IMPACT):**
      - **Bureaucracy & Status:** Changes to Residency, NIE/TIE, Citizenship, Nomad Visas.
      - **Money & Assets:** New Taxes, confirmed utility price hikes, Rental price laws, Banking blocks/compliance rules.
      - **Safety:** Transport strikes (dates set), Red/Orange Weather alerts, Epidemics.
 
-   * **25-39 (HIGH INTEREST / SOCIAL CONTEXT):**
+   * **35-55 (HIGH INTEREST / SOCIAL CONTEXT):**
      - **Political Drama:** Corruption scandals, Resignations, Election calls, Government instability.
      - **Social Friction:** Major protests (farmers, doctors, housing) explaining the "mood" of the country.
      - **Expat Pain Points:** Schooling/Education issues, Healthcare access (waiting lists), International Connectivity (New flights/Airport chaos).
