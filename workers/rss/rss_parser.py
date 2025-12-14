@@ -1482,9 +1482,20 @@ Title: {title}"""
         print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
         try:
+            # Ensure Postgres client is available before attempting purge.
+            if not self.pg:
+                try:
+                    from workers.tools.pg_client import get_pg_client
+                    self.pg = get_pg_client()
+                except Exception as e:
+                    print(f"   ⚠️  Could not initialize Postgres client for purge: {e}")
+                    self.pg = None
+
             if self.pg:
                 try:
-                    deleted = self.pg.purge_older_than(7)
+                    # Purge articles older than 8 days per retention policy
+                    print("   🔔 ABOUT TO CALL purge_older_than(days=8) on Postgres client")
+                    deleted = self.pg.purge_older_than(8)
                     if deleted >= 0:
                         print(f"   🧹 Purged {deleted} articles older than 8 days from Postgres")
                     else:

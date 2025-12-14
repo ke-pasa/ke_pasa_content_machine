@@ -241,7 +241,15 @@ class PGClient:
             cur.execute('DELETE FROM public.articles_ru WHERE updated_at < %s', (cutoff,))
             deleted_articles_ru = cur.rowcount if cur.rowcount is not None else 0
 
-            return deleted_articles + deleted_articles_ru
+            # Also delete old topics (by created_at) to keep metadata clean
+            try:
+                cur.execute('DELETE FROM public.topic WHERE created_at < %s', (cutoff,))
+                deleted_topics = cur.rowcount if cur.rowcount is not None else 0
+            except Exception:
+                # If topic table is missing or deletion fails, treat as zero
+                deleted_topics = 0
+
+            return deleted_articles + deleted_articles_ru + deleted_topics
         finally:
             try:
                 cur.close()
