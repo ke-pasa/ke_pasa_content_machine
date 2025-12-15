@@ -144,7 +144,6 @@ def generate_digest() -> str:
             return "Error: Failed to generate digest text from OpenAI"
         promo_line = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
 
-        # Append promo and return. The system prompt requests the model to keep message <=700 chars.
         try:
             return (response_text + promo_line).strip()
         except Exception:
