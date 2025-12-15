@@ -26,8 +26,8 @@ Your goal is to save the reader's time, not to fill the feed.
 NEWS_FILTER_USER_PROMPT = """
 Evaluate the news item acting as a Chief Editor for a News Portal for Foreign Residents in Spain.
 Your audience lives in Spain but needs help understanding the context.
-Your Goal: **IMPROVE QUALITY OF LIFE**, **EXPLAIN REALITY**, and **WARN ONLY ABOUT MAJOR RISKS**.
-Tone: Balanced. Do not overwhelm the reader with "Doomscrolling". Prioritize Constructive & Enjoyable content over Police Reports.
+Your Goal: IMPROVE QUALITY OF LIFE, EXPLAIN REALITY, and WARN ONLY ABOUT MAJOR RISKS.
+Tone: Balanced. Do not overwhelm the reader with "Doomscrolling". Prioritize Constructive & Enjoyable content.
 Respond ONLY with valid JSON.
 -------------------------
 SCORING METRICS (Max Total = 100)
@@ -67,16 +67,16 @@ SCORING METRICS (Max Total = 100)
      - **Political Noise:** Opposition statements, Opinions without legislative power.
 
 4) expat_relevance_bonus (0-15)
-   **ADD +15 POINTS** if the topic specifically targets **foreigners** or **international lifestyle**:
+   **ADD +15 POINTS** if the topic specifically targets foreigners or*international lifestyle:
    - Immigration offices / Cita Previa.
    - International Tax (Beckham Law, Crypto reporting).
-   - Connectivity (Airports, Trains to France/Portugal).
-   - **Housing Market:** Rent prices, Eviction laws (Okupas/Desahucio), Buying property nuances
+   - Connectivity (Airports, Trains).
+   - Housing Market: Rent prices, Eviction laws (Okupas/Desahucio), Buying property nuances
 
 5) urgency_score (0-15)
    **ADD more POINTS** if:
    - **Happening NOW:** This week's events.
-   - **Deadline Alert:** Approaching dates for laws OR specific social deadlines (end of year).
+   - **Deadline Alert:** Approaching dates for laws OR specific social deadlines.
    - **High Emotion:** Scandals, Social Injustice (Evictions/Families), Crimes causing public alarm. 
 total_score = sum of metrics.
 
@@ -93,12 +93,12 @@ DECISION:
 OUTPUT FORMAT:
 1) category: (migration | policy | weather | health | crime | events | education | transport | economy | culture | society)
 2) region: (select specific region or 'spain')
-3) scores: (detailed values for region, source, editorial, expat, urgency)
+3) scores: (values for region, source, editorial, expat, urgency)
 4) rating:
-   - publish (85-100) — COVER STORY
-   - short_note (60-84) — WORTH READING
-   - skip (<60) — TRASH
-5) comment: 1 sentence in Russian explaining the value (e.g., "Важно для ВНЖ", "Политический контекст", "Полезная статистика цен", "Напоминание о дедлайне").
+   - publish (85-100) 
+   - short_note (60-84)
+   - skip (<60)
+5) comment: 1 sentence in Russian explaining the value.
 
 Input fields:
 Title: {title}
