@@ -109,8 +109,8 @@ class CategorizationWorker:
         from workers.tools.pg_client import get_pg_client
         self.pg = get_pg_client()
         self.instance_id = str(uuid.uuid4())[:8]
-        self.embedding_model = os.environ.get('EMBEDDING_MODEL', 'text-embedding-3-small')
-        self.similarity_threshold = float(os.environ.get('TOPIC_SIMILARITY_THRESHOLD', '0.70'))
+        self.embedding_model =  'text-embedding-3-small'
+        self.similarity_threshold = 0.65
 
 
     def _deduplicate_by_topic(self, topic_id: int):
