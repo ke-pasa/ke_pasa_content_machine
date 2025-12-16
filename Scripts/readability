@@ -1,3 +1,0 @@
-#!C:\Development\ke-pasa\ke_pasa_content_machine\Scripts\python.exe
-import readability
-readability.main()

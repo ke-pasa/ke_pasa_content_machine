@@ -1,0 +1,14 @@
+FROM ke-pasa-workers-base:latest
+
+# Copy digest worker code
+COPY workers/publisher /app/workers/publisher
+
+# Install any digest-specific deps if present
+RUN pip install --no-cache-dir -r /app/workers/publisher/requirements.txt || true
+
+# Copy supervisor config for digest
+COPY deploy/docker/supervisord.conf.digest /etc/supervisor/conf.d/digest-worker.conf
+
+WORKDIR /app
+
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

@@ -1,0 +1,13 @@
+[supervisord]
+nodaemon=true
+
+[program:digest-worker]
+command=/bin/bash /app/start-digest.sh
+directory=/app
+user=root
+autostart=true
+autorestart=true
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/digest-worker.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3

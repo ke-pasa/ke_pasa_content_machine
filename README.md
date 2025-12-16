@@ -44,6 +44,8 @@
    - Push на `main` - деплоит все workers
    - Или вручную: Actions → Deploy Workers → Run workflow
 
+> Примечание: Dockerfile'ы перемещены в директорию `docker/`. Workflow и `docker-compose.yml` обновлены, чтобы использовать `docker/Dockerfile.*`. При ручной сборке используйте `docker build -f docker/Dockerfile.<name> .` или `docker compose build`.
+
 ## Управление Контейнерами
 
 ### Проверка Статуса

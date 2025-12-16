@@ -104,27 +104,27 @@ jobs:
           
           # Build base image on server (ARM64)
           echo "Building base image on server..."
-          docker build -f Dockerfile.base -t ke-pasa-workers-base:latest .
+          docker build -f docker/Dockerfile.base -t ke-pasa-workers-base:latest .
           
           # Build only selected worker images on server
           if [ "${{ env.DEPLOY_RSS }}" == "true" ]; then
             echo "Building RSS worker..."
-            docker build -f Dockerfile.rss -t ke-pasa-rss-worker:latest .
+            docker build -f docker/Dockerfile.rss -t ke-pasa-rss-worker:latest .
           fi
           
           if [ "${{ env.DEPLOY_CAT }}" == "true" ]; then
             echo "Building Categorization worker..."
-            docker build -f Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
+            docker build -f docker/Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
           fi
           
           if [ "${{ env.DEPLOY_ART }}" == "true" ]; then
             echo "Building Article Generator worker..."
-            docker build -f Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
+            docker build -f docker/Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
           fi
           
           if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
             echo "Building Publisher worker..."
-            docker build -f Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+            docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
           fi
           
           # Restart only selected workers

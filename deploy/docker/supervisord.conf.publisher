@@ -10,14 +10,3 @@ stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 startsecs=10
 stopwaitsecs=30
-
-[program:digest-worker]
-command=python -m workers.publisher.digest_worker
-directory=/app
-user=root
-autostart=true
-autorestart=true
-redirect_stderr=true
-stdout_logfile=/var/log/supervisor/digest-worker.log
-stdout_logfile_maxbytes=10MB
-stdout_logfile_backups=3

@@ -3,7 +3,7 @@ services:
   rss-worker:
     build:
       context: .
-      dockerfile: Dockerfile.rss
+      dockerfile: docker/Dockerfile.rss
     image: ke-pasa-rss-worker:latest
     container_name: ke-pasa-rss-worker
     restart: unless-stopped
@@ -25,7 +25,7 @@ services:
   categorization-worker:
     build:
       context: .
-      dockerfile: Dockerfile.categorization
+      dockerfile: docker/Dockerfile.categorization
     image: ke-pasa-categorization-worker:latest
     container_name: ke-pasa-categorization-worker
     restart: unless-stopped
@@ -44,7 +44,7 @@ services:
   article-generator-worker:
     build:
       context: .
-      dockerfile: Dockerfile.article_generator
+      dockerfile: docker/Dockerfile.article_generator
     image: ke-pasa-article-generator-worker:latest
     container_name: ke-pasa-article-generator-worker
     restart: unless-stopped
@@ -66,9 +66,30 @@ services:
   publisher-worker:
     build:
       context: .
-      dockerfile: Dockerfile.publisher
+      dockerfile: docker/Dockerfile.publisher
     image: ke-pasa-publisher-worker:latest
     container_name: ke-pasa-publisher-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs/publisher:/var/log/supervisor
+    networks:
+      - ke-pasa-network
+    depends_on:
+      - base
+
+  # Digest Worker - separate container for digest publishing
+  digest-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.digest
+    image: ke-pasa-digest-worker:latest
+    container_name: ke-pasa-digest-worker
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -87,7 +108,7 @@ services:
   base:
     build:
       context: .
-      dockerfile: Dockerfile.base
+      dockerfile: docker/Dockerfile.base
     image: ke-pasa-workers-base:latest
     container_name: ke-pasa-workers-base
     command: /bin/true

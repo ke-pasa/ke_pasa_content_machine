@@ -1,0 +1,13 @@
+FROM ke-pasa-workers-base:latest
+
+COPY workers/categorization /app/workers/categorization
+
+RUN pip install --no-cache-dir -r /app/workers/categorization/requirements.txt
+
+COPY deploy/docker/supervisord.conf.categorization /etc/supervisor/conf.d/categorization-worker.conf
+
+WORKDIR /app
+
+EXPOSE 9001
+
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

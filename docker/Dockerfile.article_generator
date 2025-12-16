@@ -1,0 +1,13 @@
+FROM ke-pasa-workers-base:latest
+
+COPY workers/article_generator /app/workers/article_generator
+
+RUN pip install --no-cache-dir -r /app/workers/article_generator/requirements.txt
+
+COPY deploy/docker/supervisord.conf.article_generator /etc/supervisor/conf.d/article-generator-worker.conf
+
+WORKDIR /app
+
+EXPOSE 9001
+
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
