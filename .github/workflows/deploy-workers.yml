@@ -23,6 +23,11 @@ on:
         required: false
         default: true
         type: boolean
+      deploy_digest:
+        description: 'Deploy Digest Worker'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   deploy:
@@ -96,6 +101,7 @@ jobs:
           DEPLOY_CAT: ${{ github.event_name == 'push' || github.event.inputs.deploy_categorization == 'true' }}
           DEPLOY_ART: ${{ github.event_name == 'push' || github.event.inputs.deploy_article_generator == 'true' }}
           DEPLOY_PUB: ${{ github.event_name == 'push' || github.event.inputs.deploy_publisher == 'true' }}
+          DEPLOY_DIGEST: ${{ github.event_name == 'push' || github.event.inputs.deploy_digest == 'true' }}
         run: |
           ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
@@ -126,6 +132,10 @@ jobs:
             echo "Building Publisher worker..."
             docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
           fi
+          if [ "${{ env.DEPLOY_DIGEST }}" == "true" ]; then
+            echo "Building Digest worker..."
+            docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
+          fi
           
           # Restart only selected workers
           echo "Restarting selected workers..."
@@ -152,6 +162,12 @@ jobs:
             echo "Restarting Publisher worker..."
             docker compose stop publisher-worker || true
             docker compose up -d publisher-worker
+          fi
+
+          if [ "${{ env.DEPLOY_DIGEST }}" == "true" ]; then
+            echo "Restarting Digest worker..."
+            docker compose stop digest-worker || true
+            docker compose up -d digest-worker
           fi
           
           # Clean up old images
