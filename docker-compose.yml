@@ -98,7 +98,7 @@ services:
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - PYTHONUNBUFFERED=1
     volumes:
-      - ./logs/publisher:/var/log/supervisor
+      - ./logs/digest:/var/log/supervisor
     networks:
       - ke-pasa-network
     depends_on:
