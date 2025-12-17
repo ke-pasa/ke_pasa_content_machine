@@ -6,10 +6,6 @@ COPY workers/publisher /app/workers/publisher
 # Install any digest-specific deps if present
 RUN pip install --no-cache-dir -r /app/workers/publisher/requirements.txt || true
 
-# Copy start-digest.sh script (required by supervisord)
-COPY start-digest.sh /app/start-digest.sh
-RUN chmod +x /app/start-digest.sh
-
 # Copy supervisor config for digest
 COPY deploy/docker/supervisord.conf.digest /etc/supervisor/conf.d/digest-worker.conf
 

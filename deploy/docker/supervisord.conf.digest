@@ -2,7 +2,7 @@
 nodaemon=true
 
 [program:digest-worker]
-command=/bin/bash /app/start-digest.sh
+command=python -m workers.publisher.digest_worker
 directory=/app
 user=root
 autostart=true

@@ -157,6 +157,9 @@ class DigestWorker:
                 state = self.load_state()
                 now_utc = datetime.now(timezone.utc)
                 
+                # Log every check
+                logger.info(f"✓ Checking schedules at {now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                
                 for job in config.get('jobs', []):
                     if not job.get('enabled', True):
                         continue
@@ -224,31 +227,43 @@ class DigestWorker:
                 # 3. If match AND not already executed this minute/instance -> Execute.
                 
                 for job in config.get('jobs', []):
-                    if not job.get('enabled'): continue
+                    if not job.get('enabled'):
+                        logger.debug(f"  - Job '{job.get('id', 'unknown')}' is disabled, skipping")
+                        continue
                     
-                    if croniter.match(job['cron_schedule'], now_utc):
+                    job_id = job['id']
+                    cron_expr = job['cron_schedule']
+                    
+                    if croniter.match(cron_expr, now_utc):
                         # It matches THIS minute.
-                        # Check state to ensure we didn't already run it for this specific time.
-                        # We can use a key like "last_run_iso"
+                        logger.info(f"  ⏰ Schedule matched for '{job_id}' ({cron_expr})")
                         
-                        last_run_iso = state.get(job['id'], {}).get('last_run_iso')
+                        # Check state to ensure we didn't already run it for this specific time.
+                        last_run_iso = state.get(job_id, {}).get('last_run_iso')
                         # If last run was less than 60 seconds ago, skip
                         already_run = False
                         if last_run_iso:
                             last_dt = datetime.fromisoformat(last_run_iso)
                             if (now_utc - last_dt).total_seconds() < 65:
                                 already_run = True
+                                logger.info(f"  ⏭️  Skipping '{job_id}' - already ran recently")
                                 
                         if not already_run:
-                            logger.info(f"⏰ Schedule matched for {job['id']}")
+                            logger.info(f"  ▶️  Executing '{job_id}'...")
                             content = self.execute_digest(job['script_module'])
                             if content:
                                 self.publish_content(content, job['channels'])
                                 
                                 # Update State
-                                if job['id'] not in state: state[job['id']] = {}
-                                state[job['id']]['last_run_iso'] = now_utc.isoformat()
+                                if job_id not in state: state[job_id] = {}
+                                state[job_id]['last_run_iso'] = now_utc.isoformat()
                                 self.save_state(state)
+                                logger.info(f"  ✅ Completed '{job_id}'")
+                    else:
+                        # Calculate next run time for this job
+                        iter_cron = croniter(cron_expr, now_utc)
+                        next_run = iter_cron.get_next(datetime)
+                        logger.info(f"  - Job '{job_id}' ({cron_expr}): next run at {next_run.strftime('%Y-%m-%d %H:%M UTC')}")
 
             except Exception as e:
                 logger.error(f"Daemon loop error: {e}")
