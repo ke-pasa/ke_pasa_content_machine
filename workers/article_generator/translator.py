@@ -140,25 +140,24 @@ class ArticleTranslator:
         self,
         client=None,
         model: str = 'gpt-4o-mini',
-        stage4_model: str = 'gpt-5.1',
         stage1_max_tokens: int = 1200,
         stage2_max_tokens: int = 1200,
         stage3_max_tokens: int = 1200,
+        stage4_max_tokens: int = 1600,
         stage1_temperature: float = 0.2,
         stage2_temperature: float = 0.4,
         stage3_temperature: float = 1.0,
     ) -> None:
         self.client = client if client is not None else _get_openai_client()
         self.model = model
-        self.stage4_model = stage4_model
         self.stage1_max_tokens = stage1_max_tokens
         self.stage2_max_tokens = stage2_max_tokens
         self.stage3_max_tokens = stage3_max_tokens
+        self.stage4_max_tokens = stage4_max_tokens
         self.stage1_temperature = stage1_temperature
         self.stage2_temperature = stage2_temperature
         self.stage3_temperature = stage3_temperature
-        # Stage 4, 5, 6 use same params as stage 3
-        self.stage4_max_tokens = stage3_max_tokens
+        # Stage 4 uses same temperature as stage 3
         self.stage4_temperature = stage3_temperature
         self.stage5_max_tokens = stage3_max_tokens
         self.stage5_temperature = stage3_temperature
@@ -429,15 +428,15 @@ class ArticleTranslator:
         stage3_json = json.dumps(stage3_result, ensure_ascii=False)
 
         messages = stage4_messages(source_text, stage1_json, stage2_json, stage3_json)
-        _log_stage_debug('stage4', self.stage4_model, messages, len(stage3_json or ''))
+        _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
 
         try:
             text = _chat_completion(
                 self.client,
-                self.stage4_model,
+                self.model,
                 messages,
-                max_tokens=self.stage3_max_tokens,
-                temperature=self.stage3_temperature,
+                max_tokens=self.stage4_max_tokens,
+                temperature=self.stage4_temperature,
             )
         except Exception:
             return None, None
