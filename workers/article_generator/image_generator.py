@@ -160,11 +160,13 @@ Return ONLY the image prompt, nothing else."""
             image_prompt = self._create_image_prompt(title, description, content)
             
             # Generate image using GPT Image 1.5 - Low (16:9 aspect ratio)
-            self.logger.info(f'Generating 16:9 image with {self.model} for {doc_id}...')
+            self.logger.info(f'Generating image with {self.model} for {doc_id}...')
+            # Use a supported size value. The OpenAI images API accepts 'auto' or specific supported sizes.
+            # 'auto' lets the service choose an appropriate resolution while maintaining aspect ratio.
             response = self.client.images.generate(
                 model=self.model,
                 prompt=image_prompt,
-                size="1792x1024",  # 16:9 aspect ratio
+                size="auto",
                 quality="low",
                 n=1,
             )
