@@ -141,6 +141,7 @@ class ArticleTranslator:
         self,
         client=None,
         model: str = 'gpt-4o-mini',
+        stage4_model: str = 'gpt-5.1',
         stage1_max_tokens: int = 1200,
         stage2_max_tokens: int = 1200,
         stage3_max_tokens: int = 1200,
@@ -150,6 +151,7 @@ class ArticleTranslator:
     ) -> None:
         self.client = client if client is not None else _get_openai_client()
         self.model = model
+        self.stage4_model = stage4_model
         self.stage1_max_tokens = stage1_max_tokens
         self.stage2_max_tokens = stage2_max_tokens
         self.stage3_max_tokens = stage3_max_tokens
@@ -428,12 +430,12 @@ class ArticleTranslator:
         stage3_json = json.dumps(stage3_result, ensure_ascii=False)
 
         messages = stage4_messages(source_text, stage1_json, stage2_json, stage3_json)
-        _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
+        _log_stage_debug('stage4', self.stage4_model, messages, len(stage3_json or ''))
 
         try:
             text = _chat_completion(
                 self.client,
-                self.model,
+                self.stage4_model,
                 messages,
                 max_tokens=self.stage3_max_tokens,
                 temperature=self.stage3_temperature,
@@ -492,7 +494,6 @@ class ArticleTranslator:
         if not stage4_result:
             return None
         
-        is_own_site = bool(slug)
         url = f"https://ke-pasa.es/news/{slug}/" if slug else (metadata.get('url') or metadata.get('link'))
         
         if not url:
@@ -500,7 +501,7 @@ class ArticleTranslator:
 
         stage4_json = json.dumps(stage4_result, ensure_ascii=False)
 
-        messages = stage6_messages(stage4_json, url, is_own_site)
+        messages = stage6_messages(stage4_json, url)
         _log_stage_debug('stage6', self.model, messages, len(stage4_json or ''))
 
         try:
