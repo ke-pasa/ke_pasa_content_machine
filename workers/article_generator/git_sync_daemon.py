@@ -51,8 +51,10 @@ def sync_to_git_repo(article_ids=None) -> dict:
             logging.warning(f"git pull failed (continuing with cloned snapshot): {e}")
         
         target_dir = os.path.join(temp_dir, 'src', 'content', 'news')
+        target_images_dir = os.path.join(temp_dir, 'public', 'images', 'news')
 
         os.makedirs(target_dir, exist_ok=True)
+        os.makedirs(target_images_dir, exist_ok=True)
 
         # 2. Copy local articles -> target repo
         local_articles_dir = os.path.join(str(root_dir), 'articles')
@@ -77,10 +79,34 @@ def sync_to_git_repo(article_ids=None) -> dict:
         else:
             logging.info(f"Local articles directory not found: {local_articles_dir}")
 
+        # 2b. Copy local images -> target repo
+        local_images_dir = os.path.join(str(root_dir), 'public', 'images', 'news')
+        copied_images = []
+        if os.path.exists(local_images_dir):
+            try:
+                for name in os.listdir(local_images_dir):
+                    if not (name.lower().endswith('.jpg') or name.lower().endswith('.jpeg') or name.lower().endswith('.png')):
+                        continue
+                    src_path = os.path.join(local_images_dir, name)
+                    dst_path = os.path.join(target_images_dir, name)
+                    try:
+                        shutil.copy2(src_path, dst_path)
+                        copied_images.append(name)
+                        logging.info(f"Copied image: {name}")
+                    except Exception as cp_err:
+                        logging.warning(f"Failed to copy image {src_path} -> {dst_path}: {cp_err}")
+                        results['errors'].append(f"Copy error for image {name}: {cp_err}")
+            except Exception as e:
+                logging.error(f"Failed to enumerate local images at {local_images_dir}: {e}")
+                results['errors'].append(f"Local images read error: {e}")
+        else:
+            logging.info(f"Local images directory not found: {local_images_dir}")
+
         # 3. Git commit and push
-        logging.info("Checking for changes (only news folder)...")
-        # Add only the generated articles folder to avoid adding unrelated files
+        logging.info("Checking for changes (news folder and images)...")
+        # Add only the generated articles and images folders to avoid adding unrelated files
         subprocess.run(['git', 'add', '--all', 'src/content/news'], cwd=temp_dir, check=True)
+        subprocess.run(['git', 'add', '--all', 'public/images/news'], cwd=temp_dir, check=True)
         
         status = subprocess.run(['git', 'status', '--porcelain'], cwd=temp_dir, capture_output=True, text=True)
         if not status.stdout.strip():
@@ -108,6 +134,26 @@ def sync_to_git_repo(article_ids=None) -> dict:
                         logging.info(f"Removed {removed_count} local article file(s) from {local_root} after sync")
             except Exception:
                 logging.exception('Failed during local articles pruning step')
+            
+            # Remove local images after successful push
+            try:
+                if copied_images:
+                    local_images_root = os.path.join(str(root_dir), 'public', 'images', 'news')
+                    removed_images_count = 0
+                    for name in copied_images:
+                        try:
+                            local_img_path = os.path.join(local_images_root, name)
+                            if os.path.exists(local_img_path):
+                                os.remove(local_img_path)
+                                removed_images_count += 1
+                        except Exception as rm_err:
+                            logging.warning(f"Failed to remove local image file {local_img_path}: {rm_err}")
+                            results['errors'].append(f"Failed to remove local image file {local_img_path}: {rm_err}")
+                    if removed_images_count:
+                        logging.info(f"Removed {removed_images_count} local image file(s) from {local_images_root} after sync")
+            except Exception:
+                logging.exception('Failed during local images pruning step')
+            
             logging.info("✅ Git sync successful")
 
     except subprocess.CalledProcessError as e:

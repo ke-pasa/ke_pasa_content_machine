@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Note: external HTML fetching/parsing was removed; avoid importing fetching libraries here.
 
 from .translator import ArticleTranslator
+from .image_generator import ImageGenerator
 from workers.tools.pg_client import get_pg_client
 from workers.tools.constants import MIN_ARTICLE_SCORE
 
@@ -38,10 +39,22 @@ class ArticleGenerator:
             stage2_max_tokens=1200,
             stage3_max_tokens=1200
         )
+        
+        # Initialize image generator (always enabled)
+        try:
+            self.image_generator = ImageGenerator()
+            self.logger = logging.getLogger('workers.article_generator')
+            self.logger.info('Image generator initialized successfully')
+        except Exception as e:
+            self.logger = logging.getLogger('workers.article_generator')
+            self.logger.warning(f'Failed to initialize image generator: {e}. Will skip image generation.')
+            self.image_generator = None
+        
         # Whether to request stage saving from translator (passed via metadata)
         self.save_stages = False
         # Use root logger configuration from entrypoint; avoid adding handlers here.
-        self.logger = logging.getLogger('workers.article_generator')
+        if not hasattr(self, 'logger'):
+            self.logger = logging.getLogger('workers.article_generator')
         # Allow propagation to root logger so stdout captures these logs
         self.logger.propagate = True
 
@@ -516,6 +529,25 @@ class ArticleGenerator:
                 doc_id = data.get('id')
             
             title, description, content, article_url, content_source, total_score = self._prepare_article_content(doc_id, data)
+            
+            # Generate image if missing
+            image_url = data.get('image')
+            if self.image_generator and (not image_url or not image_url.strip()):
+                self.logger.info(f'🎨 Generating image for article {doc_id} (no existing image)')
+                try:
+                    generated_image_path = self.image_generator.generate_image_for_article(
+                        doc_id=doc_id,
+                        title=title,
+                        description=description,
+                        content=content,
+                        existing_image_url=image_url
+                    )
+                    if generated_image_path:
+                        # Update data dict with local image path
+                        data['image'] = generated_image_path
+                        self.logger.info(f'✅ Generated and saved image: {generated_image_path}')
+                except Exception as img_err:
+                    self.logger.warning(f'⚠️ Image generation failed for {doc_id}: {img_err}')
             
             article_metadata = self._build_article_metadata(
                 doc_id, data, article_url, 
