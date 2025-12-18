@@ -13,7 +13,6 @@ from .prompts import (
 )
 
 _logger = logging.getLogger('workers.article_generator.translator')
-_logger.propagate = False
 
 
 def _get_worker_module():
@@ -454,7 +453,7 @@ class ArticleTranslator:
 
         tech_meta = {
             'source_url': metadata.get('url') or metadata.get('link') or '',
-            'source_feed': metadata.get('source_feed') or metadata.get('feed_name') or 'источник',
+            'source_feed': metadata.get('source_name') or metadata.get('source_feed') or metadata.get('feed_name') or 'источник',
             'image_hint': metadata.get('image_url') or metadata.get('image') or '',
             'pub_date_hint': metadata.get('published_at') or metadata.get('pub_date') or None,
             'category_hint': metadata.get('category') or '',
