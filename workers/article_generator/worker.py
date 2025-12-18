@@ -181,6 +181,8 @@ def main() -> None:
     # Always configure logging to stdout so CI (GitHub Actions) captures worker logs
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
+    
+    # Console handler
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -188,6 +190,15 @@ def main() -> None:
     # ensure not to add multiple StreamHandlers
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         root_logger.addHandler(handler)
+    
+    # File handler for persistent logs
+    log_dir = Path(__file__).resolve().parent.parent.parent / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_dir / 'article-generator-worker.log', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_dir / 'article-generator-worker.log') for h in root_logger.handlers):
+        root_logger.addHandler(file_handler)
 
     # Allow worker logger to propagate to root handler so supervisord/stdout captures it
     logging.getLogger('workers.article_generator').propagate = True
