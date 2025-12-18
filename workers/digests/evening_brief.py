@@ -135,9 +135,8 @@ def generate_digest() -> str:
         logger.info(f"Generating digest from {len(news_items)} items...")
         response_text = chat_completion(
             client=client,
-            model="gpt-4o",
-            messages=messages,
-            temperature=0.7
+            model="gpt-5.1",
+            messages=messages
         )
 
         if not response_text:
