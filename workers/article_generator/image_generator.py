@@ -11,12 +11,12 @@ from openai import OpenAI
 class ImageGenerator:
     """Generates images for articles using OpenAI DALL-E when image_url is missing."""
     
-    def __init__(self, model: str = "dall-e-3", images_dir: Optional[Path] = None):
+    def __init__(self, model: str = "gpt-image-1.5", images_dir: Optional[Path] = None):
         """
         Initialize image generator.
         
         Args:
-            model: DALL-E model to use (dall-e-2 or dall-e-3)
+            model: Image model to use (gpt-image-1.5, dall-e-2, or dall-e-3)
             images_dir: Directory to save generated images (default: project_root/images)
         """
         self.model = model
@@ -159,13 +159,13 @@ Return ONLY the image prompt, nothing else."""
             # Create prompt based on content
             image_prompt = self._create_image_prompt(title, description, content)
             
-            # Generate image using DALL-E (16:9 aspect ratio)
-            self.logger.info(f'Generating 16:9 image with DALL-E for {doc_id}...')
+            # Generate image using GPT Image 1.5 - Low (16:9 aspect ratio)
+            self.logger.info(f'Generating 16:9 image with {self.model} for {doc_id}...')
             response = self.client.images.generate(
                 model=self.model,
                 prompt=image_prompt,
                 size="1792x1024",  # 16:9 aspect ratio
-                quality="standard",
+                quality="low",
                 n=1,
             )
             
