@@ -434,38 +434,6 @@ class ArticleGenerator:
                 'content_source': article_metadata.get('content_source'),
             }
 
-            try:
-                conn, pooled = self.pg._get_conn()
-                cur = conn.cursor()
-                try:
-                    cur.execute("""
-                        UPDATE public.articles SET
-                            title = COALESCE(%s, title),
-                            summary = COALESCE(%s, summary),
-                            content = COALESCE(%s, content),
-                            updated_at = %s
-                        WHERE id = %s
-                    """, (
-                        update_payload.get('title_ru'),
-                        update_payload.get('description_ru'),
-                        update_payload.get('content_ru'),
-                        update_payload.get('updated_at'),
-                        doc_id,
-                    ))
-                    conn.commit()
-                finally:
-                    try:
-                        cur.close()
-                    except Exception:
-                        pass
-                    try:
-                        self.pg._put_conn(conn, pooled)
-                    except Exception:
-                        pass
-            except Exception as save_err:
-                with lock:
-                    chunk_results['errors'].append(f"Postgres save error for {doc_id}: {save_err}")
-
             with lock:
                 chunk_results['translated'] += 1
                 chunk_results['processed'] += 1
