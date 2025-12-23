@@ -1,7 +1,8 @@
 FROM ke-pasa-workers-base:latest
 
-# Copy digest worker code
+# Copy publisher + digests worker code so the package `workers.digests` is available
 COPY workers/publisher /app/workers/publisher
+COPY workers/digests /app/workers/digests
 
 # Install any digest-specific deps if present
 RUN pip install --no-cache-dir -r /app/workers/publisher/requirements.txt || true

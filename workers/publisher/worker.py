@@ -290,8 +290,6 @@ class PublisherWorker:
             # Fetch candidates: high score first
             rows = pg.fetch_translated_for_publish(limit=pool_limit, min_score=MIN_PUBLISH_SCORE)
             
-            # Simple wrapper to mimic Firestore-like object if needed, or just use dicts.
-            # Here we just use the dicts directly but ensure 'id' is present.
             docs = []
             for r in rows:
                 # Ensure we have an ID
@@ -369,7 +367,6 @@ class PublisherWorker:
                 results['errors'].append(err)
 
         return results
-
 
 
 def main():
