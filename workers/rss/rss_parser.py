@@ -25,6 +25,21 @@ from typing import Dict, List, Optional, Any
 from bs4 import BeautifulSoup
 
 import feedparser
+import types
+import xml.etree.ElementTree as ET
+import openai
+from readability import Document as ReadabilityDocument
+from workers.tools.pg_client import get_pg_client
+
+# Optional module-level helpers (moved from lazy/function-local imports)
+from workers.tools.url_utils import normalize_link as _norm_link
+from workers.tools.openai_client import get_openai_client, chat_completion as _chat
+
+try:
+    # Prefer categorization wrapper if available
+    from workers.categorization.CategorizationWorker import _chat_completion as _cc
+except Exception:
+    _cc = None
 
 # Configuration constants
 DEFAULT_REQUEST_TIMEOUT = 30
@@ -203,10 +218,7 @@ class ImprovedFeedParser:
         for attempt in range(max_retries):
             try:
                 # Try the standard feedparser first (import lazily)
-                try:
-                    import feedparser as _feedparser
-                except Exception:
-                    _feedparser = None
+                _feedparser = feedparser
 
                 feed = None
                 content_type = None
@@ -265,8 +277,9 @@ class ImprovedFeedParser:
             # Clean XML from invalid elements
             xml_content = self._clean_xml_content(response.text)
             
-            # Parse the cleaned XML
-            import xml.etree.ElementTree as ET
+            # Parse the cleaned XML (use module-level ET if available)
+            if ET is None:
+                raise RuntimeError('xml.etree.ElementTree not available')
             root = ET.fromstring(xml_content)
             
             feed_data = {
@@ -476,13 +489,11 @@ class ContentExtractor:
     def _extract_with_readability(self, html_text: str) -> Optional[BeautifulSoup]:
         """Try to extract content using readability-lxml library."""
         try:
-            try:
-                from readability import Document as _Document
-            except ImportError:
+            if ReadabilityDocument is None:
                 print("ℹ️  readability-lxml not installed; skipping fallback content extraction")
                 return None
 
-            doc = _Document(html_text)
+            doc = ReadabilityDocument(html_text)
             content_html = doc.summary()
             return BeautifulSoup(content_html, 'html.parser')
             
@@ -599,27 +610,21 @@ class RSSParser:
             'published': article.get('published_flag') if 'published_flag' in article else None
         }
 
-        try:
-            if not self.pg:
-                from workers.tools.pg_client import get_pg_client
-                self.pg = get_pg_client()
-        except Exception as e:
-            print(f"    ⚠️  Could not initialize Postgres client: {e}")
-            traceback.print_exc()
-            self.pg = None
+        self.pg = get_pg_client()
 
         if self.pg:
             try:
                 status = self.pg.save_article(article_data)
                 # status is one of: 'inserted', 'exists', 'error'
                 if status == 'inserted':
+                    print(f"    💾 Inserted to Postgres: {article_id}")
                     return article_id
                 elif status == 'exists':
-                    print(f"    🔁 Already in DB by id (Postgres): {article_id[:8]}")
+                    print(f"    🔁 Already in DB by id (Postgres): {article_id}")
                     # Treat existing row as effectively saved for callers
                     return article_id
                 else:
-                    print(f"    ⚠️  Postgres reported save failure for {article_id[:8]}")
+                    print(f"    ⚠️  Postgres reported save failure for {article_id}")
                     return None
             except Exception as e:
                 print(f"    ⚠️  Postgres save error: {e}")
@@ -800,9 +805,8 @@ class RSSParser:
         except Exception as e:
             print(f"⚠️  Error parsing entry: {e}")
             return None
-    
 
-    
+
     def _get_image(self, entry) -> Optional[str]:
         """
         Extract an image URL from various sources within the RSS entry
@@ -887,11 +891,9 @@ class RSSParser:
         
         url_lower = url.lower()
         
-        # Check file extension
         if any(ext in url_lower for ext in IMAGE_EXTENSIONS):
             return True
         
-        # Ensure URL does not clearly point to a non-image
         if any(pattern in url_lower for pattern in NON_IMAGE_PATTERNS):
             return False
         
@@ -939,13 +941,9 @@ class RSSParser:
         Uses GPT-5-nano to classify news as trash or valuable.
         """        
         try:
-
-            import openai
-            
             # Get title and description (limit to first 300 chars to save tokens)
             title = article.get('title', '')
             
-            # Skip if title is empty
             if not title:
                 return True
             
@@ -977,41 +975,170 @@ Input: "Massive strike in Madrid Metro announced" -> {{"trash": false}}
 Analyze this:
 Title: {title}"""
             
-            # Call OpenAI API with timeout
-            client = openai.OpenAI(
-                api_key=os.getenv('OPENAI_API_KEY'),
-                timeout=10.0  # 10 second timeout
-            )
-            response = client.chat.completions.create(
-                model='gpt-5-nano',
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_completion_tokens=50,
-                reasoning_effort='minimal',
-                response_format={"type": "json_object"}
-            )
+            # Prefer helper get_openai_client() if available, otherwise try openai module
+            client = None
+            if get_openai_client:
+                try:
+                    client = get_openai_client()
+                except Exception:
+                    client = None
+            if client is None and openai is not None:
+                try:
+                    client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'), timeout=10.0)
+                except Exception:
+                    client = None
+
+            if client is None:
+                print('    ℹ️  No OpenAI client available; defaulting to valuable')
+                return True, 0
+
+            # Use the Responses API via helper if available
+            try:
+                if hasattr(client, 'responses'):
+                    response = client.chat.completions.create(
+                        model='gpt-5-nano',
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        max_completion_tokens=50,
+                        reasoning_effort='minimal',
+                        response_format={"type": "json_object"}
+                    )
+                else:
+                    # Fallback to our helper chat wrapper
+                    if _chat:
+                        text = _chat(client, 'gpt-5-nano', [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], max_tokens=50, temperature=0)
+                        response = types.SimpleNamespace(output_text=text, usage=None)
+                    else:
+                        print('    ℹ️  No chat helper available; defaulting to valuable')
+                        return True, 0
+            except Exception as e:
+                print(f"    ⚠️ OpenAI call failed: {e}")
+                return True, 0
             
             # Parse response and get token usage
-            content = response.choices[0].message.content
-            
-            if not content or content.strip() == '':
+            # Extract content text from multiple possible response shapes
+            def _extract_response_text(resp):
+                # Try known attributes
+                try:
+                    if hasattr(resp, 'output_text') and resp.output_text:
+                        return resp.output_text
+                except Exception:
+                    pass
+                try:
+                    if hasattr(resp, 'output') and resp.output:
+                        return resp.output
+                except Exception:
+                    pass
+
+                # Try choices list (OpenAI completions/chat shapes)
+                try:
+                    choices = getattr(resp, 'choices', None)
+                    if choices and len(choices) > 0:
+                        c = choices[0]
+                        # responses API: c.message.content
+                        msg = getattr(c, 'message', None)
+                        if msg and getattr(msg, 'content', None):
+                            return msg.content
+                        # legacy: c.text
+                        if hasattr(c, 'text') and c.text:
+                            return c.text
+                        # legacy: c.get('text') for dict-like
+                        try:
+                            if isinstance(c, dict) and c.get('text'):
+                                return c.get('text')
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # If resp is dict-like, try common keys
+                try:
+                    if isinstance(resp, dict):
+                        # responses API: resp.get('output') may be list/dict
+                        if resp.get('output'):
+                            out = resp.get('output')
+                            if isinstance(out, str) and out.strip():
+                                return out
+                            # if it's a list of objects with 'content'
+                            if isinstance(out, list) and len(out) > 0:
+                                first = out[0]
+                                if isinstance(first, dict):
+                                    # Try 'content' or 'text' keys
+                                    if first.get('content'):
+                                        # content may be list/dict
+                                        cval = first.get('content')
+                                        if isinstance(cval, str):
+                                            return cval
+                                        # try to stringify
+                                        try:
+                                            return json.dumps(cval)
+                                        except Exception:
+                                            pass
+                                    if first.get('text'):
+                                        return first.get('text')
+                        # fallback to joining choices text if present
+                        ch = resp.get('choices')
+                        if ch and isinstance(ch, list) and len(ch) > 0:
+                            c0 = ch[0]
+                            if isinstance(c0, dict):
+                                m = c0.get('message') or {}
+                                if isinstance(m, dict) and m.get('content'):
+                                    return m.get('content')
+                                if c0.get('text'):
+                                    return c0.get('text')
+                except Exception:
+                    pass
+
+                return None
+
+            content = _extract_response_text(response)
+            if not content or (isinstance(content, str) and content.strip() == ''):
                 print(f"    ⚠️ AI returned empty response, defaulting to valuable")
                 return True, 0
 
+            parsed = None
             try:
-                result = json.loads(content)
-            except json.JSONDecodeError as json_err:
-                print(f"    ⚠️ AI returned invalid JSON: {content[:100]}, error: {json_err}")
-                return True, 0
+                if isinstance(content, str):
+                    parsed = json.loads(content)
+                else:
+                    # try to access choices as a fallback
+                    choices = getattr(response, 'choices', None)
+                    if choices and len(choices) > 0:
+                        c = choices[0]
+                        # support different response shapes
+                        msg = getattr(c, 'message', None)
+                        if msg and hasattr(msg, 'content'):
+                            parsed = json.loads(msg.content)
+            except Exception as json_err:
+                print(f"    ⚠️ AI returned invalid JSON or unexpected shape: {json_err}")
 
-            is_trash = result.get('trash', False)
+            if not parsed:
+                # Best-effort: try module-level helper or fallback import
+                try:
+                    from workers.tools.openai_client import parse_json_from_text as _parse_json
+                    parsed = _parse_json(content if isinstance(content, str) else str(content))
+                except Exception:
+                    try:
+                        # last-resort: attempt to use categorization worker helper
+                        from workers.categorization.CategorizationWorker import _parse_json_from_text as _pc
+                        parsed = _pc(content if isinstance(content, str) else str(content))
+                    except Exception:
+                        parsed = None
 
-            # Get token usage from response
+            is_trash = False
+            if parsed and isinstance(parsed, dict):
+                is_trash = parsed.get('trash', False)
+
+            # Get token usage if available
             tokens_used = 0
-            if hasattr(response, 'usage') and response.usage:
-                tokens_used = getattr(response.usage, 'total_tokens', 0)
+            try:
+                usage = getattr(response, 'usage', None)
+                if usage:
+                    tokens_used = getattr(usage, 'total_tokens', 0) or 0
+            except Exception:
+                tokens_used = 0
 
             if is_trash:
                 print(f"    🗑️ AI classified as trash: {title[:50]}")
@@ -1020,12 +1147,6 @@ Title: {title}"""
                 print(f"    ✅ AI classified as valuable: {title[:50]}")
                 return True, tokens_used
             
-        except openai.APITimeoutError as e:
-            print(f"    ⏱️ AI filter timeout after 10s: {e}, defaulting to valuable")
-            return True, 0  # On timeout, consider article valuable to avoid losing content
-        except openai.APIError as api_err:
-            print(f"    ⚠️ OpenAI API error: {api_err}, defaulting to valuable")
-            return True, 0
         except Exception as e:
             print(f"    ⚠️ AI filter error: {type(e).__name__}: {e}, defaulting to valuable")
             return True, 0  # On error, consider article valuable to avoid losing content
@@ -1098,20 +1219,10 @@ Title: {title}"""
             'wasted': 0,
             'tokens_used': 0
         }
-
-        # Limit number of articles only for tests (can be disabled)
-        max_articles = None  # Set a number (e.g., 3) to limit in tests
-        if max_articles and len(articles) > max_articles:
-            articles = articles[:max_articles]
-            print(f"{feed_info}🔍 Filtering {len(articles)} articles (test-limited)...")
-        else:
-            print(f"{feed_info}🔍 Processing {len(articles)} articles...")
         
         filtered_articles = []
         saved_count = 0
         duplicate_count = 0
-        
-        from workers.tools.url_utils import normalize_link as _norm_link
 
         # De-duplicate only by normalized link within the incoming batch.
         unique = {}
@@ -1232,7 +1343,7 @@ Title: {title}"""
                                 article_failed['article_id'] = article_id
                                 stats['saved'] += 1
                                 saved_count += 1
-                                print(f"    💾 Saved record with status FAILED: {article_id[:8]}")
+                                print(f"    💾 Saved record with status FAILED: {article_id}")
                             else:
                                 print(f"    ⚠️  Failed to persist FAILED article: {article.get('title','')[:40]}")
                         except Exception as e:
@@ -1482,30 +1593,248 @@ Title: {title}"""
         print(f"   ℹ️  Next step: generate articles from filtered announcements")
 
         try:
-            # Ensure Postgres client is available before attempting purge.
-            if not self.pg:
-                try:
-                    from workers.tools.pg_client import get_pg_client
-                    self.pg = get_pg_client()
-                except Exception as e:
-                    print(f"   ⚠️  Could not initialize Postgres client for purge: {e}")
-                    self.pg = None
+            self.pg = get_pg_client()
 
-            if self.pg:
-                try:
-                    # Purge articles older than 8 days per retention policy
-                    print("   🔔 ABOUT TO CALL purge_older_than(days=8) on Postgres client")
-                    deleted = self.pg.purge_older_than(8)
-                    if deleted >= 0:
-                        print(f"   🧹 Purged {deleted} articles older than 8 days from Postgres")
-                    else:
-                        print("   🧹 Purge executed but rowcount unknown")
-                except Exception as e:
-                    print(f"   ⚠️  Purge failed: {e}")
+            try:
+                # Purge articles older than 8 days per retention policy
+                print("   🔔 ABOUT TO CALL purge_older_than(days=8) on Postgres client")
+                deleted = self.pg.purge_older_than(8)
+                if deleted >= 0:
+                    print(f"   🧹 Purged {deleted} articles older than 8 days from Postgres")
+                else:
+                    print("   🧹 Purge executed but rowcount unknown")
+            except Exception as e:
+                print(f"   ⚠️  Purge failed: {e}")
         except Exception:
             pass
 
+        # After processing feeds, handle any user-requested forced publishes
+        try:
+            self.process_user_requests()
+        except Exception as e:
+            print(f"   ⚠️  process_user_requests failed: {e}")
+
         return all_articles
+
+    def process_user_requests(self) -> None:
+        """
+        Process rows from public.force_publish_links with status 'pending'.
+
+        For each pending URL:
+        - attempt to fetch full text using get_full_text
+        - ask OpenAI `gpt-4o-mini` to split the article into JSON: {title, description, body}
+        - save the article via `save_article` (status 'FORCED')
+        - mark force_publish_links.status = 'done' or 'failed'
+        """
+        try:
+            # Ensure Postgres client is available
+            self.pg = get_pg_client()
+
+            conn, pooled = self.pg._get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT id, url FROM public.force_publish_links WHERE status = 'pending'")
+                rows = cur.fetchall()
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                self.pg._put_conn(conn, pooled)
+
+            if not rows:
+                return
+
+            client = get_openai_client()
+
+            for row in rows:
+                try:
+                    fp_id = row[0]
+                    url = row[1]
+                    print(f"   🔔 Processing forced-publish request: {fp_id} -> {url}")
+
+                    full_text = None
+                    try:
+                        full_text = get_full_text(url)
+                    except Exception as e:
+                        print(f"    ⚠️ Failed to fetch full text for {url}: {e}")
+
+                    if not full_text:
+                        # mark failed
+                        try:
+                            conn2, pooled2 = self.pg._get_conn()
+                            cur2 = conn2.cursor()
+                            try:
+                                cur2.execute("UPDATE public.force_publish_links SET status = %s WHERE id = %s", ('failed', fp_id))
+                                try:
+                                    conn2.commit()
+                                except Exception:
+                                    pass
+                            finally:
+                                try:
+                                    cur2.close()
+                                except Exception:
+                                    pass
+                                self.pg._put_conn(conn2, pooled2)
+                        except Exception:
+                            pass
+                        continue
+
+                    # Ask LLM to split into title/description/body
+                    title = None
+                    description = None
+                    body = None
+
+                    if client:
+                        try:
+                            system = 'Split the provided article text into JSON with keys: title (short title), description (one-sentence summary), body (full article body). Return ONLY valid JSON, no markdown formatting.'
+                            user = f"Article URL: {url}\n\nText:\n{full_text[:30000]}"
+                            
+                            # Call OpenAI with strict JSON response format
+                            try:
+                                response = client.chat.completions.create(
+                                    model='gpt-4o-mini',
+                                    messages=[
+                                        {"role": "system", "content": system},
+                                        {"role": "user", "content": user}
+                                    ],
+                                    max_tokens=1200,
+                                    temperature=0,
+                                    response_format={"type": "json_object"}
+                                )
+                                # Extract text from response
+                                resp_text = None
+                                if hasattr(response, 'choices') and len(response.choices) > 0:
+                                    choice = response.choices[0]
+                                    if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
+                                        resp_text = choice.message.content
+                            except Exception as e:
+                                print(f"    ⚠️ OpenAI call failed: {e}")
+                                resp_text = None
+
+                            if resp_text:
+                                # Clean markdown code fences if present
+                                resp_text = resp_text.strip()
+                                if resp_text.startswith('```json'):
+                                    resp_text = resp_text[7:]  # Remove ```json
+                                if resp_text.startswith('```'):
+                                    resp_text = resp_text[3:]  # Remove ```
+                                if resp_text.endswith('```'):
+                                    resp_text = resp_text[:-3]  # Remove trailing ```
+                                resp_text = resp_text.strip()
+
+                                # Try to parse JSON from cleaned text
+                                try:
+                                    parsed = json.loads(resp_text)
+                                    title = parsed.get('title')
+                                    description = parsed.get('description')
+                                    body = parsed.get('body')
+                                except Exception as json_err:
+                                    print(f"    ⚠️ JSON parse failed: {json_err}")
+                                    # fallback: heuristics
+                                    parts = resp_text.split('\n\n', 2)
+                                    if parts:
+                                        title = parts[0].strip()
+                                    if len(parts) > 1:
+                                        description = parts[1].strip()
+                                    if len(parts) > 2:
+                                        body = parts[2].strip()
+                        except Exception as e:
+                            print(f"    ⚠️ LLM split failed for {url}: {e}")
+
+                    # Fallback to using the fetched text as body if split failed
+                    if not body:
+                        body = full_text
+                    if not title:
+                        # try to take first headline-like line
+                        title = (body.split('\n', 1)[0] or url)[:200]
+                    if not description:
+                        description = (body[:300].strip())
+
+                    # Save to articles via existing save path
+                    article = {
+                        'title': title,
+                        'summary': description,
+                        'content': body,
+                        'link': url,
+                        'published': datetime.now().date().isoformat(),
+                        'image': None,
+                        'categories': [],
+                        'feed_title': 'forced',
+                        'created_at': datetime.now().isoformat(),
+                        'updated_at': datetime.now().isoformat(),
+                        'status': 'CATEGORIZED',
+                        'published_flag': False,
+                        'total_score': 90
+                    }
+
+                    try:
+                        aid = self.save_article(article)
+                        if aid:
+                            print(f"    💾 Forced-publish saved article id: {aid}")
+                            # mark as done
+                            try:
+                                conn3, pooled3 = self.pg._get_conn()
+                                cur3 = conn3.cursor()
+                                try:
+                                    cur3.execute("UPDATE public.force_publish_links SET status = %s WHERE id = %s", ('done', fp_id))
+                                    try:
+                                        conn3.commit()
+                                    except Exception:
+                                        pass
+                                finally:
+                                    try:
+                                        cur3.close()
+                                    except Exception:
+                                        pass
+                                    self.pg._put_conn(conn3, pooled3)
+                            except Exception:
+                                pass
+                        else:
+                            # mark failed
+                            try:
+                                conn4, pooled4 = self.pg._get_conn()
+                                cur4 = conn4.cursor()
+                                try:
+                                    cur4.execute("UPDATE public.force_publish_links SET status = %s WHERE id = %s", ('failed', fp_id))
+                                    try:
+                                        conn4.commit()
+                                    except Exception:
+                                        pass
+                                finally:
+                                    try:
+                                        cur4.close()
+                                    except Exception:
+                                        pass
+                                    self.pg._put_conn(conn4, pooled4)
+                            except Exception:
+                                pass
+
+                    except Exception as e:
+                        print(f"    ⚠️  Saving forced article failed for {url}: {e}")
+                        try:
+                            conn5, pooled5 = self.pg._get_conn()
+                            cur5 = conn5.cursor()
+                            try:
+                                cur5.execute("UPDATE public.force_publish_links SET status = %s WHERE id = %s", ('failed', fp_id))
+                                try:
+                                    conn5.commit()
+                                except Exception:
+                                    pass
+                            finally:
+                                try:
+                                    cur5.close()
+                                except Exception:
+                                    pass
+                                self.pg._put_conn(conn5, pooled5)
+                        except Exception:
+                            pass
+
+                except Exception as e:
+                    print(f"    ⚠️  Error processing force_publish_links row: {e}")
+
+        except Exception as overall:
+            print(f"    ⚠️ process_user_requests overall error: {overall}")
 
     def load_feeds_from_file(self, filename: str) -> List[str]:
         """
@@ -1539,12 +1868,7 @@ Title: {title}"""
         article_link = article.get('link', '')
         article_title = article.get('title', '')
 
-        try:
-            if not self.pg:
-                from workers.tools.pg_client import get_pg_client
-                self.pg = get_pg_client()
-        except Exception:
-            self.pg = None
+        self.pg = get_pg_client()
 
         try:
             if self.pg and hasattr(self.pg, 'is_duplicate_article'):

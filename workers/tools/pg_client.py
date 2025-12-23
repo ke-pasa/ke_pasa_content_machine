@@ -63,6 +63,7 @@ class PGClient:
                         source_link varchar(1024),
                         status varchar(32) DEFAULT 'NEW',
                         published boolean DEFAULT false,
+                        total_score integer,
                         created_at timestamptz DEFAULT now(),
                         updated_at timestamptz DEFAULT now()
                     )
@@ -136,8 +137,8 @@ class PGClient:
             return 'error'
 
         insert_sql = '''
-        INSERT INTO public.articles(id, title, summary, content, link, image, categories, published_date, source_feed, source_link, status, published, created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,now())
+        INSERT INTO public.articles(id, title, summary, content, link, image, categories, published_date, source_feed, source_link, status, published, total_score, created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,now())
         ON CONFLICT (id) DO NOTHING
         '''
         article_id = article.get('id') or article.get('article_id')
@@ -158,6 +159,7 @@ class PGClient:
             article.get('source_link'),
             article.get('status'),
             article.get('published') if 'published' in article else None,
+            article.get('total_score'),
         )
         conn, pooled = self._get_conn()
         cur = conn.cursor()
