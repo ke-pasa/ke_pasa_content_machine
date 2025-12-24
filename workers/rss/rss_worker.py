@@ -83,6 +83,19 @@ class RSSWorker:
             
             logger.info(f"📋 Found {len(feeds)} feeds to check")
             
+            # Ensure conditional GET caches are cleared before initial validation
+            try:
+                etag_path = Path('rss_etag_cache.json')
+                lm_path = Path('rss_lastmod_cache.json')
+                if etag_path.exists():
+                    etag_path.unlink()
+                    logger.info(f"Cleared ETag cache: {etag_path}")
+                if lm_path.exists():
+                    lm_path.unlink()
+                    logger.info(f"Cleared Last-Modified cache: {lm_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not clear RSS caches before validation: {e}")
+
             # Process each feed with validation
             for i, feed_url in enumerate(feeds, 1):
                 logger.info(f"🔍 [{i}/{len(feeds)}] Checking: {feed_url}")
@@ -151,6 +164,20 @@ class RSSWorker:
                 from .rss_parser import RSSParser
                 parser = RSSParser()
                 
+                # Clearing conditional GET caches to avoid immediate 304 responses
+                # caused by the earlier validation step which already populated ETag/Last-Modified.
+                try:
+                    etag_path = Path(parser._etag_cache_path)
+                    lm_path = Path(parser._lm_cache_path)
+                    if etag_path.exists():
+                        etag_path.unlink()
+                        logger.info(f"Cleared ETag cache: {etag_path}")
+                    if lm_path.exists():
+                        lm_path.unlink()
+                        logger.info(f"Cleared Last-Modified cache: {lm_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not clear RSS conditional GET caches: {e}")
+
                 # Temporarily save valid feeds to temp file
                 temp_feeds_file = self.config.feeds_file + '.tmp'
                 with open(temp_feeds_file, 'w', encoding='utf-8') as f:
