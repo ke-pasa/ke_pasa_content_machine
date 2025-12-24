@@ -8,10 +8,8 @@ https://www.lavanguardia.com/rss/politica.xml
 https://www.lavanguardia.com/rss/economia.xml
 https://www.lavanguardia.com/rss/vida.xml
 https://www.lavanguardia.com/rss/cultura.xml
-https://www.lavanguardia.com/rss/opinion.xml
 https://www.abc.es/rss/feeds/abc_Economia.xml
 https://www.abc.es/rss/feeds/abc_Cultura.xml
-https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/
 https://www.lasexta.com/rss/351410.xml
 https://www.laopiniondemalaga.es/rss/section/16503
 https://www.malagahoy.es/rss/
@@ -31,7 +29,6 @@ https://www.muypymes.com/feed
 https://e00-expansion.uecdn.es/rss/portada.xml
 https://www.huffingtonpost.es/feeds/index.xml
 https://www.elperiodico.com/es/cds/rss/?id=board.xml
-https://www.aemet.es/documentos_d/eltiempo/prediccion/avisos/rss/CAP_AFAE_RSS.xml
 https://rss.elconfidencial.com/espana/
 https://rss.elconfidencial.com/comunicacion/
 https://rss.elconfidencial.com/sociedad/
