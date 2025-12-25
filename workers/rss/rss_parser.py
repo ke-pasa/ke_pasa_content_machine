@@ -940,7 +940,7 @@ class RSSParser:
         Heuristic to decide whether an article is worth full-text extraction.
         Uses GPT-5-nano to classify news as trash or valuable.
         """        
-        return true, 0
+        return True, 0
     
     def _is_duplicate_by_various_checks(self, article_link: str, article_title: str, article_summary: str, article_link_norm: str) -> bool:
         """
