@@ -1,0 +1,3 @@
+# Events Importer Worker Requirements
+croniter>=1.3.0
+feedparser>=6.0.0

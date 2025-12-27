@@ -1,0 +1,14 @@
+FROM ke-pasa-workers-base:latest
+
+COPY workers/events_importer /app/workers/events_importer
+
+RUN pip install --no-cache-dir -r /app/workers/events_importer/requirements.txt
+
+COPY deploy/docker/supervisord.conf.events_importer /etc/supervisor/conf.d/events_importer-worker.conf
+
+# Create data/events folder
+RUN mkdir -p /app/data/events
+
+WORKDIR /app
+
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

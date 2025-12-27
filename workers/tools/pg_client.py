@@ -847,6 +847,101 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
+    def save_event(self, event: Dict[str, Any]) -> Optional[str]:
+        """
+        Save an event to the public.events table
+        
+        Args:
+            event: Event data dictionary with fields:
+                - title (required)
+                - description
+                - start_at (required, timestamp)
+                - end_at (timestamp)
+                - city (required)
+                - venue_name
+                - venue_address
+                - category
+                - image_url
+                - external_url
+                - is_free (boolean)
+                - price_min (numeric)
+                - price_max (numeric)
+            
+        Returns:
+            Event ID (UUID) if saved successfully, None otherwise
+        """
+        import uuid
+        
+        try:
+            self._connect()
+        except Exception:
+            return None
+        
+        # Generate UUID for the event
+        event_id = str(uuid.uuid4())
+        
+        # Parse boolean
+        is_free = event.get('is_free')
+        if isinstance(is_free, str):
+            is_free = is_free.lower() in ('true', '1', 'yes')
+        
+        # Parse numeric values
+        price_min = event.get('price_min')
+        price_max = event.get('price_max')
+        try:
+            price_min = float(price_min) if price_min is not None else None
+        except (ValueError, TypeError):
+            price_min = None
+        try:
+            price_max = float(price_max) if price_max is not None else None
+        except (ValueError, TypeError):
+            price_max = None
+        
+        insert_sql = '''
+        INSERT INTO public.events (
+            id, title, description, start_at, end_at, city, 
+            venue_name, venue_address, category, image_url, 
+            external_url, is_free, price_min, price_max, 
+            is_active, created_at, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, 
+            %s, %s, %s, %s, 
+            %s, %s, %s, %s, 
+            true, now(), now()
+        )
+        '''
+        
+        params = (
+            event_id,
+            event.get('title'),
+            event.get('description'),
+            event.get('start_at'),
+            event.get('end_at'),
+            event.get('city'),
+            event.get('venue_name'),
+            event.get('venue_address'),
+            event.get('category'),
+            event.get('image_url'),
+            event.get('external_url'),
+            is_free,
+            price_min,
+            price_max,
+        )
+        
+        conn, pooled = self._get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(insert_sql, params)
+            return event_id
+        except Exception:
+            return None
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
 
 _client: Optional[PGClient] = None
 

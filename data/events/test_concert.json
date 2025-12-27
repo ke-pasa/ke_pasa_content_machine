@@ -1,0 +1,1 @@
+{"title": "Test Concert", "description": "Live music event", "start_at": "2025-01-15T20:00:00+01:00", "city": "Madrid", "venue_name": "Palacio de Deportes", "category": "music", "is_free": false, "price_min": 25, "price_max": 100}

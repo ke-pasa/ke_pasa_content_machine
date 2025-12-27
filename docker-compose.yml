@@ -104,6 +104,25 @@ services:
     depends_on:
       - base
 
+  # Events Importer Worker - continuous folder watching + daily RSS
+  events-importer-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.events_importer
+    image: ke-pasa-events-importer-worker:latest
+    container_name: ke-pasa-events-importer-worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_URL=${POSTGRES_URL}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs/events_importer:/var/log/supervisor
+      - ./data/events:/app/data/events
+    networks:
+      - ke-pasa-network
+    depends_on:
+      - base
+
   # Base image builder (helper service)
   base:
     build:

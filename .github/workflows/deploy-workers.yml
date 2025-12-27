@@ -28,6 +28,11 @@ on:
         required: false
         default: true
         type: boolean
+      deploy_events_importer:
+        description: 'Deploy Events Importer Worker'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   deploy:
@@ -102,6 +107,7 @@ jobs:
           DEPLOY_ART: ${{ github.event_name == 'push' || github.event.inputs.deploy_article_generator == 'true' }}
           DEPLOY_PUB: ${{ github.event_name == 'push' || github.event.inputs.deploy_publisher == 'true' }}
           DEPLOY_DIGEST: ${{ github.event_name == 'push' || github.event.inputs.deploy_digest == 'true' }}
+          DEPLOY_EVENTS: ${{ github.event_name == 'push' || github.event.inputs.deploy_events_importer == 'true' }}
         run: |
           ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
@@ -136,6 +142,11 @@ jobs:
             echo "Building Digest worker..."
             docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
           fi
+
+          if [ "${{ env.DEPLOY_EVENTS }}" == "true" ]; then
+            echo "Building Events Importer worker..."
+            docker build -f docker/Dockerfile.events_importer -t ke-pasa-events-importer-worker:latest .
+          fi
           
           # Restart only selected workers
           echo "Restarting selected workers..."
@@ -168,6 +179,12 @@ jobs:
             echo "Restarting Digest worker..."
             docker compose stop digest-worker || true
             docker compose up -d digest-worker
+          fi
+
+          if [ "${{ env.DEPLOY_EVENTS }}" == "true" ]; then
+            echo "Restarting Events Importer worker..."
+            docker compose stop events-importer-worker || true
+            docker compose up -d events-importer-worker
           fi
           
           # Clean up old images

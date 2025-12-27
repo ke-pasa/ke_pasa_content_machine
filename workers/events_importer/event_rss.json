@@ -1,0 +1,10 @@
+{
+    "feeds": [
+        {
+            "url": "https://example.com/events/rss",
+            "handler": "default_handler",
+            "enabled": true,
+            "description": "Example event feed"
+        }
+    ]
+}
