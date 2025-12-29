@@ -1,10 +1,11 @@
 {
     "feeds": [
         {
-            "url": "https://example.com/events/rss",
-            "handler": "default_handler",
+            "url": "https://datosabiertos.malaga.eu/recursos/cultura/agenda/2025.csv",
+            "handler": "malaga_handler",
             "enabled": true,
-            "description": "Example event feed"
+            "description": "Malaga Open Data - Cultural Agenda 2025",
+            "type": "csv"
         }
     ]
 }

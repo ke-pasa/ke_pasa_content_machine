@@ -250,15 +250,23 @@ class EventsImporterWorker:
                 logger.info(f"   Handler: {handler_name}")
                 
                 try:
-                    # Fetch and parse RSS feed
-                    feed_data = self._fetch_rss_feed(feed_url)
-                    if not feed_data:
-                        logger.warning(f"⚠️ Could not fetch feed: {feed_url}")
-                        continue
+                    # Check feed type
+                    feed_type = feed_config.get('type', 'rss')
                     
-                    # Get handler and process
-                    handler = get_handler(handler_name)
-                    events = handler(feed_data)
+                    if feed_type == 'csv':
+                         # For CSV, the handler handles fetching/parsing directly
+                         handler = get_handler(handler_name)
+                         events = handler(None)
+                    else:
+                        # Fetch and parse RSS feed
+                        feed_data = self._fetch_rss_feed(feed_url)
+                        if not feed_data:
+                            logger.warning(f"⚠️ Could not fetch feed: {feed_url}")
+                            continue
+                        
+                        # Get handler and process
+                        handler = get_handler(handler_name)
+                        events = handler(feed_data)
                     
                     logger.info(f"   📌 Extracted {len(events)} event(s)")
                     

@@ -51,8 +51,8 @@ def default_handler(feed_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 # Registry of available handlers
 HANDLERS = {
     'default_handler': default_handler,
+    'malaga_handler': None, # Lazy loaded to avoid circular imports if needed, or import at top
 }
-
 
 def get_handler(handler_name: str):
     """
@@ -64,6 +64,10 @@ def get_handler(handler_name: str):
     Returns:
         Handler function or None if not found
     """
+    if handler_name == 'malaga_handler':
+        from workers.events_importer.malaga_importer import malaga_handler
+        return malaga_handler
+        
     handler = HANDLERS.get(handler_name)
     if not handler:
         logger.warning(f"⚠️ Handler '{handler_name}' not found, using default_handler")
