@@ -2,7 +2,7 @@
   "jobs": [
     {
       "id": "evening_brief",
-      "script_module": "workers.digests.evening_brief",
+      "script_module": "workers.digest.evening_brief",
       "cron_schedule": "0 21 * * *",
       "channels": ["@spain_kepasa"],
       "enabled": true

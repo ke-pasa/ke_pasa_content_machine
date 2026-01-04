@@ -83,6 +83,13 @@ if (Test-Path $EnvFile) {
     Write-Host "Environment variables loaded successfully!" -ForegroundColor Green
 } else {
     Write-Warning ".env file not found at: $EnvFile"
+    # If a template exists, offer to copy it to .env for the user
+    $Template = Join-Path $ProjectRoot ".env.template"
+    if (Test-Path $Template) {
+        Write-Host "Found .env.template. Creating .env from template..." -ForegroundColor Yellow
+        Copy-Item -Path $Template -Destination $EnvFile -Force
+        Write-Host "Created .env from .env.template. Please edit it and fill in secrets before running workers." -ForegroundColor Green
+    }
 }
 
 <# Function declarations --------------------------------------------------- #>
