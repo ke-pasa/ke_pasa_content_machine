@@ -102,7 +102,7 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/digest:/var/log/supervisor
-      - ./republish_session.session:/app/republish_session.session:ro
+      - ./republish_session.session:/app/republish_session.session
     networks:
       - ke-pasa-network
     depends_on:
