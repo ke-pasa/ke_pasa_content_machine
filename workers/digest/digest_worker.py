@@ -179,7 +179,42 @@ class DigestWorker:
                             logger.warning("Telethon client not authorized; skipping republish")
                             return
 
-                        for target in republish_channels:
+                        # Build list of target groups from the user's dialogs (exclude source and specific exceptions)
+                        exclude_usernames = set()
+                        # normalize source_chat to username if possible (could be id or username)
+                        if isinstance(source_chat, str) and source_chat.startswith('@'):
+                            exclude_usernames.add(source_chat.lstrip('@'))
+                        elif isinstance(source_chat, str):
+                            exclude_usernames.add(source_chat)
+
+                        # Always exclude the main channel used for publishing (spain_kepasa)
+                        exclude_usernames.add('spain_kepasa')
+
+                        targets = []
+                        async for dialog in client.iter_dialogs():
+                            ent = dialog.entity
+                            uname = getattr(ent, 'username', None)
+                            is_group = False
+                            if isinstance(ent, Channel):
+                                is_group = not getattr(ent, 'broadcast', False)
+                            elif isinstance(ent, Chat):
+                                is_group = True
+
+                            if not is_group:
+                                continue
+
+                            # Skip excluded usernames
+                            if uname and uname in exclude_usernames:
+                                continue
+
+                            # Prefer username (with @) for forwarding target, else use id
+                            if uname:
+                                targets.append(f"@{uname}")
+                            else:
+                                targets.append(ent.id)
+
+                        # Perform forwards
+                        for target in targets:
                             try:
                                 logger.info(f"Forwarding message {source_msg} from {source_chat} to {target} as user...")
                                 await client.forward_messages(target, source_msg, source_chat)
