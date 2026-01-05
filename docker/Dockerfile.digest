@@ -4,9 +4,12 @@ FROM ke-pasa-workers-base:latest
 COPY workers/publisher /app/workers/publisher
 COPY workers/digest /app/workers/digest
 
-# Install repo requirements (includes telethon)
+# Install repo requirements
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Try to install telethon (optional dependency - continue if it fails)
+RUN pip install --no-cache-dir 'telethon>=1.24.0' || echo "Warning: Telethon installation failed, continuing without it"
 
 # Copy supervisor config for digest
 COPY deploy/docker/supervisord.conf.digest /etc/supervisor/conf.d/digest-worker.conf
