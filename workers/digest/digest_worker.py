@@ -190,6 +190,7 @@ class DigestWorker:
                         # Always exclude the main channel used for publishing (spain_kepasa)
                         exclude_usernames.add('spain_kepasa')
 
+                        logger.info(f"Scanning user dialogs to find groups (excluding: {exclude_usernames})...")
                         targets = []
                         async for dialog in client.iter_dialogs():
                             ent = dialog.entity
@@ -205,6 +206,7 @@ class DigestWorker:
 
                             # Skip excluded usernames
                             if uname and uname in exclude_usernames:
+                                logger.debug(f"Skipping excluded group: @{uname}")
                                 continue
 
                             # Prefer username (with @) for forwarding target, else use id
@@ -212,6 +214,8 @@ class DigestWorker:
                                 targets.append(f"@{uname}")
                             else:
                                 targets.append(ent.id)
+
+                        logger.info(f"Found {len(targets)} groups to forward to: {targets}")
 
                         # Perform forwards
                         for target in targets:
