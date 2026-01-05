@@ -218,14 +218,30 @@ class DigestWorker:
 
                         logger.info(f"Found {len(targets)} groups to forward to: {targets}")
 
+                        # Get the original message text in case we need to copy it
+                        original_message = None
+                        try:
+                            original_message = await client.get_messages(source_chat, ids=source_msg)
+                        except Exception as e:
+                            logger.warning(f"Could not fetch original message: {e}")
+
                         # Perform forwards
                         for target in targets:
                             try:
                                 logger.info(f"Forwarding message {source_msg} from {source_chat} to {target} as user...")
                                 await client.forward_messages(target, source_msg, source_chat)
                                 logger.info(f"✅ Forwarded to {target}")
-                            except Exception as e:
-                                logger.error(f"Failed to forward to {target}: {e}")
+                            except Exception as forward_error:
+                                logger.error(f"Failed to forward to {target}: {forward_error}")
+                                
+                                # Try to send as regular message if forward failed
+                                if original_message and original_message.text:
+                                    try:
+                                        logger.info(f"Attempting to send as regular message to {target}...")
+                                        await client.send_message(target, original_message.text, link_preview=False)
+                                        logger.info(f"✅ Sent as regular message to {target}")
+                                    except Exception as send_error:
+                                        logger.error(f"Failed to send regular message to {target}: {send_error}")
                     except Exception as e:
                         logger.error(f"Telethon forward error: {e}")
 
