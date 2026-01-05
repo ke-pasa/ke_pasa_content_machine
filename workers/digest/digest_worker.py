@@ -9,6 +9,7 @@ import logging
 import argparse
 import importlib
 from telethon import TelegramClient
+from telethon.tl.types import Channel, Chat
 from datetime import datetime, timezone
 from pathlib import Path
 from croniter import croniter
