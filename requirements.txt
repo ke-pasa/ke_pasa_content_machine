@@ -34,3 +34,4 @@ openai>=2.8.1,<3.0.0
 python-telegram-bot>=20.7,<21.0.0
 # Telethon for posting as a user (optional)
 telethon>=2.1.0
+requests-oauthlib>=1.3.1

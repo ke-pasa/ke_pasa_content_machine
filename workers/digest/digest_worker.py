@@ -8,6 +8,7 @@ import json
 import logging
 import argparse
 import importlib
+from telethon import TelegramClient
 from datetime import datetime, timezone
 from pathlib import Path
 from croniter import croniter
@@ -63,14 +64,21 @@ class DigestWorker:
     def execute_digest(self, script_module: str) -> str:
         """Dynamically imports module and calls generate_digest()"""
         try:
+            logger.debug(f"Importing digest module {script_module}")
             module = importlib.import_module(script_module)
+            importlib.reload(module)
             if hasattr(module, 'generate_digest'):
-                importlib.reload(module)
-                return module.generate_digest()
+                try:
+                    return module.generate_digest()
+                except Exception as e:
+                    logger.error(f"Error while running generate_digest(): {e}")
+                    raise
             else:
                 logger.error(f"Module {script_module} has no generate_digest function")
-        except Exception as e:
-            logger.error(f"Error executing script {script_module}: {e}")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            logger.exception(f"Error executing script {script_module}")
         return None
 
     def _markdown_to_telegram_html(self, text: str) -> str:
@@ -88,17 +96,102 @@ class DigestWorker:
     def publish_content(self, content: str, channels: list):
         if not content:
             logger.warning("No content generated to publish")
-            return
+            return {}
 
         html_content = self._markdown_to_telegram_html(content)
-
+        results = {}
         for channel in channels:
             try:
                 logger.info(f"Sending digest to {channel}...")
-                send_message(channel, html_content, token=self.telegram_token, parse_mode='HTML')
+                res = send_message(channel, html_content, token=self.telegram_token, parse_mode='HTML')
+                results[channel] = res
                 logger.info(f"✅ Sent to {channel}")
             except Exception as e:
+                results[channel] = None
                 logger.error(f"❌ Failed to send to {channel}: {e}")
+        return results
+
+    def republish_content(self, content: str, republish_channels: list, original_results: dict = None):
+        """Republish content as a user using Telethon to the provided channels.
+
+        Requires TELETHON_API_ID and TELETHON_API_HASH env vars and a valid
+        Telethon session file (or an already-authorized session name).
+        """
+        if not republish_channels:
+            return
+
+        api_id = os.getenv('TELETHON_API_ID')
+        api_hash = os.getenv('TELETHON_API_HASH')
+        session_name = os.getenv('TELETHON_SESSION', 'republish_session')
+
+        if not api_id or not api_hash:
+            logger.warning("Telethon credentials not set; skipping republish")
+            return
+
+        if TelegramClient is None:
+            logger.error("Telethon not installed; cannot republish")
+            return
+
+        try:
+            api_id_int = int(api_id)
+        except Exception:
+            logger.error("Invalid TELETHON_API_ID")
+            return
+
+        # If we have original send results, try to pick a source message to forward
+        source_msg = None
+        source_chat = None
+        if original_results:
+            for ch, res in (original_results or {}).items():
+                if not res:
+                    continue
+                # extract message id and chat id robustly
+                try:
+                    msg_id = res.get('message_id') or (res.get('message') or {}).get('message_id')
+                except Exception:
+                    msg_id = None
+                try:
+                    chat_info = res.get('chat') or res.get('sender_chat') or {}
+                    chat_id = chat_info.get('id') if isinstance(chat_info, dict) else None
+                    # fallback: if chat id not present, use channel username if available
+                    if not chat_id:
+                        chat_id = chat_info.get('username') if isinstance(chat_info, dict) else None
+                except Exception:
+                    chat_id = None
+
+                if msg_id and chat_id:
+                    source_msg = int(msg_id)
+                    source_chat = chat_id
+                    break
+
+        if not source_msg or not source_chat:
+            logger.warning("No source message available to forward; skipping republish")
+            return
+
+        try:
+            import asyncio
+
+            async def _forward_async():
+                async with TelegramClient(session_name, api_id_int, api_hash) as client:
+                    try:
+                        authorized = await client.is_user_authorized()
+                        if not authorized:
+                            logger.warning("Telethon client not authorized; skipping republish")
+                            return
+
+                        for target in republish_channels:
+                            try:
+                                logger.info(f"Forwarding message {source_msg} from {source_chat} to {target} as user...")
+                                await client.forward_messages(target, source_msg, source_chat)
+                                logger.info(f"✅ Forwarded to {target}")
+                            except Exception as e:
+                                logger.error(f"Failed to forward to {target}: {e}")
+                    except Exception as e:
+                        logger.error(f"Telethon forward error: {e}")
+
+            asyncio.run(_forward_async())
+        except Exception as e:
+            logger.error(f"Telethon error: {e}")
 
     def run_immediate(self, job_id, target_channel=None):
         logger.info(f"🚀 Manual run for job: {job_id}")
@@ -108,11 +201,17 @@ class DigestWorker:
         if not job:
             logger.error(f"Job {job_id} not found in config")
             return
-
+        # Run the job: generate, publish, and optionally republish
         content = self.execute_digest(job['script_module'])
         if content:
             channels = [target_channel] if target_channel else job.get('channels', [])
-            self.publish_content(content, channels)
+            publish_results = self.publish_content(content, channels)
+            # Republish as user if configured
+            repub = job.get('republish', [])
+            if repub:
+                # Convert Markdown to HTML for Telethon and forward original message
+                html_content = self._markdown_to_telegram_html(content)
+                self.republish_content(html_content, repub, original_results=publish_results)
         else:
             logger.error("Failed to generate content")
 
@@ -148,7 +247,12 @@ class DigestWorker:
                             logger.info(f"  ▶️  Executing '{job_id}'...")
                             content = self.execute_digest(job['script_module'])
                             if content:
-                                self.publish_content(content, job['channels'])
+                                publish_results = self.publish_content(content, job['channels'])
+                                # Republish to additional channels as user if requested
+                                repub = job.get('republish', [])
+                                if repub:
+                                    html_content = self._markdown_to_telegram_html(content)
+                                    self.republish_content(html_content, repub, original_results=publish_results)
                                 if job_id not in state: state[job_id] = {}
                                 state[job_id]['last_run_iso'] = now_utc.isoformat()
                                 self.save_state(state)

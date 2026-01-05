@@ -3,8 +3,9 @@
     {
       "id": "evening_brief",
       "script_module": "workers.digest.evening_brief",
-      "cron_schedule": "0 21 * * *",
+      "cron_schedule": "0 20 * * *",
       "channels": ["@spain_kepasa"],
+      "republish": ["@test_republish", "@malaga_community", "@malagabaraholka"],
       "enabled": true
     }
   ]
