@@ -267,13 +267,34 @@ class PublisherWorker:
 
         Always attempts to post to X when the helper is installed. Uses
         credentials from environment or the helper's arguments.
+        
+        Constructs X post from title_ru and description_ru/content_ru.
         """
         if post_tweet is None:
             return None, 'x_helper_not_installed'
 
         try:
-            # Simple post: truncate to X limit
-            res = post_tweet(message)
+            # Build X post from title and description (plain text, no HTML)
+            title = data.get('title_ru') or data.get('title') or ''
+            description = data.get('description_ru') or data.get('content_ru') or ''
+            source = data.get('source_name') or data.get('source') or ''
+            image_url = data.get('image_url') or data.get('image') or ''
+            
+            # Format: Title\n\nDescription\n\n[Image]\n\nSource
+            parts = []
+            if title:
+                parts.append(title)
+            if description:
+                parts.append(description)
+            if image_url:
+                parts.append(image_url)
+            if source:
+                parts.append(f"📰 {source}")
+            
+            x_text = '\n\n'.join([p for p in parts if p])
+            
+            # Truncate to 280 chars will happen in post_tweet
+            res = post_tweet(x_text)
             return res, None
         except Exception as e:
             logger.warning(f"⚠️ Failed to post to X: {e}")
