@@ -26,6 +26,7 @@ Pillow>=10.0.0,<11.0.0
 # Date and time
 python-dateutil>=2.8.0,<3.0.0
 pytz>=2024.1
+croniter>=1.3.0,<2.0.0
 
 # OpenAI (for Categorization and Article Generator workers)
 openai>=2.8.1,<3.0.0

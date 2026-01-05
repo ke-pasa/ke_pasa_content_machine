@@ -96,6 +96,9 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELETHON_API_ID=${TELETHON_API_ID}
+      - TELETHON_API_HASH=${TELETHON_API_HASH}
+      - TELETHON_SESSION=${TELETHON_SESSION:-republish_session}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/digest:/var/log/supervisor
