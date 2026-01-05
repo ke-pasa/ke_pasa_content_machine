@@ -4,8 +4,9 @@ FROM ke-pasa-workers-base:latest
 COPY workers/publisher /app/workers/publisher
 COPY workers/digest /app/workers/digest
 
-# Install any digest-specific deps if present
-RUN pip install --no-cache-dir -r /app/workers/publisher/requirements.txt || true
+# Install repo requirements (includes telethon)
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy supervisor config for digest
 COPY deploy/docker/supervisord.conf.digest /etc/supervisor/conf.d/digest-worker.conf
