@@ -38,6 +38,10 @@ venv.bak/
 # X (Twitter) OAuth tokens
 .x_tokens.json
 
+# Telethon session files (contains auth credentials)
+*.session 
+*.session-journal
+
 # Firebase
 firebase_key.json
 firebase_key_example.json
