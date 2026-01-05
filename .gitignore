@@ -35,6 +35,9 @@ venv.bak/
 .env.test.local
 .env.production.local
 
+# X (Twitter) OAuth tokens
+.x_tokens.json
+
 # Firebase
 firebase_key.json
 firebase_key_example.json

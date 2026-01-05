@@ -57,6 +57,11 @@ jobs:
           TELETHON_API_HASH=${{ secrets.TELETHON_API_HASH || '' }}
           RSS_PARALLEL_FEEDS=${{ secrets.RSS_PARALLEL_FEEDS || '6' }}
           RSS_PURGE_DAYS=${{ secrets.RSS_PURGE_DAYS || '7' }}
+          
+          # X (Twitter) API OAuth 2.0 credentials
+          X_CLIENT_ID=${{ secrets.X_CLIENT_ID }}
+          X_CLIENT_SECRET=${{ secrets.X_CLIENT_SECRET }}
+          X_REDIRECT_URI=http://localhost:8080/callback
 
           GIT_KE_PASA_PAT=${{ secrets.GIT_KE_PASA_PAT }}
           EOF
@@ -100,6 +105,15 @@ jobs:
           scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             .env \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+          
+          # Copy X OAuth tokens if available (Base64 encoded in secrets)
+          if [ ! -z "${{ secrets.X_TOKENS_BASE64 }}" ]; then
+            echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+            scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              .x_tokens.json \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+            rm -f .x_tokens.json
+          fi
 
       - name: Build and deploy on server
         env:

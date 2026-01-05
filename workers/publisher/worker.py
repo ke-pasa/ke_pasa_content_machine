@@ -18,6 +18,7 @@ sys.path.insert(0, str(root_dir))
 
 import html
 from workers.tools.telegram_helper import send_message, send_photo
+from workers.tools.x_helper import post_tweet
 from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
 from workers.tools.constants import MIN_PUBLISH_SCORE
@@ -216,6 +217,7 @@ class PublisherWorker:
                     conn, pooled = pg._get_conn()
                     cur = conn.cursor()
                     try:
+                        # Update basic published fields; x_publish_error is stored in telegram_publish_error column
                         cur.execute("UPDATE public.articles_ru SET status = %s, published_at = %s, updated_at = %s WHERE id = %s",
                                     (update_fields['status'], update_fields['published_at'], update_fields['published_at'], doc_id))
                         try:
@@ -259,6 +261,23 @@ class PublisherWorker:
                 logger.warning(f"⚠️ sendMessage failed: {e}")
                 doc_error = str(e)
         return sent_message, doc_error
+
+    def _post_to_x(self, message: str, data: dict) -> tuple:
+        """Attempt to post to X (twitter) if configured. Returns (result, error_str).
+
+        Always attempts to post to X when the helper is installed. Uses
+        credentials from environment or the helper's arguments.
+        """
+        if post_tweet is None:
+            return None, 'x_helper_not_installed'
+
+        try:
+            # Simple post: truncate to X limit
+            res = post_tweet(message)
+            return res, None
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to post to X: {e}")
+            return None, str(e)
 
     def publish_articles_from_articles_ru(self, max_to_publish: int | None = None) -> Dict:
         """Publishes up to `max_to_publish` (or config.max_articles_per_run) articles from `articles_ru` collection."""
@@ -356,6 +375,31 @@ class PublisherWorker:
                 self._record_post(article_id, sent_message, chat_id)
                 self._mark_article_published(article_id, sent_message, doc_error)
 
+                # Attempt to post to X (twitter) if enabled
+                try:
+                    x_res, x_err = self._post_to_x(message, data)
+                    logger.debug(f"X post attempt result: res={x_res} err={x_err}")
+                    if x_err:
+                        # Append X error to telegram_publish_error field via direct DB update
+                        try:
+                            conn, pooled = pg._get_conn()
+                            cur = conn.cursor()
+                            try:
+                                cur.execute("UPDATE public.articles_ru SET telegram_publish_error = %s, updated_at = %s WHERE id = %s",
+                                            (x_err, datetime.now(timezone.utc).isoformat(), article_id))
+                                conn.commit()
+                            finally:
+                                try:
+                                    cur.close()
+                                except Exception:
+                                    pass
+                                pg._put_conn(conn, pooled)
+                        except Exception:
+                            logger.warning(f"⚠️ Failed to record X error for {article_id}")
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Unexpected error while posting to X: {e}")
+
                 if sent_message:
                     results['published'] += 1
                     logger.info(f"✅ Published article {article_id} to Telegram")
@@ -371,9 +415,9 @@ class PublisherWorker:
 
 def main():
     """Entry point for worker execution"""
-    # Configure logging
+    # Configure logging (verbose for debugging X posts)
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
