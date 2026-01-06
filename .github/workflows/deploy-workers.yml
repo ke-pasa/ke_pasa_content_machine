@@ -153,11 +153,19 @@ jobs:
           
           if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
             echo "Building Publisher worker..."
-            docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+            if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
+              docker build --build-arg X_TOKENS_BASE64="${{ secrets.X_TOKENS_BASE64 }}" -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+            else
+              docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+            fi
           fi
           if [ "${{ env.DEPLOY_DIGEST }}" == "true" ]; then
             echo "Building Digest worker..."
-            docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
+            if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
+              docker build --build-arg X_TOKENS_BASE64="${{ secrets.X_TOKENS_BASE64 }}" -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
+            else
+              docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
+            fi
           fi
 
           if [ "${{ env.DEPLOY_EVENTS }}" == "true" ]; then

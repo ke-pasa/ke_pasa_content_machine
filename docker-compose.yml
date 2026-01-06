@@ -78,6 +78,11 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/publisher:/var/log/supervisor 
+      # Optional: mount X OAuth token file if present on the host. Place .x_tokens.json
+      # into the project root on the host (it is ignored in git). This makes tokens
+      # available inside the container at /app/.x_tokens.json so workers.tools.x_helper
+      # can read them.
+      - ./.x_tokens.json:/app/.x_tokens.json:ro
     networks:
       - ke-pasa-network
     depends_on:
@@ -102,6 +107,8 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/digest:/var/log/supervisor
+      # Optional mount for X tokens (digest may also post to X in future)
+      - ./.x_tokens.json:/app/.x_tokens.json:ro
       - ./republish_session.session:/app/republish_session.session
     networks:
       - ke-pasa-network
