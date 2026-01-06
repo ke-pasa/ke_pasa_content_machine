@@ -268,28 +268,28 @@ class PublisherWorker:
         Always attempts to post to X when the helper is installed. Uses
         credentials from environment or the helper's arguments.
         
-        Constructs X post from title_ru and description_ru/content_ru.
+        Constructs X post from title_ru and description_ru with link to ke-pasa.es.
         """
         if post_tweet is None:
             return None, 'x_helper_not_installed'
 
         try:
-            # Build X post from title and description (plain text, no HTML)
+            # Build X post: Title\n\nDescription\n\nПодробности:\nhttps://ke-pasa.es/news/<slug>/
             title = data.get('title_ru') or data.get('title') or ''
             description = data.get('description_ru') or data.get('content_ru') or ''
-            source = data.get('source_name') or data.get('source') or ''
-            image_url = data.get('image_url') or data.get('image') or ''
+            slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
             
-            # Format: Title\n\nDescription\n\n[Image]\n\nSource
+            # Build URL
+            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            
+            # Format: Title\n\nDescription\nПодробности:\n<URL>
             parts = []
             if title:
                 parts.append(title)
             if description:
                 parts.append(description)
-            if image_url:
-                parts.append(image_url)
-            if source:
-                parts.append(f"📰 {source}")
+            if article_url:
+                parts.append(f"Подробности:\n{article_url}")
             
             x_text = '\n\n'.join([p for p in parts if p])
             

@@ -82,6 +82,9 @@ class ArticleGenerator:
         publish_md = tr.get('publish_md')
         # Take stage6 result directly from translator (do not synthesize tg_preview here)
         stage6_telegram = tr.get('stage6_telegram')
+        
+        # Extract slug from stage5 result
+        slug = tr.get('slug') or None
 
         combined_flags = []
         for flag_list in (tr.get('flags') or [], tr.get('publish_flags') or [], tr.get('tg_flags') or []):
@@ -117,6 +120,7 @@ class ArticleGenerator:
             'description_ru': description_ru,
             'content_ru': content_ru,
             'publish_md': publish_md,
+            'slug': slug,
             # Save telegram_final as plain text (the tg_preview) or NULL.
             'telegram_final': telegram_text,
             'published_at': now,

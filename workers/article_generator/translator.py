@@ -287,6 +287,8 @@ class ArticleTranslator:
         if isinstance(stage5, dict):
             if publish_md := stage5.get('publish_md'):
                 final['publish_md'] = publish_md
+            if slug := stage5.get('slug'):
+                final['slug'] = slug
             publish_flags = stage5.get('flags') or []
             if publish_flags:
                 final['flags'] = list(dict.fromkeys((final.get('flags') or []) + publish_flags))

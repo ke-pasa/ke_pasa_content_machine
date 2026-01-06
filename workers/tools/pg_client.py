@@ -609,8 +609,8 @@ class PGClient:
         # Use DELETE then INSERT to avoid relying on ON CONFLICT or unique constraints.
         delete_sql = 'DELETE FROM public.articles_ru WHERE article_id = %s'
         insert_sql = '''
-        INSERT INTO public.articles_ru (article_id, source_url, source_link, source_name, source_published_at, image_url, status, total_score, title_ru, description_ru, content_ru, telegram_final, published_at, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
+        INSERT INTO public.articles_ru (article_id, source_url, source_link, source_name, source_published_at, image_url, status, total_score, title_ru, description_ru, content_ru, slug, telegram_final, published_at, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
         '''
 
         params_insert = (
@@ -625,6 +625,7 @@ class PGClient:
             payload.get('title_ru'),
             payload.get('description_ru'),
             payload.get('content_ru'),
+            payload.get('slug'),
             telegram_json,
         )
 
