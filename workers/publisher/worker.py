@@ -274,23 +274,20 @@ class PublisherWorker:
             return None, 'x_helper_not_installed'
 
         try:
-            # Build X post: Title\n\nDescription\n\nПодробности:\nhttps://ke-pasa.es/news/<slug>/
-            title = data.get('title_ru') or data.get('title') or ''
+            # Build X post: Description\n<URL>
             description = data.get('description_ru') or data.get('content_ru') or ''
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
-            
+
             # Build URL
             article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
-            
-            # Format: Title\n\nDescription\nПодробности:\n<URL>
+
+            # Format: Description\n\n<URL> (one blank line between)
             parts = []
-            if title:
-                parts.append(title)
             if description:
                 parts.append(description)
             if article_url:
-                parts.append(f"Подробности:\n{article_url}")
-            
+                parts.append(article_url)
+
             x_text = '\n\n'.join([p for p in parts if p])
             
             # Truncate to 280 chars will happen in post_tweet
