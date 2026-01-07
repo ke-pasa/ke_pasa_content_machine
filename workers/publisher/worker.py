@@ -22,6 +22,7 @@ from workers.tools.x_helper import post_tweet
 from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
 from workers.tools.constants import MIN_PUBLISH_SCORE
+from workers.tools.x_helper import _get_valid_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,21 @@ class PublisherWorker:
         logger.info(f"Max articles per run: {self.config.max_articles_per_run}")
         logger.info(f"Publication delay: {self.config.publication_delay}s")
 
+    def _is_night_hours(self) -> bool:
+        """Check if current time is in night hours (23:00 - 09:00 Madrid time)"""
+        try:
+            import zoneinfo
+            madrid_tz = zoneinfo.ZoneInfo('Europe/Madrid')
+        except ImportError:
+            # Fallback for Python < 3.9
+            from datetime import timezone as tz
+            madrid_tz = tz(timedelta(hours=1))  # CET/CEST approximation
+        
+        now = datetime.now(madrid_tz)
+        hour = now.hour
+        # Block posting between 23:00 (inclusive) and 09:00 (exclusive)
+        return hour >= 23 or hour < 9
+
     def publish_articles(self) -> Dict:
         """
         Publishes ready articles to Telegram
@@ -64,6 +80,27 @@ class PublisherWorker:
         """
         try:
             logger.info(f"🚀 Starting publication run (articles_ru)...")
+
+            # Proactively refresh X token even if no articles to publish (keeps token fresh)
+            try:
+                _get_valid_access_token()
+                logger.info("✓ X token check passed")
+            except Exception as e:
+                logger.warning(f"⚠️ X token refresh failed: {e} (will retry on actual post)")
+
+            # Check if we're in night hours (23:00 - 09:00 Madrid time)
+            if self._is_night_hours():
+                logger.info("🌙 Night hours (23:00-09:00) - skipping publication")
+                return {
+                    'status': 'skipped',
+                    'reason': 'night_hours',
+                    'published': 0,
+                    'total_checked': 0,
+                    'errors': [],
+                    'message': 'Publication skipped during night hours (23:00-09:00)',
+                    'instance_id': self.instance_id,
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
 
             target = int(self.config.max_articles_per_run or 1)
             results = self.publish_articles_from_articles_ru(max_to_publish=target)
@@ -274,6 +311,13 @@ class PublisherWorker:
             return None, 'x_helper_not_installed'
 
         try:
+            # Ensure access token is valid (refresh if needed) before posting
+            try:
+                _get_valid_access_token()
+            except Exception as e:
+                logger.warning(f"⚠️ X token refresh failed before publish: {e}")
+                return None, f"x_token_refresh_failed:{e}"
+
             # Build X post: Description\n<URL>
             description = data.get('description_ru') or data.get('content_ru') or ''
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
