@@ -192,7 +192,9 @@ class DigestWorker:
                         exclude_usernames.add('spain_kepasa')
 
                         logger.info(f"Scanning user dialogs to find groups (excluding: {exclude_usernames})...")
-                        targets = []
+                        targets = []  # Groups where forward is possible
+                        send_only_targets = []  # Groups where only send_message is possible
+                        
                         async for dialog in client.iter_dialogs():
                             ent = dialog.entity
                             uname = getattr(ent, 'username', None)
@@ -210,13 +212,31 @@ class DigestWorker:
                                 logger.debug(f"Skipping excluded group: @{uname}")
                                 continue
 
-                            # Prefer username (with @) for forwarding target, else use id
-                            if uname:
-                                targets.append(f"@{uname}")
-                            else:
-                                targets.append(ent.id)
+                            # Check if we can forward or only send messages
+                            can_send = True
+                            can_forward = True
+                            
+                            if isinstance(ent, Channel):
+                                banned_rights = getattr(ent, 'banned_rights', None)
+                                if banned_rights:
+                                    # banned_rights.send_messages == True means CANNOT send messages
+                                    send_messages_banned = getattr(banned_rights, 'send_messages', False)
+                                    if send_messages_banned:
+                                        # Can't send regular messages, but we'll still try (might work for forwards)
+                                        can_send = False
+                                        can_forward = True  # We'll try forwarding anyway
+                                        logger.debug(f"Group {uname or ent.id}: send_messages=true (banned), will try forward")
 
-                        logger.info(f"Found {len(targets)} groups to forward to: {targets}")
+                            # Prefer username (with @) for target, else use id
+                            target_id = f"@{uname}" if uname else ent.id
+                            
+                            # Add to appropriate list
+                            if can_send:
+                                targets.append(target_id)  # Normal groups - try forward
+                            else:
+                                send_only_targets.append(target_id)  # Restricted - try forward, fallback to send
+
+                        logger.info(f"Found {len(targets)} groups for normal forward and {len(send_only_targets)} restricted groups to try")
 
                         # Get the original message text in case we need to copy it
                         original_message = None
@@ -225,7 +245,7 @@ class DigestWorker:
                         except Exception as e:
                             logger.warning(f"Could not fetch original message: {e}")
 
-                        # Perform forwards
+                        # Perform forwards for groups where it's normally allowed
                         for target in targets:
                             try:
                                 logger.info(f"Forwarding message {source_msg} from {source_chat} to {target} as user...")
@@ -242,6 +262,26 @@ class DigestWorker:
                                         logger.info(f"✅ Sent as regular message to {target}")
                                     except Exception as send_error:
                                         logger.error(f"Failed to send regular message to {target}: {send_error}")
+                        
+                        # Try forwarding to restricted groups (where send_messages is banned)
+                        # Sometimes forward works even when regular messages don't
+                        if send_only_targets:
+                            for target in send_only_targets:
+                                try:
+                                    logger.info(f"Trying forward to restricted group {target}...")
+                                    await client.forward_messages(target, source_msg, source_chat)
+                                    logger.info(f"✅ Forwarded to restricted group {target}")
+                                except Exception as forward_error:
+                                    logger.warning(f"Forward to restricted group {target} failed: {forward_error}")
+                                    
+                                    # Try sending as regular message anyway
+                                    if original_message and original_message.text:
+                                        try:
+                                            logger.info(f"Attempting to send message to restricted group {target}...")
+                                            await client.send_message(target, original_message.text, link_preview=False)
+                                            logger.info(f"✅ Sent message to restricted group {target}")
+                                        except Exception as send_error:
+                                            logger.error(f"Cannot send to restricted group {target}: {send_error}")
                     except Exception as e:
                         logger.error(f"Telethon forward error: {e}")
 
