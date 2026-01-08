@@ -33,6 +33,25 @@
    - `TELEGRAM_BOT_TOKEN` - Telegram bot token
    - `TELEGRAM_CHAT_ID` - Telegram chat ID
 
+   Note about user sessions for republishing:
+
+   - The project may republish messages as the user account using Telethon. By default the code (and tools) look for a session named `republish_session` (file `republish_session.session` in the repo root) and will reuse it if present — no phone number prompt will occur.
+   - If you prefer a string session instead of a file, create a `TELETHON_SESSION_STRING` and add it to your `.env`. To generate a string session once (interactive step), run this locally where `TELETHON_API_ID` and `TELETHON_API_HASH` are set:
+
+   ```bash
+   python - <<'PY'
+   from telethon import TelegramClient
+   from telethon.sessions import StringSession
+   import os
+   api_id = int(os.environ['TELETHON_API_ID'])
+   api_hash = os.environ['TELETHON_API_HASH']
+   with TelegramClient(StringSession(), api_id, api_hash) as client:
+      print('TELETHON_SESSION_STRING=' + client.session.save())
+   PY
+   ```
+
+   Then copy the printed `TELETHON_SESSION_STRING=...` line into your `.env`. After that, tools like `tools/list_telegram_groups.py` and the `DigestWorker` will connect without asking for a phone number.
+
 2. **Установите Docker на сервере:**
    ```bash
    curl -fsSL https://get.docker.com -o get-docker.sh
