@@ -42,9 +42,9 @@ class ArticleGenerator:
         
         # Initialize image generator (always enabled)
         try:
-            self.image_generator = ImageGenerator()
+            self.image_generator = ImageGenerator(model="dall-e-2")
             self.logger = logging.getLogger('workers.article_generator')
-            self.logger.info('Image generator initialized successfully')
+            self.logger.info('Image generator initialized successfully with dall-e-2')
         except Exception as e:
             self.logger = logging.getLogger('workers.article_generator')
             self.logger.warning(f'Failed to initialize image generator: {e}. Will skip image generation.')

@@ -83,6 +83,40 @@ Return ONLY the image prompt, nothing else."""
             # Fallback: simple combination of title and description
             return f"Editorial illustration representing: {title}. {description[:100]}"
     
+    def _crop_to_16_9(self, img: Image.Image) -> Image.Image:
+        """
+        Crop or resize image to 16:9 aspect ratio.
+        
+        Args:
+            img: PIL Image to process
+            
+        Returns:
+            Image with 16:9 aspect ratio
+        """
+        width, height = img.size
+        target_ratio = 16 / 9
+        current_ratio = width / height
+        
+        if abs(current_ratio - target_ratio) < 0.01:
+            # Already close to 16:9
+            return img
+        
+        if current_ratio > target_ratio:
+            # Image is wider, crop width
+            new_width = int(height * target_ratio)
+            left = (width - new_width) // 2
+            img = img.crop((left, 0, left + new_width, height))
+        else:
+            # Image is taller, crop height
+            new_height = int(width / target_ratio)
+            top = (height - new_height) // 2
+            img = img.crop((0, top, width, top + new_height))
+        
+        # Resize to standard 16:9 resolution (1792x1008 for high quality)
+        img = img.resize((1792, 1008), Image.Resampling.LANCZOS)
+        self.logger.info(f'Cropped/resized image to 16:9 (1792x1008)')
+        return img
+    
     def _download_and_save_image(self, image_url: str, doc_id: str) -> Optional[str]:
         """
         Download image from URL and save to images directory as JPEG.
@@ -112,6 +146,9 @@ Return ONLY the image prompt, nothing else."""
                 img = background
             elif img.mode != 'RGB':
                 img = img.convert('RGB')
+            
+            # Crop/resize to 16:9 aspect ratio
+            img = self._crop_to_16_9(img)
             
             # Save as JPEG
             filename = f"{doc_id}.jpg"
@@ -159,17 +196,37 @@ Return ONLY the image prompt, nothing else."""
             # Create prompt based on content
             image_prompt = self._create_image_prompt(title, description, content)
             
-            # Generate image using GPT Image 1.5 - Low (16:9 aspect ratio)
+            # Generate image using DALL-E (supports dall-e-2, dall-e-3, gpt-image-1.5)
             self.logger.info(f'Generating image with {self.model} for {doc_id}...')
-            # Use a supported size value. The OpenAI images API accepts 'auto' or specific supported sizes.
-            # 'auto' lets the service choose an appropriate resolution while maintaining aspect ratio.
-            response = self.client.images.generate(
-                model=self.model,
-                prompt=image_prompt,
-                size="auto",
-                quality="low",
-                n=1,
-            )
+            
+            # Configure parameters based on model
+            if self.model == "dall-e-3":
+                # DALL-E 3 supports: 1024x1024, 1792x1024, 1024x1792
+                # quality: "standard" or "hd"
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=image_prompt,
+                    size="1792x1024",  # Wide format (16:9 similar)
+                    quality="standard",
+                    n=1,
+                )
+            elif self.model == "dall-e-2":
+                # DALL-E 2 supports: 256x256, 512x512, 1024x1024
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=image_prompt,
+                    size="1024x1024",
+                    n=1,
+                )
+            else:
+                # GPT Image 1.5 or other models - use auto sizing
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=image_prompt,
+                    size="auto",
+                    quality="low",
+                    n=1,
+                )
             
             if response.data and len(response.data) > 0:
                 image_url = response.data[0].url
