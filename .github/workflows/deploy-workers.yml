@@ -203,10 +203,18 @@ jobs:
           if [ ! -f ".x_tokens.json" ] || [ ! -s ".x_tokens.json" ]; then
             if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
               echo "Creating .x_tokens.json from GitHub Secret"
-              echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
-              chmod 666 .x_tokens.json
+              X_TOKEN_LENGTH=$(printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | wc -c)
+              echo "Secret length: $X_TOKEN_LENGTH characters"
+              printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+              if [ $? -eq 0 ] && [ -s ".x_tokens.json" ]; then
+                echo "Successfully decoded X tokens (file size: $(wc -c < .x_tokens.json) bytes)"
+                chmod 666 .x_tokens.json
+              else
+                echo "ERROR: Failed to decode X_TOKENS_BASE64"
+                exit 1
+              fi
             else
-              echo "Creating empty .x_tokens.json"
+              echo "WARNING: X_TOKENS_BASE64 secret not set, creating empty file"
               touch .x_tokens.json
               chmod 666 .x_tokens.json
             fi
