@@ -63,6 +63,19 @@ jobs:
           X_CLIENT_SECRET=${{ secrets.X_CLIENT_SECRET }}
           X_REDIRECT_URI=http://localhost:8080/callback
 
+          # Instagram API credentials
+          INSTAGRAM_USER_ID=${{ secrets.INSTAGRAM_USER_ID || '' }}
+          INSTAGRAM_ACCESS_TOKEN=${{ secrets.INSTAGRAM_ACCESS_TOKEN || '' }}
+          INSTAGRAM_SHORT_TOKEN=${{ secrets.INSTAGRAM_SHORT_TOKEN || '' }}
+          INSTAGRAM_APP_SECRET=${{ secrets.INSTAGRAM_APP_SECRET || '' }}
+
+          # Facebook API credentials
+          FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID || '' }}
+          FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET || '' }}
+          FACEBOOK_PAGE_ID=${{ secrets.FACEBOOK_PAGE_ID || '' }}
+          FACEBOOK_PAGE_ACCESS_TOKEN=${{ secrets.FACEBOOK_PAGE_ACCESS_TOKEN || '' }}
+          FACEBOOK_USER_TOKEN=${{ secrets.FACEBOOK_USER_TOKEN || '' }}
+
           GIT_KE_PASA_PAT=${{ secrets.GIT_KE_PASA_PAT }}
           EOF
 
@@ -107,12 +120,60 @@ jobs:
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
           
           # Copy X OAuth tokens if available (Base64 encoded in secrets)
+          # Only copy if file doesn't exist on server (to preserve auto-refreshed tokens)
           if [ ! -z "${{ secrets.X_TOKENS_BASE64 }}" ]; then
-            echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
-            scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
-              .x_tokens.json \
-              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
-            rm -f .x_tokens.json
+            TOKEN_EXISTS=$(ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} \
+              "test -f ~/ke-pasa-workers/.x_tokens.json && echo 'exists' || echo 'missing'")
+            
+            if [ "$TOKEN_EXISTS" = "missing" ]; then
+              echo "X tokens not found on server, copying from secret..."
+              echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+              scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+                .x_tokens.json \
+                ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+              rm -f .x_tokens.json
+            else
+              echo "X tokens already exist on server, skipping (preserving auto-refreshed tokens)"
+            fi
+          fi
+
+          # Copy Instagram tokens if available (Base64 encoded in secrets)
+          # Only copy if file doesn't exist on server (to preserve auto-refreshed tokens)
+          if [ ! -z "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" ]; then
+            TOKEN_EXISTS=$(ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} \
+              "test -f ~/ke-pasa-workers/.instagram_tokens.json && echo 'exists' || echo 'missing'")
+            
+            if [ "$TOKEN_EXISTS" = "missing" ]; then
+              echo "Instagram tokens not found on server, copying from secret..."
+              echo "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" | base64 -d > .instagram_tokens.json
+              scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+                .instagram_tokens.json \
+                ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+              rm -f .instagram_tokens.json
+            else
+              echo "Instagram tokens already exist on server, skipping (preserving auto-refreshed tokens)"
+            fi
+          fi
+
+          # Copy Facebook tokens if available (Base64 encoded in secrets)
+          # Only copy if file doesn't exist on server (to preserve auto-refreshed tokens)
+          if [ ! -z "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" ]; then
+            TOKEN_EXISTS=$(ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} \
+              "test -f ~/ke-pasa-workers/.facebook_tokens.json && echo 'exists' || echo 'missing'")
+            
+            if [ "$TOKEN_EXISTS" = "missing" ]; then
+              echo "Facebook tokens not found on server, copying from secret..."
+              echo "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" | base64 -d > .facebook_tokens.json
+              scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+                .facebook_tokens.json \
+                ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+              rm -f .facebook_tokens.json
+            else
+              echo "Facebook tokens already exist on server, skipping (preserving auto-refreshed tokens)"
+            fi
           fi
 
       - name: Build and deploy on server
@@ -154,9 +215,14 @@ jobs:
           if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
             echo "Building Publisher worker..."
             if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
-              docker build --build-arg X_TOKENS_BASE64="${{ secrets.X_TOKENS_BASE64 }}" -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+              docker build --build-arg X_TOKENS_BASE64="${{ secrets.X_TOKENS_BASE64 }}" \
+                --build-arg INSTAGRAM_TOKENS_BASE64="${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" \
+                --build-arg FACEBOOK_TOKENS_BASE64="${{ secrets.FACEBOOK_TOKENS_BASE64 }}" \
+                -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
             else
-              docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+              docker build --build-arg INSTAGRAM_TOKENS_BASE64="${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" \
+                --build-arg FACEBOOK_TOKENS_BASE64="${{ secrets.FACEBOOK_TOKENS_BASE64 }}" \
+                -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
             fi
           fi
           if [ "${{ env.DEPLOY_DIGEST }}" == "true" ]; then

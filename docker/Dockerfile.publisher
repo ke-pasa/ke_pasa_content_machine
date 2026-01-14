@@ -18,3 +18,14 @@ ARG X_TOKENS_BASE64=""
 RUN if [ -n "$X_TOKENS_BASE64" ]; then \
 			echo "$X_TOKENS_BASE64" | base64 -d > /app/.x_tokens.json && chmod 600 /app/.x_tokens.json; \
 		fi
+# Optional: accept base64-encoded Instagram tokens at build time
+ARG INSTAGRAM_TOKENS_BASE64=""
+RUN if [ -n "$INSTAGRAM_TOKENS_BASE64" ]; then \
+		echo "$INSTAGRAM_TOKENS_BASE64" | base64 -d > /app/.instagram_tokens.json && chmod 600 /app/.instagram_tokens.json; \
+	fi
+
+# Optional: accept base64-encoded Facebook tokens at build time
+ARG FACEBOOK_TOKENS_BASE64=""
+RUN if [ -n "$FACEBOOK_TOKENS_BASE64" ]; then \
+		echo "$FACEBOOK_TOKENS_BASE64" | base64 -d > /app/.facebook_tokens.json && chmod 600 /app/.facebook_tokens.json; \
+	fi

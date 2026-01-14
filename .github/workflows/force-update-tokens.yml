@@ -1,0 +1,126 @@
+name: Force Update Tokens
+
+on:
+  workflow_dispatch:
+    inputs:
+      update_x_tokens:
+        description: 'Update X (Twitter) tokens'
+        required: false
+        default: false
+        type: boolean
+      update_instagram_tokens:
+        description: 'Update Instagram tokens'
+        required: false
+        default: false
+        type: boolean
+      update_facebook_tokens:
+        description: 'Update Facebook tokens'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  update-tokens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_HOST }} >> ~/.ssh/known_hosts
+          
+          # Verify key format
+          ssh-keygen -l -f ~/.ssh/deploy_key || (echo "Invalid SSH key format" && exit 1)
+
+      - name: Update X (Twitter) tokens
+        if: ${{ inputs.update_x_tokens == true }}
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          if [ ! -z "${{ secrets.X_TOKENS_BASE64 }}" ]; then
+            echo "🔄 Updating X tokens on server..."
+            echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+            scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              .x_tokens.json \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+            rm -f .x_tokens.json
+            echo "✅ X tokens updated successfully"
+          else
+            echo "⚠️ X_TOKENS_BASE64 secret not found"
+            exit 1
+          fi
+
+      - name: Update Instagram tokens
+        if: ${{ inputs.update_instagram_tokens == true }}
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          if [ ! -z "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" ]; then
+            echo "🔄 Updating Instagram tokens on server..."
+            echo "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" | base64 -d > .instagram_tokens.json
+            scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              .instagram_tokens.json \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+            rm -f .instagram_tokens.json
+            echo "✅ Instagram tokens updated successfully"
+          else
+            echo "⚠️ INSTAGRAM_TOKENS_BASE64 secret not found"
+            exit 1
+          fi
+
+      - name: Update Facebook tokens
+        if: ${{ inputs.update_facebook_tokens == true }}
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          if [ ! -z "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" ]; then
+            echo "🔄 Updating Facebook tokens on server..."
+            echo "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" | base64 -d > .facebook_tokens.json
+            scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+              .facebook_tokens.json \
+              ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
+            rm -f .facebook_tokens.json
+            echo "✅ Facebook tokens updated successfully"
+          else
+            echo "⚠️ FACEBOOK_TOKENS_BASE64 secret not found"
+            exit 1
+          fi
+
+      - name: Restart Publisher worker
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          echo "🔄 Restarting Publisher worker to pick up new tokens..."
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
+          
+          cd ~/ke-pasa-workers
+          docker compose restart publisher-worker
+          
+          echo "Waiting for container to stabilize..."
+          sleep 5
+          
+          echo "Container status:"
+          docker compose ps publisher-worker
+          
+          echo "Recent logs:"
+          docker compose logs --tail=20 publisher-worker
+          
+          ENDSSH
+          
+          echo "✅ Publisher worker restarted"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f .x_tokens.json
+          rm -f .instagram_tokens.json
+          rm -f .facebook_tokens.json
+          rm -f ~/.ssh/deploy_key

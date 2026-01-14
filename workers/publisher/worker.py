@@ -19,6 +19,8 @@ sys.path.insert(0, str(root_dir))
 import html
 from workers.tools.telegram_helper import send_message, send_photo
 from workers.tools.x_helper import post_tweet
+from workers.tools.instagram_helper import post_instagram
+from workers.tools.facebook_helper import post_facebook
 from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
 from workers.tools.constants import MIN_PUBLISH_SCORE
@@ -341,6 +343,68 @@ class PublisherWorker:
             logger.warning(f"⚠️ Failed to post to X: {e}")
             return None, str(e)
 
+    def _post_to_instagram(self, message: str, data: dict) -> tuple:
+        """Attempt to post to Instagram if configured. Returns (result, error_str).
+        
+        Posts image with caption to Instagram Business/Creator account.
+        """
+        if post_instagram is None:
+            return None, 'instagram_helper_not_installed'
+
+        try:
+            # Extract data
+            image_url = data.get('image_url') or data.get('image')
+            if not image_url:
+                logger.warning(f"⚠️ No image_url for Instagram post")
+                return None, 'no_image_url'
+
+            caption = data.get('description_ru') or data.get('content_ru') or ''
+            slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
+
+            # Add link to article
+            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            if article_url:
+                caption = f"{caption}\n\n{article_url}"
+
+            # Post to Instagram
+            res = post_instagram(image_url, caption)
+            logger.info(f"🟣 Instagram post successful: {res.get('id')}")
+            return res, None
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to post to Instagram: {e}")
+            return None, str(e)
+
+    def _post_to_facebook(self, message: str, data: dict) -> tuple:
+        """Attempt to post to Facebook Page if configured. Returns (result, error_str).
+        
+        Posts image with message to Facebook Page.
+        """
+        if post_facebook is None:
+            return None, 'facebook_helper_not_installed'
+
+        try:
+            # Extract data
+            image_url = data.get('image_url') or data.get('image')
+            if not image_url:
+                logger.warning(f"⚠️ No image_url for Facebook post")
+                return None, 'no_image_url'
+
+            post_message = data.get('description_ru') or data.get('content_ru') or ''
+            slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
+
+            # Add link to article
+            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            if article_url:
+                post_message = f"{post_message}\n\n{article_url}"
+
+            # Post to Facebook
+            res = post_facebook(image_url, post_message)
+            logger.info(f"🔵 Facebook post successful: {res.get('post_id')}")
+            return res, None
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to post to Facebook: {e}")
+            return None, str(e)
+
     def publish_articles_from_articles_ru(self, max_to_publish: int | None = None) -> Dict:
         """Publishes up to `max_to_publish` (or config.max_articles_per_run) articles from `articles_ru` collection."""
         if max_to_publish is None:
@@ -461,6 +525,24 @@ class PublisherWorker:
 
                 except Exception as e:
                     logger.warning(f"⚠️ Unexpected error while posting to X: {e}")
+
+                # Attempt to post to Instagram if enabled
+                try:
+                    ig_res, ig_err = self._post_to_instagram(message, data)
+                    logger.debug(f"Instagram post attempt result: res={ig_res} err={ig_err}")
+                    if ig_err:
+                        logger.info(f"ℹ️ Instagram post skipped/failed for {article_id}: {ig_err}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Unexpected error while posting to Instagram: {e}")
+
+                # Attempt to post to Facebook if enabled
+                try:
+                    fb_res, fb_err = self._post_to_facebook(message, data)
+                    logger.debug(f"Facebook post attempt result: res={fb_res} err={fb_err}")
+                    if fb_err:
+                        logger.info(f"ℹ️ Facebook post skipped/failed for {article_id}: {fb_err}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Unexpected error while posting to Facebook: {e}")
 
                 if sent_message:
                     results['published'] += 1
