@@ -192,6 +192,20 @@ jobs:
           
           cd ~/ke-pasa-workers
           
+          # Ensure token files exist as files (not directories) before docker compose
+          echo "Ensuring token files exist..."
+          for token_file in .x_tokens.json .instagram_tokens.json .facebook_tokens.json; do
+            if [ -d "$token_file" ]; then
+              echo "Removing directory $token_file"
+              rm -rf "$token_file"
+            fi
+            if [ ! -f "$token_file" ]; then
+              echo "Creating empty file $token_file"
+              touch "$token_file"
+              chmod 666 "$token_file"
+            fi
+          done
+          
           # Build base image on server (ARM64)
           echo "Building base image on server..."
           docker build -f docker/Dockerfile.base -t ke-pasa-workers-base:latest .
