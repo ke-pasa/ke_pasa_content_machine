@@ -194,17 +194,51 @@ jobs:
           
           # Ensure token files exist as files (not directories) before docker compose
           echo "Ensuring token files exist..."
-          for token_file in .x_tokens.json .instagram_tokens.json .facebook_tokens.json; do
-            if [ -d "$token_file" ]; then
-              echo "Removing directory $token_file"
-              rm -rf "$token_file"
+          
+          # Check X tokens - only create if missing or empty (preserve auto-refreshed tokens)
+          if [ -d ".x_tokens.json" ]; then
+            echo "Removing directory .x_tokens.json"
+            rm -rf ".x_tokens.json"
+          fi
+          if [ ! -f ".x_tokens.json" ] || [ ! -s ".x_tokens.json" ]; then
+            if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
+              echo "Creating .x_tokens.json from GitHub Secret"
+              echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+              chmod 666 .x_tokens.json
+            else
+              echo "Creating empty .x_tokens.json"
+              touch .x_tokens.json
+              chmod 666 .x_tokens.json
             fi
-            if [ ! -f "$token_file" ]; then
-              echo "Creating empty file $token_file"
-              touch "$token_file"
-              chmod 666 "$token_file"
-            fi
-          done
+          else
+            echo ".x_tokens.json exists and is not empty - preserving existing file"
+          fi
+          
+          # Check Instagram tokens - only create empty file if missing (will auto-populate from env vars)
+          if [ -d ".instagram_tokens.json" ]; then
+            echo "Removing directory .instagram_tokens.json"
+            rm -rf ".instagram_tokens.json"
+          fi
+          if [ ! -f ".instagram_tokens.json" ]; then
+            echo "Creating empty .instagram_tokens.json (will auto-populate from FACEBOOK_PAGE_ACCESS_TOKEN)"
+            touch .instagram_tokens.json
+            chmod 666 .instagram_tokens.json
+          else
+            echo ".instagram_tokens.json exists - preserving (may contain auto-refreshed token)"
+          fi
+          
+          # Check Facebook tokens - only create empty file if missing (will auto-populate from env vars)
+          if [ -d ".facebook_tokens.json" ]; then
+            echo "Removing directory .facebook_tokens.json"
+            rm -rf ".facebook_tokens.json"
+          fi
+          if [ ! -f ".facebook_tokens.json" ]; then
+            echo "Creating empty .facebook_tokens.json (will auto-populate from FACEBOOK_PAGE_ACCESS_TOKEN)"
+            touch .facebook_tokens.json
+            chmod 666 .facebook_tokens.json
+          else
+            echo ".facebook_tokens.json exists - preserving (may contain auto-refreshed token)"
+          fi
           
           # Build base image on server (ARM64)
           echo "Building base image on server..."
@@ -228,24 +262,11 @@ jobs:
           
           if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
             echo "Building Publisher worker..."
-            if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
-              docker build --build-arg X_TOKENS_BASE64="${{ secrets.X_TOKENS_BASE64 }}" \
-                --build-arg INSTAGRAM_TOKENS_BASE64="${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" \
-                --build-arg FACEBOOK_TOKENS_BASE64="${{ secrets.FACEBOOK_TOKENS_BASE64 }}" \
-                -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
-            else
-              docker build --build-arg INSTAGRAM_TOKENS_BASE64="${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" \
-                --build-arg FACEBOOK_TOKENS_BASE64="${{ secrets.FACEBOOK_TOKENS_BASE64 }}" \
-                -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
-            fi
+            docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
           fi
           if [ "${{ env.DEPLOY_DIGEST }}" == "true" ]; then
             echo "Building Digest worker..."
-            if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
-              docker build --build-arg X_TOKENS_BASE64="${{ secrets.X_TOKENS_BASE64 }}" -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
-            else
-              docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
-            fi
+            docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
           fi
 
           if [ "${{ env.DEPLOY_EVENTS }}" == "true" ]; then
