@@ -6,32 +6,32 @@ on:
       deploy_rss:
         description: 'Deploy RSS Worker'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_categorization:
         description: 'Deploy Categorization Worker'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_article_generator:
         description: 'Deploy Article Generator Worker'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_publisher:
         description: 'Deploy Publisher Worker'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_digest:
         description: 'Deploy Digest Worker'
         required: false
-        default: true
+        default: false
         type: boolean
       deploy_events_importer:
         description: 'Deploy Events Importer Worker'
         required: false
-        default: true
+        default: false
         type: boolean
 
 jobs:
