@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Optional, Dict, Any
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -73,7 +73,7 @@ def _refresh_access_token(refresh_token: str) -> Dict[str, Any]:
     token_data = resp.json()
     
     # Add timestamp for expiry tracking
-    token_data['obtained_at'] = datetime.utcnow().isoformat()
+    token_data['obtained_at'] = datetime.now(timezone.utc).isoformat()
     
     # Save new tokens
     _save_tokens(token_data)
@@ -102,13 +102,22 @@ def _get_valid_access_token() -> str:
     # Check if token needs refresh (refresh 5 minutes before expiry)
     if obtained_at_str:
         try:
-            obtained_at = datetime.fromisoformat(obtained_at_str)
-            expiry_time = obtained_at + timedelta(seconds=expires_in - 300)
+            obtained_at = datetime.fromisoformat(obtained_at_str.replace('Z', '+00:00'))
+            # Make sure obtained_at is timezone-aware
+            if obtained_at.tzinfo is None:
+                obtained_at = obtained_at.replace(tzinfo=timezone.utc)
             
-            if datetime.utcnow() >= expiry_time:
+            expiry_time = obtained_at + timedelta(seconds=expires_in - 300)
+            now = datetime.now(timezone.utc)
+            
+            logger.debug(f'Token check: obtained={obtained_at.isoformat()}, expires_in={expires_in}s, expiry={expiry_time.isoformat()}, now={now.isoformat()}')
+            
+            if now >= expiry_time:
                 logger.info('Access token expired, refreshing...')
                 new_tokens = _refresh_access_token(refresh_token)
                 access_token = new_tokens.get('access_token')
+            else:
+                logger.debug(f'Token still valid for {int((expiry_time - now).total_seconds())} seconds')
         except Exception as e:
             logger.warning(f'Failed to check token expiry: {e}')
     
@@ -170,6 +179,14 @@ def post_tweet(text: str, trim_to_280: bool = True) -> Dict[str, Any]:
 
     if not (resp.status_code in (200, 201) and isinstance(j, dict) and j.get('data')):
         logger.error(f'❌ X API v2 error: status={resp.status_code} body={j}')
+        
+        # Special handling for 401 Unauthorized - likely token issue
+        if resp.status_code == 401:
+            logger.error('⚠️ 401 Unauthorized - token may be invalid or expired. Try refreshing tokens by re-running tools/x_oauth_setup.py')
+            tokens = _load_tokens()
+            if tokens:
+                logger.debug(f'Current token obtained_at: {tokens.get("obtained_at")}, expires_in: {tokens.get("expires_in")}')
+        
         error_detail = j.get('errors', [{}])[0] if j.get('errors') else j
         raise RuntimeError(f'X API v2 error: status={resp.status_code} detail={error_detail}')
 

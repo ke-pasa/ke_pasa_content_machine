@@ -43,7 +43,16 @@ jobs:
         run: |
           if [ ! -z "${{ secrets.X_TOKENS_BASE64 }}" ]; then
             echo "🔄 Updating X tokens on server..."
-            echo "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+            printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+            
+            # Verify file was created and is not empty
+            if [ ! -s .x_tokens.json ]; then
+              echo "❌ Failed to decode X_TOKENS_BASE64 - file is empty or invalid"
+              exit 1
+            fi
+            
+            echo "File size: $(wc -c < .x_tokens.json) bytes"
+            
             scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
               .x_tokens.json \
               ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
@@ -62,7 +71,16 @@ jobs:
         run: |
           if [ ! -z "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" ]; then
             echo "🔄 Updating Instagram tokens on server..."
-            echo "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" | base64 -d > .instagram_tokens.json
+            printf '%s' "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" | base64 -d > .instagram_tokens.json
+            
+            # Verify file was created and is not empty
+            if [ ! -s .instagram_tokens.json ]; then
+              echo "❌ Failed to decode INSTAGRAM_TOKENS_BASE64 - file is empty or invalid"
+              exit 1
+            fi
+            
+            echo "File size: $(wc -c < .instagram_tokens.json) bytes"
+            
             scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
               .instagram_tokens.json \
               ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/
@@ -81,7 +99,16 @@ jobs:
         run: |
           if [ ! -z "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" ]; then
             echo "🔄 Updating Facebook tokens on server..."
-            echo "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" | base64 -d > .facebook_tokens.json
+            printf '%s' "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" | base64 -d > .facebook_tokens.json
+            
+            # Verify file was created and is not empty
+            if [ ! -s .facebook_tokens.json ]; then
+              echo "❌ Failed to decode FACEBOOK_TOKENS_BASE64 - file is empty or invalid"
+              exit 1
+            fi
+            
+            echo "File size: $(wc -c < .facebook_tokens.json) bytes"
+            
             scp -i ~/.ssh/deploy_key -P ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
               .facebook_tokens.json \
               ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST}:~/ke-pasa-workers/

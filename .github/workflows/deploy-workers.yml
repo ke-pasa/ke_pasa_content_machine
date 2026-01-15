@@ -143,9 +143,14 @@ jobs:
             echo "Removing directory .x_tokens.json"
             rm -rf ".x_tokens.json"
           fi
-          if [ ! -f ".x_tokens.json" ] || [ ! -s ".x_tokens.json" ]; then
+          
+          # Check if file exists and has content
+          if [ -f ".x_tokens.json" ] && [ -s ".x_tokens.json" ]; then
+            echo ".x_tokens.json exists and is not empty - preserving existing file (may contain auto-refreshed tokens)"
+          else
+            # File is missing or empty - create from secret
             if [ -n "${{ secrets.X_TOKENS_BASE64 }}" ]; then
-              echo "Creating .x_tokens.json from GitHub Secret"
+              echo "Creating .x_tokens.json from GitHub Secret (file was missing or empty)"
               X_TOKEN_LENGTH=$(printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | wc -c)
               echo "Secret length: $X_TOKEN_LENGTH characters"
               printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
@@ -161,8 +166,6 @@ jobs:
               touch .x_tokens.json
               chmod 666 .x_tokens.json
             fi
-          else
-            echo ".x_tokens.json exists and is not empty - preserving existing file"
           fi
           
           # Check Instagram tokens - only create empty file if missing (will auto-populate from env vars)

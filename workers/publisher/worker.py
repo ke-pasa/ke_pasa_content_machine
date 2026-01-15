@@ -6,6 +6,7 @@ import os
 import uuid
 import json
 import logging
+import re
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -72,6 +73,53 @@ class PublisherWorker:
         hour = now.hour
         # Block posting between 23:00 (inclusive) and 09:00 (exclusive)
         return hour >= 23 or hour < 9
+
+    def _html_to_plain_text(self, html_text: str, keep_links: bool = False) -> str:
+        """Convert HTML tags to plain text for Facebook/Instagram.
+        
+        Telegram uses HTML tags like <b>, <i>, <a href="">, etc.
+        Facebook and Instagram need plain text or their own formatting.
+        
+        Args:
+            html_text: HTML text to convert
+            keep_links: If True, keeps URL from <a href> tags (for Facebook)
+        """
+        if not html_text:
+            return html_text
+        
+        text = html_text
+        
+        if keep_links:
+            # For Facebook: extract URL and add after link text
+            # <a href="url">text</a> -> text (url)
+            def replace_link(match):
+                url = match.group(1)
+                text = match.group(2)
+                return f"{text} ({url})"
+            text = re.sub(r'<a[^>]*href=["\']([^"\'>]+)["\'][^>]*>([^<]+)</a>', replace_link, text)
+        else:
+            # For Instagram: just remove link tags, keep text
+            text = re.sub(r'<a[^>]*>([^<]+)</a>', r'\1', text)
+        
+        # Convert <b>text</b> to **text** (Facebook bold)
+        text = re.sub(r'<b>([^<]+)</b>', r'**\1**', text)
+        
+        # Convert <strong>text</strong> to **text**
+        text = re.sub(r'<strong>([^<]+)</strong>', r'**\1**', text)
+        
+        # Convert <i>text</i> to *text* (Facebook italic)
+        text = re.sub(r'<i>([^<]+)</i>', r'*\1*', text)
+        
+        # Convert <em>text</em> to *text*
+        text = re.sub(r'<em>([^<]+)</em>', r'*\1*', text)
+        
+        # Remove any remaining HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        
+        # Decode HTML entities
+        text = html.unescape(text)
+        
+        return text
 
     def publish_articles(self) -> Dict:
         """
@@ -347,7 +395,8 @@ class PublisherWorker:
         """Attempt to post to Instagram if configured. Returns (result, error_str).
         
         Posts image with caption to Instagram Business/Creator account.
-        Uses the same message as Telegram (telegram_final).
+        Uses the same message as Telegram (telegram_final) but converts HTML to plain text.
+        Adds article link at the end (not clickable in Instagram but visible).
         """
         if post_instagram is None:
             return None, 'instagram_helper_not_installed'
@@ -359,14 +408,12 @@ class PublisherWorker:
                 logger.warning(f"⚠️ No image_url for Instagram post")
                 return None, 'no_image_url'
 
-            # Use the same message as Telegram
-            caption = message
-            slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
-
-            # Add link to article
-            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
-            if article_url:
-                caption = f"{caption}\n\n{article_url}"
+            # Convert HTML to plain text for Instagram
+            caption = self._html_to_plain_text(message)
+            
+            # Instagram doesn't support clickable links in posts
+            # Add "Link in bio" message
+            caption = f"{caption}\n\n🔗 Link in bio"
 
             # Post to Instagram
             res = post_instagram(image_url, caption)
@@ -380,7 +427,8 @@ class PublisherWorker:
         """Attempt to post to Facebook Page if configured. Returns (result, error_str).
         
         Posts image with message to Facebook Page.
-        Uses the same message as Telegram (telegram_final).
+        Uses the same message as Telegram (telegram_final) but converts HTML to Facebook formatting.
+        Preserves links and adds article link at the end (clickable).
         """
         if post_facebook is None:
             return None, 'facebook_helper_not_installed'
@@ -392,14 +440,14 @@ class PublisherWorker:
                 logger.warning(f"⚠️ No image_url for Facebook post")
                 return None, 'no_image_url'
 
-            # Use the same message as Telegram
-            post_message = message
+            # Convert HTML to Facebook-friendly text, keeping links
+            post_message = self._html_to_plain_text(message, keep_links=True)
+            
+            # Add article link (clickable on Facebook)
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
-
-            # Add link to article
-            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
-            if article_url:
-                post_message = f"{post_message}\n\n{article_url}"
+            if slug:
+                article_url = f"https://ke-pasa.es/news/{slug}/"
+                post_message = f"{post_message}\n\n🔗 {article_url}"
 
             # Post to Facebook
             res = post_facebook(image_url, post_message)
