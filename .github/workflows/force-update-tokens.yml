@@ -43,7 +43,9 @@ jobs:
         run: |
           if [ ! -z "${{ secrets.X_TOKENS_BASE64 }}" ]; then
             echo "🔄 Updating X tokens on server..."
-            printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | base64 -d > .x_tokens.json
+            
+            # Remove any whitespace/newlines from base64 string before decoding
+            printf '%s' "${{ secrets.X_TOKENS_BASE64 }}" | tr -d '\n\r\t ' | base64 -d > .x_tokens.json
             
             # Verify file was created and is not empty
             if [ ! -s .x_tokens.json ]; then
@@ -71,7 +73,9 @@ jobs:
         run: |
           if [ ! -z "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" ]; then
             echo "🔄 Updating Instagram tokens on server..."
-            printf '%s' "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" | base64 -d > .instagram_tokens.json
+            
+            # Remove any whitespace/newlines from base64 string before decoding
+            printf '%s' "${{ secrets.INSTAGRAM_TOKENS_BASE64 }}" | tr -d '\n\r\t ' | base64 -d > .instagram_tokens.json
             
             # Verify file was created and is not empty
             if [ ! -s .instagram_tokens.json ]; then
@@ -99,7 +103,9 @@ jobs:
         run: |
           if [ ! -z "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" ]; then
             echo "🔄 Updating Facebook tokens on server..."
-            printf '%s' "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" | base64 -d > .facebook_tokens.json
+            
+            # Remove any whitespace/newlines from base64 string before decoding
+            printf '%s' "${{ secrets.FACEBOOK_TOKENS_BASE64 }}" | tr -d '\n\r\t ' | base64 -d > .facebook_tokens.json
             
             # Verify file was created and is not empty
             if [ ! -s .facebook_tokens.json ]; then
