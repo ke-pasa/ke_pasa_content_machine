@@ -23,11 +23,25 @@ class ImageGenerator:
         self.logger = logging.getLogger('workers.article_generator.image_generator')
         self.logger.propagate = True
         
-        # Initialize OpenAI client
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise RuntimeError('OPENAI_API_KEY environment variable required')
-        self.client = OpenAI(api_key=api_key)
+        # Initialize OpenAI client (Azure or OpenAI)
+        azure_dalle_endpoint = os.getenv('AZURE_DALLE_ENDPOINT')
+        azure_dalle_key = os.getenv('AZURE_DALLE_KEY')
+        
+        if azure_dalle_endpoint and azure_dalle_key:
+            # Use Azure DALL-E
+            self.logger.info('Using Azure DALL-E endpoint')
+            self.use_azure = True
+            self.azure_endpoint = azure_dalle_endpoint
+            self.azure_key = azure_dalle_key
+            self.client = None  # Will use REST API directly
+        else:
+            # Use OpenAI
+            api_key = os.getenv('OPENAI_API_KEY')
+            if not api_key:
+                raise RuntimeError('OPENAI_API_KEY or Azure DALL-E credentials required')
+            self.logger.info('Using OpenAI DALL-E')
+            self.use_azure = False
+            self.client = OpenAI(api_key=api_key)
         
         # Set up images directory
         if images_dir is None:
@@ -82,6 +96,53 @@ Return ONLY the image prompt, nothing else."""
             self.logger.warning(f'Failed to create AI prompt, using fallback: {e}')
             # Fallback: simple combination of title and description
             return f"Editorial illustration representing: {title}. {description[:100]}"
+    
+    def _generate_with_azure_dalle(self, prompt: str) -> Optional[str]:
+        """
+        Generate image using Azure DALL-E REST API.
+        
+        Args:
+            prompt: Image generation prompt
+            
+        Returns:
+            Image URL or None if failed
+        """
+        try:
+            headers = {
+                "api-key": self.azure_key,
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "prompt": prompt,
+                "size": "1792x1024",
+                "quality": "standard",
+                "n": 1
+            }
+            
+            self.logger.info(f'Calling Azure DALL-E: {self.azure_endpoint[:80]}...')
+            response = requests.post(
+                self.azure_endpoint,
+                json=payload,
+                headers=headers,
+                timeout=120  # Image generation can take time
+            )
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            # Azure returns data in same format as OpenAI
+            if data.get('data') and len(data['data']) > 0:
+                image_url = data['data'][0].get('url')
+                self.logger.info(f'✅ Successfully generated image via Azure DALL-E')
+                return image_url
+            
+            self.logger.warning('Azure DALL-E returned no image data')
+            return None
+            
+        except Exception as e:
+            self.logger.exception(f'Azure DALL-E call failed: {e}')
+            return None
     
     def _crop_to_16_9(self, img: Image.Image) -> Image.Image:
         """
@@ -199,53 +260,61 @@ Return ONLY the image prompt, nothing else."""
             # Generate image using DALL-E (supports dall-e-2, dall-e-3, gpt-image-1.5)
             self.logger.info(f'Generating image with {self.model} for {doc_id}...')
             
-            # Configure parameters based on model
-            if self.model == "dall-e-3":
-                # DALL-E 3 supports: 1024x1024, 1792x1024, 1024x1792
-                # quality: "standard" or "hd"
-                response = self.client.images.generate(
-                    model=self.model,
-                    prompt=image_prompt,
-                    size="1792x1024",  # Wide format (16:9 similar)
-                    quality="standard",
-                    n=1,
-                )
-            elif self.model == "dall-e-2":
-                # DALL-E 2 supports: 256x256, 512x512, 1024x1024
-                response = self.client.images.generate(
-                    model=self.model,
-                    prompt=image_prompt,
-                    size="1024x1024",
-                    n=1,
-                )
+            # Use Azure REST API if configured
+            if self.use_azure:
+                image_url = self._generate_with_azure_dalle(image_prompt)
+                if not image_url:
+                    return None
             else:
-                # GPT Image 1.5 or other models - use auto sizing
-                response = self.client.images.generate(
-                    model=self.model,
-                    prompt=image_prompt,
-                    size="auto",
-                    quality="low",
-                    n=1,
-                )
-            
-            if response.data and len(response.data) > 0:
-                image_url = response.data[0].url
-                self.logger.info(f'✅ Successfully generated image, downloading...')
-                
-                # Download and save image locally
-                local_path = self._download_and_save_image(image_url, doc_id)
-                if local_path:
-                    # Return absolute URL for ke-pasa.es domain
-                    web_url = f'https://ke-pasa.es/images/news/{doc_id}.jpg'
-                    self.logger.info(f'✅ Image saved locally, public URL: {web_url}')
-                    return web_url
+                # Use OpenAI SDK
+                # Configure parameters based on model
+                if self.model == "dall-e-3":
+                    # DALL-E 3 supports: 1024x1024, 1792x1024, 1024x1792
+                    # quality: "standard" or "hd"
+                    response = self.client.images.generate(
+                        model=self.model,
+                        prompt=image_prompt,
+                        size="1792x1024",  # Wide format (16:9 similar)
+                        quality="standard",
+                        n=1,
+                    )
+                elif self.model == "dall-e-2":
+                    # DALL-E 2 supports: 256x256, 512x512, 1024x1024
+                    response = self.client.images.generate(
+                        model=self.model,
+                        prompt=image_prompt,
+                        size="1024x1024",
+                        n=1,
+                    )
                 else:
-                    # Fallback to URL if download failed
-                    self.logger.warning(f'Failed to save image locally, using URL: {image_url}')
-                    return image_url
+                    # GPT Image 1.5 or other models - use auto sizing
+                    response = self.client.images.generate(
+                        model=self.model,
+                        prompt=image_prompt,
+                        size="auto",
+                        quality="low",
+                        n=1,
+                    )
+                
+                if not (response.data and len(response.data) > 0):
+                    self.logger.warning(f'No image data returned for {doc_id}')
+                    return None
+                
+                image_url = response.data[0].url
+                self.logger.info(f'✅ Successfully generated image via OpenAI')
             
-            self.logger.warning(f'No image data returned for {doc_id}')
-            return None
+            # Download and save image locally
+            self.logger.info(f'Downloading generated image...')
+            local_path = self._download_and_save_image(image_url, doc_id)
+            if local_path:
+                # Return absolute URL for ke-pasa.es domain
+                web_url = f'https://ke-pasa.es/images/news/{doc_id}.jpg'
+                self.logger.info(f'✅ Image saved locally, public URL: {web_url}')
+                return web_url
+            else:
+                # Fallback to URL if download failed
+                self.logger.warning(f'Failed to save image locally, using URL: {image_url}')
+                return image_url
             
         except Exception as e:
             self.logger.exception(f'Failed to generate image for {doc_id}: {e}')

@@ -40,6 +40,104 @@ def _chat_completion(client: Any, model: str, messages: list, max_tokens: int = 
     return _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
 
 
+def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2) -> Optional[str]:
+    """Call Azure OpenAI using OpenAI SDK with Azure endpoint.
+    Returns content string or None on error or if not configured.
+    """
+    try:
+        import os
+        endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT')
+        key = os.environ.get('AZURE_OPENAI_KEY')
+        # Deployment name is not sensitive; fall back to default in code if env var not set
+        deployment = os.environ.get('AZURE_OPENAI_DEPLOYMENT') or os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME')
+        if not deployment:
+            deployment = 'gpt-5.2-chat'
+        
+        if not (endpoint and key and deployment):
+            return None
+
+        # Try OpenAI SDK with Azure endpoint (recommended approach)
+        try:
+            from openai import OpenAI
+            
+            # Ensure endpoint ends with /openai/v1 or correct path
+            base_url = endpoint.rstrip('/')
+            if not base_url.endswith('/openai/v1'):
+                if '/openai/' in base_url:
+                    # Already has /openai/something - use as-is
+                    pass
+                else:
+                    # Add /openai/v1
+                    base_url = f"{base_url}/openai/v1"
+            
+            client = OpenAI(
+                base_url=base_url,
+                api_key=key
+            )
+            
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]
+            
+            completion = client.chat.completions.create(
+                model=deployment,
+                messages=messages,
+                max_completion_tokens=max_tokens,
+                temperature=temperature,
+                timeout=30
+            )
+            
+            if completion and completion.choices and len(completion.choices) > 0:
+                content = completion.choices[0].message.content
+                return (content or '').strip()
+            
+            _logger.warning('Azure OpenAI SDK returned empty response')
+            return None
+            
+        except Exception as e:
+            _logger.error('Azure OpenAI SDK call failed: %s', str(e))
+            # Fall back to direct REST if SDK fails
+            pass
+
+        # Fallback: try direct REST call
+        try:
+            import requests
+            api_version = os.environ.get('AZURE_OPENAI_API_VERSION', '2023-05-15')
+            headers = {"api-key": key, "Content-Type": "application/json"}
+            url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user}
+                ],
+                "max_completion_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            
+            if resp.ok:
+                data = resp.json()
+                choice = data.get('choices', [{}])[0]
+                message = choice.get('message', {}) if isinstance(choice.get('message', {}), dict) else {}
+                return (message.get('content') or '').strip()
+            else:
+                try:
+                    body = resp.text
+                except Exception:
+                    body = '<could not read response body>'
+                _logger.error('Azure REST fallback failed status=%s body=%s', resp.status_code, body[:2000])
+                
+        except Exception:
+            _logger.exception('Azure REST fallback call failed')
+
+        return None
+        
+    except Exception:
+        _logger.exception('Azure helper call failed')
+        return None
+
+
 def _parse_json_from_text(text: str) -> Optional[Dict]:
     if worker_mod := _get_worker_module():
         if hasattr(worker_mod, 'parse_json_from_text'):
@@ -160,7 +258,8 @@ class ArticleTranslator:
         # Stage 4 uses same temperature as stage 3
         self.stage4_temperature = stage3_temperature
         self.stage5_max_tokens = stage3_max_tokens
-        self.stage5_temperature = stage3_temperature
+        # Stage 5 should run deterministically for publish formatting
+        self.stage5_temperature = 0.2
         self.stage6_max_tokens = stage3_max_tokens
         self.stage6_temperature = stage3_temperature
         # Token tracking
@@ -246,26 +345,15 @@ class ArticleTranslator:
 
     def _build_base_result(self, stage1: Dict, stage2: Dict, stage3: Dict, stage4: Dict) -> Dict:
         """Build base result dictionary with core translation fields."""
-        return {
-            'translation_ru': stage4.get('body') or stage2.get('body') or stage1.get('explanation_ru') or '',
-            'notes': stage4.get('notes') or stage2.get('notes') or [],
-            'flags': stage4.get('flags') or stage2.get('flags') or [],
-            'lang_detected': stage1.get('lang_detected') or 'es',
-            'facts_raw': stage1.get('facts_raw', []),
-            'actors': stage1.get('actors', []),
-            'stage2_facts': stage2.get('facts', []),
-            'stage2_entities': stage2.get('entities', []),
-            'stage4_facts': stage4.get('facts', []),
-            'stage4_entities': stage4.get('entities', []),
-            'stage3_evaluation': stage3 if isinstance(stage3, dict) else {},
-            'editorial_result': {
-                'stage1': stage1,
-                'stage2': stage2,
-                'stage3': stage3,
-                'stage4': stage4,
-            },
-        }
-
+        final = {}
+        # body text
+        final['body_ru'] = stage3.get('body')
+        # pubDate (from stage1)
+        final['pubDate'] = stage1.get('pubDate')
+        # image (from stage1)
+        if 'image' in stage1:
+            final['image'] = stage1['image']
+        return final
     def _add_optional_fields(self, final: Dict, stage1: Dict, stage2: Dict, stage3: Dict, stage4: Dict) -> None:
         """Add optional fields (title_ru, description_ru, content_ru) with fallback logic."""
         title_ru = stage4.get('title') or stage2.get('title')
@@ -432,14 +520,38 @@ class ArticleTranslator:
         messages = stage4_messages(source_text, stage1_json, stage2_json, stage3_json)
         _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
 
+        text = None
         try:
-            text = _chat_completion(
-                self.client,
-                self.model,
-                messages,
-                max_tokens=self.stage4_max_tokens,
-                temperature=self.stage4_temperature,
-            )
+            import os
+            # Prefer Azure REST (gpt-5.2 deployment) if configured, to run Stage 4 on the new model
+            if os.environ.get('AZURE_OPENAI_ENDPOINT'):
+                try:
+                    system_prompt = ''
+                    user_prompt = ''
+                    if isinstance(messages, list):
+                        for m in messages:
+                            if isinstance(m, dict) and m.get('role') == 'system':
+                                system_prompt += m.get('content', '') + '\n'
+                        last = messages[-1]
+                        user_prompt = last.get('content') if isinstance(last, dict) else str(last)
+                    azure_resp = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=self.stage4_max_tokens, temperature=self.stage4_temperature)
+                    if azure_resp:
+                        text = azure_resp
+                except Exception:
+                    _logger.exception('Stage4 Azure REST call failed; falling back to default client')
+
+            # Fallback to configured client (OpenAI / SDK) if Azure not used or returned empty
+            if not text:
+                try:
+                    text = _chat_completion(
+                        self.client,
+                        self.model,
+                        messages,
+                        max_tokens=self.stage4_max_tokens,
+                        temperature=self.stage4_temperature,
+                    )
+                except Exception:
+                    return None, None
         except Exception:
             return None, None
 
@@ -477,7 +589,27 @@ class ArticleTranslator:
             )
         except Exception as e:
             _logger.exception(f'Stage5 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
-            return None, None
+            text = None
+
+        # If chat_completion returned nothing and Azure env is configured, try REST call
+        if not text:
+            try:
+                # build simple system/user prompts from stage5_messages (last message usually contains instruction)
+                system_prompt = ''
+                user_prompt = ''
+                if isinstance(messages, list) and len(messages) >= 1:
+                    # find system and user roles
+                    for m in messages:
+                        if isinstance(m, dict) and m.get('role') == 'system':
+                            system_prompt = m.get('content', '')
+                    # last message as user
+                    last = messages[-1]
+                    user_prompt = last.get('content') if isinstance(last, dict) else str(last)
+                azure_resp = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=self.stage5_max_tokens, temperature=self.stage5_temperature)
+                if azure_resp:
+                    text = azure_resp
+            except Exception:
+                _logger.exception('Stage5 Azure REST fallback failed')
 
         if not text:
             return None, None
@@ -514,7 +646,23 @@ class ArticleTranslator:
                 temperature=0.6,
             )
         except Exception:
-            return None, None
+            text = None
+
+        if not text:
+            try:
+                system_prompt = ''
+                user_prompt = ''
+                if isinstance(messages, list) and len(messages) >= 1:
+                    for m in messages:
+                        if isinstance(m, dict) and m.get('role') == 'system':
+                            system_prompt = m.get('content', '')
+                    last = messages[-1]
+                    user_prompt = last.get('content') if isinstance(last, dict) else str(last)
+                azure_resp = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=6000, temperature=0.6)
+                if azure_resp:
+                    text = azure_resp
+            except Exception:
+                _logger.exception('Stage6 Azure REST fallback failed')
 
         parsed = _parse_stage_response(text, 'stage6', metadata.get('doc_id', 'unknown'))
         if not parsed or not isinstance(parsed, dict):

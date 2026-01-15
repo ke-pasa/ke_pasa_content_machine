@@ -13,6 +13,7 @@ from telethon.tl.types import Channel, Chat
 from datetime import datetime, timezone
 from pathlib import Path
 from croniter import croniter
+import uuid
 
 # Add root directory to path
 root_dir = Path(__file__).parent.parent.parent
@@ -131,6 +132,55 @@ class DigestWorker:
             logger.error(f"❌ Error posting to Facebook: {e}")
             import traceback
             traceback.print_exc()
+            return None
+
+    def _maybe_save_translation(self, job: dict, content: str):
+        """If job or env enables saving translations, write content to a file.
+
+        Saves into SAVE_TRANSLATIONS_DIR if set, otherwise into workers/digest/translations.
+        Ensures a .gitignore exists in the translations folder so files are not accidentally committed.
+        Returns path string or None.
+        """
+        if not content:
+            return None
+
+        save_flag = False
+        try:
+            save_flag = bool(job.get('save_translations', False))
+        except Exception:
+            save_flag = False
+
+        if not save_flag:
+            save_flag = os.getenv('SAVE_TRANSLATIONS', 'false').lower() in ('1', 'true', 'yes')
+        if not save_flag:
+            return None
+
+        out_dir = os.getenv('SAVE_TRANSLATIONS_DIR')
+        if out_dir:
+            out_path = Path(out_dir)
+        else:
+            out_path = Path(__file__).parent / 'translations'
+
+        try:
+            out_path.mkdir(parents=True, exist_ok=True)
+            # create a .gitignore so translations are not committed
+            gi = out_path / '.gitignore'
+            try:
+                if not gi.exists():
+                    gi.write_text("*\n!.gitignore\n", encoding='utf-8')
+            except Exception:
+                logger.debug('Could not write .gitignore in translations folder')
+
+            job_id = job.get('id', 'unknown')
+            ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+            uid = uuid.uuid4().hex[:8]
+            filename = out_path / f"{job_id}_{ts}_{uid}.md"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+            logger.info(f"💾 Saved translation for job '{job_id}' -> {filename}")
+            return str(filename)
+        except Exception as e:
+            logger.error(f"Failed to save translation file: {e}")
             return None
 
     def publish_content(self, content: str, channels: list):
@@ -346,6 +396,11 @@ class DigestWorker:
         # Run the job: generate, publish, and optionally republish
         content = self.execute_digest(job['script_module'])
         if content:
+            # Save translation/content if enabled (safe, with .gitignore)
+            try:
+                self._maybe_save_translation(job, content)
+            except Exception:
+                logger.debug('Failed to save translation in run_immediate')
             channels = [target_channel] if target_channel else job.get('channels', [])
             publish_results = self.publish_content(content, channels)
             # Republish as user if configured
@@ -389,6 +444,12 @@ class DigestWorker:
                             logger.info(f"  ▶️  Executing '{job_id}'...")
                             content = self.execute_digest(job['script_module'])
                             if content:
+                                # Save translation/content if enabled for scheduled runs
+                                try:
+                                    self._maybe_save_translation(job, content)
+                                except Exception:
+                                    logger.debug('Failed to save translation in scheduled run')
+
                                 publish_results = self.publish_content(content, job['channels'])
                                 # Republish to additional channels as user if requested
                                 repub = job.get('republish', [])

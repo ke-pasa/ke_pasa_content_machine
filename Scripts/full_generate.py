@@ -29,6 +29,7 @@ from workers.tools.pg_client import get_pg_client
 from workers.article_generator.translator import ArticleTranslator
 from workers.tools.telegram_helper import send_message, send_photo
 from workers.article_generator.ArticleGenerator import ArticleGenerator
+from workers.article_generator.image_generator import ImageGenerator
 
 
 def load_article_pg(article_id: str) -> dict:
@@ -65,16 +66,55 @@ def main(article_id: str):
 
     translator = ArticleTranslator()
     generator = ArticleGenerator(translator=translator)
+    
+    # Initialize image generator
+    try:
+        image_gen = ImageGenerator(model="dall-e-3")
+        logger.info('Image generator initialized with dall-e-3')
+    except Exception as e:
+        logger.warning(f'Failed to initialize image generator: {e}')
+        image_gen = None
 
     try:
         url = src.get('link') or src.get('url')
-        tr = translator.translate(title, description, content, metadata={'doc_id': article_id, 'url': url, 'total_score': src.get('total_score')})
+        # Propagate SAVE_TRANSLATIONS into translator as save_stages flag
+        import os
+        save_stages_flag = os.environ.get('SAVE_TRANSLATIONS', 'false').lower() in ('1', 'true', 'yes')
+        tr = translator.translate(
+            title,
+            description,
+            content,
+            metadata={
+                'doc_id': article_id,
+                'url': url,
+                'total_score': src.get('total_score'),
+                'save_stages': save_stages_flag,
+            }
+        )
         if not tr:
             logger.error('Translation failed for %s', article_id)
             return 3
 
         logger.info('Translation completed for %s. Keys in result: %s', article_id, list(tr.keys()))
         logger.info('Article metadata: total_score=%.1f, url=%s', src.get('total_score', 0.0), url)
+
+        # Generate image if missing
+        image_url = src.get('image')
+        if image_gen and (not image_url or not image_url.strip()):
+            logger.info('🎨 Generating image for article %s (no existing image)', article_id)
+            try:
+                generated_image_path = image_gen.generate_image_for_article(
+                    doc_id=article_id,
+                    title=title,
+                    description=description,
+                    content=content,
+                    existing_image_url=image_url
+                )
+                if generated_image_path:
+                    src['image'] = generated_image_path
+                    logger.info('✅ Generated and saved image: %s', generated_image_path)
+            except Exception as img_err:
+                logger.warning('⚠️ Image generation failed for %s: %s', article_id, img_err)
 
         save_generated_pg(article_id, src, tr)
 

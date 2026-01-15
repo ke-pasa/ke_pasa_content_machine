@@ -51,6 +51,15 @@ jobs:
           cat > .env << EOF
           POSTGRES_URL=${{ secrets.POSTGRES_URL }}
           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          
+          # Azure OpenAI / Cognitive Services
+          AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT || '' }}
+          AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY || '' }}
+          
+          # Azure DALL-E 3 for image generation
+          AZURE_DALLE_ENDPOINT=${{ secrets.AZURE_DALLE_ENDPOINT || '' }}
+          AZURE_DALLE_KEY=${{ secrets.AZURE_DALLE_KEY || '' }}
+          
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           TELETHON_API_ID=${{ secrets.TELETHON_API_ID || '' }}
