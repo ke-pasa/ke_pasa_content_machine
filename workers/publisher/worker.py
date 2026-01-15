@@ -347,6 +347,7 @@ class PublisherWorker:
         """Attempt to post to Instagram if configured. Returns (result, error_str).
         
         Posts image with caption to Instagram Business/Creator account.
+        Uses the same message as Telegram (telegram_final).
         """
         if post_instagram is None:
             return None, 'instagram_helper_not_installed'
@@ -358,7 +359,8 @@ class PublisherWorker:
                 logger.warning(f"⚠️ No image_url for Instagram post")
                 return None, 'no_image_url'
 
-            caption = data.get('description_ru') or data.get('content_ru') or ''
+            # Use the same message as Telegram
+            caption = message
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
 
             # Add link to article
@@ -378,6 +380,7 @@ class PublisherWorker:
         """Attempt to post to Facebook Page if configured. Returns (result, error_str).
         
         Posts image with message to Facebook Page.
+        Uses the same message as Telegram (telegram_final).
         """
         if post_facebook is None:
             return None, 'facebook_helper_not_installed'
@@ -389,7 +392,8 @@ class PublisherWorker:
                 logger.warning(f"⚠️ No image_url for Facebook post")
                 return None, 'no_image_url'
 
-            post_message = data.get('description_ru') or data.get('content_ru') or ''
+            # Use the same message as Telegram
+            post_message = message
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
 
             # Add link to article

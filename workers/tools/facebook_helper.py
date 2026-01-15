@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Optional, Dict, Any
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 
 import requests
@@ -26,10 +26,16 @@ def _load_tokens() -> Optional[Dict[str, Any]]:
         # Try to auto-create from environment variables
         return _try_create_tokens_from_env()
     try:
-        return json.loads(TOKEN_FILE.read_text())
+        content = TOKEN_FILE.read_text().strip()
+        if not content:
+            # Empty file, try to create from environment
+            logger.info('Token file is empty, attempting to create from environment variables')
+            return _try_create_tokens_from_env()
+        return json.loads(content)
     except Exception as e:
         logger.warning(f'Failed to load Facebook tokens: {e}')
-        return None
+        # Try to recover by creating from environment
+        return _try_create_tokens_from_env()
 
 
 def _save_tokens(tokens: Dict[str, Any]):
@@ -104,7 +110,7 @@ def _fetch_page_token_from_user_token(user_token: str) -> Optional[Dict[str, Any
                         'token_type': 'bearer',
                         'page_id': page_id,
                         'page_name': page_name,
-                        'obtained_at': datetime.utcnow().isoformat(),
+                        'obtained_at': datetime.now(timezone.utc).isoformat(),
                         'expires_at': 'never'
                     }
                     
@@ -124,7 +130,7 @@ def _fetch_page_token_from_user_token(user_token: str) -> Optional[Dict[str, Any
                             'token_type': 'bearer',
                             'page_id': target_page.get('id'),
                             'page_name': target_page.get('name'),
-                            'obtained_at': datetime.utcnow().isoformat(),
+                            'obtained_at': datetime.now(timezone.utc).isoformat(),
                             'expires_at': 'never'
                         }
                         
@@ -141,7 +147,7 @@ def _fetch_page_token_from_user_token(user_token: str) -> Optional[Dict[str, Any
 
 def _refresh_page_token_from_user_token() -> Optional[Dict[str, Any]]:
     """Refresh page token by exchanging user token for long-lived, then fetching page token."""
-    short_user_token = os.environ.get('FACEBOOK_USER_TOKEN')
+    short_user_token = os.environ.get('FACEBOOK_USER_TOKEN', '').strip()
     
     if not short_user_token:
         logger.debug('No FACEBOOK_USER_TOKEN set for auto-refresh')
@@ -164,10 +170,10 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
     2. FACEBOOK_ACCESS_TOKEN - user token, will fetch page token  
     3. FACEBOOK_USER_TOKEN - will exchange for long-lived, then fetch page token
     """
-    page_id = os.environ.get('FACEBOOK_PAGE_ID')
+    page_id = os.environ.get('FACEBOOK_PAGE_ID', '').strip()
     
     # Mode 1: Direct page access token (simplest)
-    page_token = os.environ.get('FACEBOOK_PAGE_ACCESS_TOKEN')
+    page_token = os.environ.get('FACEBOOK_PAGE_ACCESS_TOKEN', '').strip()
     if page_token and page_id:
         logger.info('📦 Creating Facebook token file from FACEBOOK_PAGE_ACCESS_TOKEN...')
         
@@ -175,7 +181,7 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
             'access_token': page_token,
             'token_type': 'bearer',
             'page_id': page_id,
-            'obtained_at': datetime.utcnow().isoformat(),
+            'obtained_at': datetime.now(timezone.utc).isoformat(),
             'expires_at': 'never'
         }
         
@@ -196,13 +202,13 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
         return tokens
     
     # Mode 2: User token (already long-lived)
-    user_token = os.environ.get('FACEBOOK_ACCESS_TOKEN')
+    user_token = os.environ.get('FACEBOOK_ACCESS_TOKEN', '').strip()
     
     if user_token:
         return _fetch_page_token_from_user_token(user_token)
     
     # Mode 3: Short-lived user token (needs exchange)
-    short_user_token = os.environ.get('FACEBOOK_USER_TOKEN')
+    short_user_token = os.environ.get('FACEBOOK_USER_TOKEN', '').strip()
     
     if short_user_token:
         return _refresh_page_token_from_user_token()
@@ -251,7 +257,7 @@ def _get_valid_access_token() -> str:
     if expires_at_str and expires_at_str != 'never':
         try:
             expires_at = datetime.fromisoformat(expires_at_str)
-            days_until_expiry = (expires_at - datetime.utcnow()).days
+            days_until_expiry = (expires_at - datetime.now(timezone.utc)).days
             
             if days_until_expiry < 0:
                 raise RuntimeError(

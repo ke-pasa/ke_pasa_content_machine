@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Optional, Dict, Any
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 
 import requests
@@ -27,10 +27,16 @@ def _load_tokens() -> Optional[Dict[str, Any]]:
         # Try to auto-create from environment variables
         return _try_create_tokens_from_env()
     try:
-        return json.loads(TOKEN_FILE.read_text())
+        content = TOKEN_FILE.read_text().strip()
+        if not content:
+            # Empty file, try to create from environment
+            logger.info('Token file is empty, attempting to create from environment variables')
+            return _try_create_tokens_from_env()
+        return json.loads(content)
     except Exception as e:
         logger.warning(f'Failed to load Instagram tokens: {e}')
-        return None
+        # Try to recover by creating from environment
+        return _try_create_tokens_from_env()
 
 
 def _save_tokens(tokens: Dict[str, Any]):
@@ -50,11 +56,11 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
     2. INSTAGRAM_SHORT_TOKEN (short-lived) - exchange for long-lived
     """
     # Check for long-lived token in environment
-    access_token = os.environ.get('INSTAGRAM_ACCESS_TOKEN')
+    access_token = os.environ.get('INSTAGRAM_ACCESS_TOKEN', '').strip()
     if access_token:
         logger.info('📦 Creating Instagram token file from INSTAGRAM_ACCESS_TOKEN...')
         
-        user_id = os.environ.get('INSTAGRAM_USER_ID')
+        user_id = os.environ.get('INSTAGRAM_USER_ID', '').strip()
         if not user_id:
             logger.error('❌ INSTAGRAM_USER_ID not set in environment')
             return None
@@ -62,12 +68,13 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
         # Assume 60-day expiry if not specified
         expires_in = int(os.environ.get('INSTAGRAM_EXPIRES_IN', '5184000'))
         
+        now = datetime.now(timezone.utc)
         tokens = {
             'access_token': access_token,
             'token_type': 'bearer',
             'expires_in': expires_in,
-            'obtained_at': datetime.utcnow().isoformat(),
-            'expires_at': (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
+            'obtained_at': now.isoformat(),
+            'expires_at': (now + timedelta(seconds=expires_in)).isoformat(),
             'user_id': user_id
         }
         
@@ -75,8 +82,9 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
         return tokens
     
     # Check for short-lived token to exchange
-    short_token = os.environ.get('INSTAGRAM_SHORT_TOKEN')
-    app_secret = os.environ.get('INSTAGRAM_APP_SECRET') or os.environ.get('FACEBOOK_APP_SECRET')
+    short_token = os.environ.get('INSTAGRAM_SHORT_TOKEN', '').strip()
+    app_secret = (os.environ.get('INSTAGRAM_APP_SECRET', '').strip() or 
+                  os.environ.get('FACEBOOK_APP_SECRET', '').strip())
     
     if short_token and app_secret:
         logger.info('📦 Exchanging Instagram short-lived token for long-lived token...')
@@ -109,12 +117,13 @@ def _try_create_tokens_from_env() -> Optional[Dict[str, Any]]:
                 expires_in = data.get('expires_in', 5184000)
                 
                 if long_lived_token:
+                    now = datetime.now(timezone.utc)
                     tokens = {
                         'access_token': long_lived_token,
                         'token_type': 'bearer',
                         'expires_in': expires_in,
-                        'obtained_at': datetime.utcnow().isoformat(),
-                        'expires_at': (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
+                        'obtained_at': now.isoformat(),
+                        'expires_at': (now + timedelta(seconds=expires_in)).isoformat(),
                         'user_id': user_id
                     }
                     
@@ -161,7 +170,7 @@ def _get_valid_access_token() -> str:
     if expires_at_str:
         try:
             expires_at = datetime.fromisoformat(expires_at_str)
-            days_until_expiry = (expires_at - datetime.utcnow()).days
+            days_until_expiry = (expires_at - datetime.now(timezone.utc)).days
             
             if days_until_expiry < 0:
                 raise RuntimeError(
