@@ -20,12 +20,11 @@ def generate_digest() -> str:
         cur = conn.cursor()
         
         sql = """
-            SELECT total_score, telegram_final, description_ru   
+            SELECT total_score, telegram_final, description_ru, slug 
             FROM articles_ru
             WHERE published_at > now() - INTERVAL '1 day'
               AND status = 'PUBLISHED'
-            ORDER BY total_score DESC
-            LIMIT 5;
+            ORDER BY total_score DESC;
         """
         
         cur.execute(sql)
@@ -45,10 +44,11 @@ def generate_digest() -> str:
         # 2. Pack result into JSON
         news_items = []
         for r in rows:
-            # total_score, telegram_final, description_ru
+            # total_score, telegram_final, description_ru, slug
             total_score = float(r[0]) if r[0] is not None else 0
             tg_final = r[1]
             desc = r[2]
+            slug = r[3]
 
             # Normalize telegram_final
             final_text = ""
@@ -61,9 +61,13 @@ def generate_digest() -> str:
             if not final_text:
                 final_text = desc
 
+            # Generate article URL from slug
+            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+
             news_items.append({
                 "total_score": total_score,
-                "text": final_text
+                "text": final_text,
+                "url": article_url
             })
 
         news_json = json.dumps(news_items, ensure_ascii=False, indent=2)
@@ -108,9 +112,11 @@ def generate_digest() -> str:
 - Не используй категории, подзаголовки и списки.
 
 Ссылки:
+- ОБЯЗАТЕЛЬНО используй предоставленную ссылку (поле url) для каждой новости.
 - Не выводи полные URL.
-- Используй ровно ОДНУ Markdown-ссылку внутри текста новости.
+- Используй ровно ОДНУ Markdown-ссылку внутри текста новости в формате [текст](url).
 - Ссылка должна быть встроена в 1–3 ключевых слова из текста.
+- Используй ТОЛЬКО предоставленные URL из JSON, не придумывай свои.
 
 Содержание:
 - Не переписывай заголовки буквально.

@@ -19,6 +19,7 @@ root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir))
 
 from workers.tools.telegram_helper import send_message
+from workers.tools.facebook_helper import post_facebook
 
 # Configuration (local to package)
 CONFIG_FILE = Path(__file__).parent / "digest_config.json"
@@ -94,6 +95,44 @@ class DigestWorker:
         text = re.sub(r'^\s*\*\s+(.+)$', r'• \1', text, flags=re.MULTILINE)
         return text
 
+    def _html_to_plain_text(self, html: str) -> str:
+        """Конвертирует HTML в обычный текст для Facebook."""
+        if not html:
+            return ""
+        import re
+        # Убираем HTML теги
+        text = re.sub(r'<b>(.*?)</b>', r'\1', html)
+        text = re.sub(r'<i>(.*?)</i>', r'\1', text)
+        text = re.sub(r'<a href="(.*?)">(.*?)</a>', r'\2', text)
+        text = re.sub(r'<.*?>', '', text)
+        # Убираем HTML entities
+        text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+        return text.strip()
+
+    def _post_to_facebook(self, content: str):
+        """Публикует дайджест в Facebook."""
+        try:
+            html_content = self._markdown_to_telegram_html(content)
+            plain_text = self._html_to_plain_text(html_content)
+            
+            logger.info("Posting digest to Facebook...")
+            result = post_facebook(
+                message=plain_text,
+                image_url=None  # Дайджест без изображения
+            )
+            
+            if result and result.get('id'):
+                logger.info(f"✅ Posted digest to Facebook: {result.get('id')}")
+                return result
+            else:
+                logger.error(f"❌ Facebook post failed: {result}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error posting to Facebook: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def publish_content(self, content: str, channels: list):
         if not content:
             logger.warning("No content generated to publish")
@@ -101,6 +140,8 @@ class DigestWorker:
 
         html_content = self._markdown_to_telegram_html(content)
         results = {}
+        
+        # Публикуем в Telegram
         for channel in channels:
             try:
                 logger.info(f"Sending digest to {channel}...")
@@ -110,6 +151,11 @@ class DigestWorker:
             except Exception as e:
                 results[channel] = None
                 logger.error(f"❌ Failed to send to {channel}: {e}")
+        
+        # Публикуем в Facebook
+        fb_result = self._post_to_facebook(content)
+        results['facebook'] = fb_result
+        
         return results
 
     def republish_content(self, content: str, republish_channels: list, original_results: dict = None):
