@@ -114,8 +114,17 @@ def _get_valid_access_token() -> str:
             
             if now >= expiry_time:
                 logger.info('Access token expired, refreshing...')
-                new_tokens = _refresh_access_token(refresh_token)
-                access_token = new_tokens.get('access_token')
+                try:
+                    new_tokens = _refresh_access_token(refresh_token)
+                    access_token = new_tokens.get('access_token')
+                    if not access_token:
+                        logger.error('❌ Refresh succeeded but no access_token in response')
+                        raise RuntimeError('Token refresh returned no access_token')
+                    logger.info('✅ Token refreshed successfully')
+                except Exception as refresh_error:
+                    logger.error(f'❌ Token refresh failed: {refresh_error}')
+                    logger.error('Please re-run tools/x_oauth_setup.py to get new tokens')
+                    raise RuntimeError(f'Token refresh failed: {refresh_error}')
             else:
                 logger.debug(f'Token still valid for {int((expiry_time - now).total_seconds())} seconds')
         except Exception as e:

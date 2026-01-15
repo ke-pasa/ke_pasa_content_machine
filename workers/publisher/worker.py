@@ -78,40 +78,27 @@ class PublisherWorker:
         """Convert HTML tags to plain text for Facebook/Instagram.
         
         Telegram uses HTML tags like <b>, <i>, <a href="">, etc.
-        Facebook and Instagram need plain text or their own formatting.
+        Facebook and Instagram only support plain text without formatting.
         
         Args:
             html_text: HTML text to convert
-            keep_links: If True, keeps URL from <a href> tags (for Facebook)
+            keep_links: Not used - kept for compatibility
         """
         if not html_text:
             return html_text
         
         text = html_text
         
-        if keep_links:
-            # For Facebook: extract URL and add after link text
-            # <a href="url">text</a> -> text (url)
-            def replace_link(match):
-                url = match.group(1)
-                text = match.group(2)
-                return f"{text} ({url})"
-            text = re.sub(r'<a[^>]*href=["\']([^"\'>]+)["\'][^>]*>([^<]+)</a>', replace_link, text)
-        else:
-            # For Instagram: just remove link tags, keep text
-            text = re.sub(r'<a[^>]*>([^<]+)</a>', r'\1', text)
+        # Remove link tags completely (we'll add article link separately)
+        text = re.sub(r'<a[^>]*>([^<]+)</a>', r'\1', text)
         
-        # Convert <b>text</b> to **text** (Facebook bold)
-        text = re.sub(r'<b>([^<]+)</b>', r'**\1**', text)
+        # Remove bold tags - just keep the text (Facebook doesn't support bold in posts)
+        text = re.sub(r'<b>([^<]+)</b>', r'\1', text)
+        text = re.sub(r'<strong>([^<]+)</strong>', r'\1', text)
         
-        # Convert <strong>text</strong> to **text**
-        text = re.sub(r'<strong>([^<]+)</strong>', r'**\1**', text)
-        
-        # Convert <i>text</i> to *text* (Facebook italic)
-        text = re.sub(r'<i>([^<]+)</i>', r'*\1*', text)
-        
-        # Convert <em>text</em> to *text*
-        text = re.sub(r'<em>([^<]+)</em>', r'*\1*', text)
+        # Remove italic tags - just keep the text
+        text = re.sub(r'<i>([^<]+)</i>', r'\1', text)
+        text = re.sub(r'<em>([^<]+)</em>', r'\1', text)
         
         # Remove any remaining HTML tags
         text = re.sub(r'<[^>]+>', '', text)
@@ -440,8 +427,8 @@ class PublisherWorker:
                 logger.warning(f"⚠️ No image_url for Facebook post")
                 return None, 'no_image_url'
 
-            # Convert HTML to Facebook-friendly text, keeping links
-            post_message = self._html_to_plain_text(message, keep_links=True)
+            # Convert HTML to Facebook-friendly text
+            post_message = self._html_to_plain_text(message)
             
             # Add article link (clickable on Facebook)
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
