@@ -13,6 +13,7 @@ from .prompts import (
 )
 
 _logger = logging.getLogger('workers.article_generator.translator')
+_logger.propagate = True
 
 
 def _get_worker_module():
