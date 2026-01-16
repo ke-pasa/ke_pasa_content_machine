@@ -200,6 +200,16 @@ Return ONLY the image prompt."""
             local_path = self.image_gen._download_and_save_image(image_url, doc_id)
             
             if local_path:
+                # _download_and_save_image returns a relative path like 'public/images/news/<file>.jpg'
+                # Prefer returning the local filesystem path for upload when publishing via Telegram.
+                try:
+                    project_root = Path(__file__).resolve().parent.parent.parent
+                    fs_path = project_root / local_path
+                    if fs_path.exists():
+                        logger.info(f'✅ Digest cover image generated (saved locally): {fs_path}')
+                        return str(fs_path)
+                except Exception:
+                    pass
                 web_url = f"https://ke-pasa.es/images/news/{doc_id}.jpg"
                 logger.info(f'✅ Digest cover image generated: {web_url}')
                 return web_url

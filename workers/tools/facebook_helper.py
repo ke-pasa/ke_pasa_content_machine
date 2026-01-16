@@ -304,15 +304,16 @@ def post_facebook(
     if not page_id:
         page_id = os.environ.get('FACEBOOK_PAGE_ID')
         if not page_id:
-            raise RuntimeError('FACEBOOK_PAGE_ID not set in environment')
+            logger.warning('FACEBOOK_PAGE_ID not set in environment; skipping Facebook post')
+            return None
     
     # Get access token from file if not provided
     if not access_token:
         try:
             access_token = _get_valid_access_token()
         except Exception as e:
-            logger.error(f'Failed to get Facebook access token: {e}')
-            raise
+            logger.warning(f'Failed to get Facebook access token: {e}; skipping Facebook post')
+            return None
     
     logger.info(f'🔵 Posting to Facebook Page: {message[:50]}...')
     

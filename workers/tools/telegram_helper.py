@@ -94,14 +94,53 @@ def send_photo(chat_id: str, photo_url: str, caption: Optional[str] = None, toke
         caption = caption.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
         caption = _normalize_newlines(caption)
 
-    # Use HTTP API directly (python-telegram-bot v20+ is async-only, requires await)
-    payload = {'chat_id': chat_id, 'photo': photo_url}
-    if caption:
-        payload['caption'] = caption
-        payload['parse_mode'] = parse_mode
-    if message_thread_id is not None:
-        payload['message_thread_id'] = int(message_thread_id)
-    return _http_post(token, 'sendPhoto', payload)
+    # If the photo_url looks like a public HTTP(S) URL, send by URL (existing behavior).
+    # Otherwise, if it's a local file path, upload the file via multipart/form-data.
+    try:
+        from pathlib import Path
+        # Determine if this is a URL
+        is_http = isinstance(photo_url, str) and photo_url.lower().startswith(('http://', 'https://'))
+
+        if is_http:
+            payload = {'chat_id': chat_id, 'photo': photo_url}
+            if caption:
+                payload['caption'] = caption
+                payload['parse_mode'] = parse_mode
+            if message_thread_id is not None:
+                payload['message_thread_id'] = int(message_thread_id)
+            return _http_post(token, 'sendPhoto', payload)
+
+        # Treat as local path: resolve relative to project root if necessary
+        p = Path(photo_url)
+        if not p.is_absolute():
+            # project root = two levels up from this file (workers/tools -> workers -> project root)
+            proj_root = Path(__file__).resolve().parent.parent.parent
+            p = (proj_root / photo_url).resolve()
+
+        if not p.exists():
+            raise RuntimeError(f'Photo file not found: {p}')
+
+        url = f'https://api.telegram.org/bot{token}/sendPhoto'
+        data = {'chat_id': chat_id}
+        if caption:
+            data['caption'] = caption
+            data['parse_mode'] = parse_mode
+        if message_thread_id is not None:
+            data['message_thread_id'] = int(message_thread_id)
+
+        with open(p, 'rb') as fh:
+            files = {'photo': fh}
+            resp = requests.post(url, data=data, files=files, timeout=60)
+        try:
+            j = resp.json()
+        except Exception:
+            raise RuntimeError(f'Failed to parse Telegram response: {resp.status_code} {resp.text}')
+
+        if not (resp.status_code == 200 and j.get('ok')):
+            raise RuntimeError(f'Telegram sendPhoto failed: {j}')
+        return j.get('result')
+    except Exception:
+        raise
 
 
 def post_eval_comment(chat_id: str, eval_json: Dict[str, Any], raw_text: Optional[str] = None, sent: Optional[Dict[str, Any]] = None, token: Optional[str] = None, max_len: int = 1000) -> Optional[Dict[str, Any]]:
