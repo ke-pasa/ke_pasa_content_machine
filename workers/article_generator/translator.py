@@ -15,6 +15,9 @@ from .prompts import (
 _logger = logging.getLogger('workers.article_generator.translator')
 _logger.propagate = True
 
+# Constants
+STAGE_NAMES = ('stage1', 'stage2', 'stage3', 'stage4', 'stage5', 'stage6')
+
 
 def _get_worker_module():
     """Load worker module if available for monkeypatching."""
@@ -41,9 +44,10 @@ def _chat_completion(client: Any, model: str, messages: list, max_tokens: int = 
     return _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
 
 
-def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, temperature: float = 0.2) -> Optional[str]:
+def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, temperature: float = 1.0) -> Optional[str]:
     """Call Azure OpenAI using OpenAI SDK with Azure endpoint.
     Returns content string or None on error or if not configured.
+    Note: gpt-5.2-chat model only supports temperature=1.0 (default).
     """
     try:
         import os
@@ -89,11 +93,19 @@ def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, t
                 timeout=30
             )
             
+            _logger.info(f'Azure SDK response: model={completion.model if completion else None}, '
+                        f'choices={len(completion.choices) if completion and completion.choices else 0}')
+            
             if completion and completion.choices and len(completion.choices) > 0:
                 content = completion.choices[0].message.content
-                return (content or '').strip()
+                if content:
+                    _logger.info(f'Azure SDK returned content length: {len(content)}')
+                    return content.strip()
+                else:
+                    _logger.warning(f'Azure SDK returned empty content. Finish reason: {completion.choices[0].finish_reason}')
+            else:
+                _logger.warning(f'Azure SDK returned no choices. Full response: {completion}')
             
-            _logger.warning('Azure OpenAI SDK returned empty response')
             return None
             
         except Exception as e:
@@ -117,17 +129,26 @@ def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, t
             }
             resp = requests.post(url, json=payload, headers=headers, timeout=30)
             
+            _logger.info(f'Azure REST response status: {resp.status_code}')
+            
             if resp.ok:
                 data = resp.json()
+                _logger.info(f'Azure REST response data keys: {list(data.keys()) if data else None}')
                 choice = data.get('choices', [{}])[0]
                 message = choice.get('message', {}) if isinstance(choice.get('message', {}), dict) else {}
-                return (message.get('content') or '').strip()
+                content = message.get('content') or ''
+                if content:
+                    _logger.info(f'Azure REST returned content length: {len(content)}')
+                    return content.strip()
+                else:
+                    _logger.warning(f'Azure REST returned empty content. Choice: {choice}, Full data: {data}')
+                    return None
             else:
                 try:
                     body = resp.text
                 except Exception:
                     body = '<could not read response body>'
-                _logger.error('Azure REST fallback failed status=%s body=%s', resp.status_code, body[:2000])
+                _logger.error('Azure REST failed status=%s body=%s', resp.status_code, body[:2000])
                 
         except Exception:
             _logger.exception('Azure REST fallback call failed')
@@ -145,6 +166,19 @@ def _parse_json_from_text(text: str) -> Optional[Dict]:
             return worker_mod.parse_json_from_text(text)
     from workers.tools.openai_client import parse_json_from_text
     return parse_json_from_text(text)
+
+
+def _extract_system_user_from_messages(messages: list) -> tuple:
+    """Extract system and user prompts from messages list for Azure fallback."""
+    system_prompt = ''
+    user_prompt = ''
+    if isinstance(messages, list) and messages:
+        for m in messages:
+            if isinstance(m, dict) and m.get('role') == 'system':
+                system_prompt += m.get('content', '') + '\n'
+        last = messages[-1]
+        user_prompt = last.get('content') if isinstance(last, dict) else str(last)
+    return system_prompt.strip(), user_prompt
 
 
 def _save_raw_response(doc_id: str, stage: str, text: str) -> Optional[str]:
@@ -216,10 +250,23 @@ def _maybe_save_stage_record(doc_id: str, metadata: Dict, stages: Dict):
         with out_file.open('w', encoding='utf-8') as f:
             f.write(f"doc_id: {doc_id}\n")
             f.write(f"source_link: {metadata.get('url') or metadata.get('link') or metadata.get('source') or ''}\n\n")
-            # For each stage write parsed JSON (if any) and a raw separator placeholder.
-            for stage_name in ('stage1', 'stage2', 'stage3', 'stage4', 'stage5', 'stage6'):
+            # For each stage write INPUT, OUTPUT (PARSED), OUTPUT (RAW), and MESSAGES
+            for stage_name in STAGE_NAMES:
+                # Input
+                f.write(f"=== {stage_name} INPUT ===\n")
+                inp = stages.get(f"{stage_name}_input") if isinstance(stages, dict) else None
+                try:
+                    if inp is None:
+                        f.write('<NO INPUT SAVED>\n')
+                    else:
+                        f.write(json.dumps(inp, ensure_ascii=False, indent=2) + '\n')
+                except Exception:
+                    f.write('<INPUT NOT SERIALIZABLE>\n')
+                f.write('\n')
+
+                # Output (Parsed)
                 parsed = stages.get(stage_name) if isinstance(stages, dict) else None
-                f.write(f"=== {stage_name} PARSED ===\n")
+                f.write(f"=== {stage_name} OUTPUT (PARSED) ===\n")
                 try:
                     if parsed is None:
                         f.write('<NO PARSED DATA>\n')
@@ -227,6 +274,33 @@ def _maybe_save_stage_record(doc_id: str, metadata: Dict, stages: Dict):
                         f.write(json.dumps(parsed, ensure_ascii=False, indent=2) + '\n')
                 except Exception:
                     f.write('<PARSED NOT SERIALIZABLE>\n')
+                f.write('\n')
+
+                # Output (Raw)
+                f.write(f"=== {stage_name} OUTPUT (RAW) ===\n")
+                raw = stages.get(f"{stage_name}_raw") if isinstance(stages, dict) else None
+                try:
+                    if raw is None:
+                        f.write('<NO RAW OUTPUT SAVED>\n')
+                    else:
+                        if isinstance(raw, str):
+                            f.write(raw + '\n')
+                        else:
+                            f.write(json.dumps(raw, ensure_ascii=False, indent=2) + '\n')
+                except Exception:
+                    f.write('<RAW OUTPUT NOT SERIALIZABLE>\n')
+                f.write('\n')
+
+                # Messages
+                f.write(f"=== {stage_name} MESSAGES ===\n")
+                msgs = stages.get(f"{stage_name}_messages") if isinstance(stages, dict) else None
+                try:
+                    if msgs is None:
+                        f.write('<NO MESSAGES SAVED>\n')
+                    else:
+                        f.write(json.dumps(msgs, ensure_ascii=False, indent=2) + '\n')
+                except Exception:
+                    f.write('<MESSAGES NOT SERIALIZABLE>\n')
                 f.write('\n')
     except Exception:
         _logger.exception('Failed to save stage text file for %s', doc_id)
@@ -242,7 +316,7 @@ class ArticleTranslator:
         stage1_max_tokens: int = 1200,
         stage2_max_tokens: int = 1200,
         stage3_max_tokens: int = 1200,
-        stage4_max_tokens: int = 1600,
+        stage4_max_tokens: int = 4000,
         stage1_temperature: float = 0.2,
         stage2_temperature: float = 0.4,
         stage3_temperature: float = 1.0,
@@ -258,7 +332,8 @@ class ArticleTranslator:
         self.stage3_temperature = stage3_temperature
         # Stage 4 uses same temperature as stage 3
         self.stage4_temperature = stage3_temperature
-        self.stage5_max_tokens = stage3_max_tokens
+        # Stage 5 generates full markdown with frontmatter - needs more tokens
+        self.stage5_max_tokens = 6000
         # Stage 5 should run deterministically for publish formatting
         self.stage5_temperature = 0.2
         self.stage6_max_tokens = stage3_max_tokens
@@ -267,6 +342,22 @@ class ArticleTranslator:
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
         self._total_tokens = 0
+        # Store the messages/prompts used for each stage for debugging
+        self._last_stage_messages = {}
+        # Store input/output collections for each stage
+        self._last_stage_io = {}
+
+    def _save_stage_io(self, stage_name: str, input_data: dict = None, raw_output: str = None, messages: list = None):
+        """Safely save input/output/messages for a stage."""
+        try:
+            if messages is not None:
+                self._last_stage_messages[f'{stage_name}_messages'] = messages
+            if input_data is not None:
+                self._last_stage_io[f'{stage_name}_input'] = input_data
+            if raw_output is not None:
+                self._last_stage_io[f'{stage_name}_raw'] = raw_output
+        except Exception:
+            pass
 
     @staticmethod
     def _build_source_text(title: str, description: str, content: str) -> str:
@@ -429,6 +520,20 @@ class ArticleTranslator:
                 'stage5': stage5,
                 'stage6': stage6,
             }
+            try:
+                # merge in any captured messages/prompts
+                if isinstance(self._last_stage_messages, dict):
+                    for k, v in self._last_stage_messages.items():
+                        stages[k] = v
+            except Exception:
+                pass
+            try:
+                # merge in any captured input/output data
+                if isinstance(self._last_stage_io, dict):
+                    for k, v in self._last_stage_io.items():
+                        stages[k] = v
+            except Exception:
+                pass
             _maybe_save_stage_record(metadata.get('doc_id', 'unknown'), metadata, stages)
         except Exception:
             _logger.exception('Error while trying to save stage record for %s', metadata.get('doc_id', 'unknown'))
@@ -443,6 +548,7 @@ class ArticleTranslator:
         article_text = self._build_source_text(title, description, content)
 
         messages = stage1_messages(article_text)
+        self._save_stage_io('stage1', input_data={'article_text': article_text}, messages=messages)
         _log_stage_debug('stage1', self.model, messages, len(article_text or ''))
 
         try:
@@ -458,6 +564,7 @@ class ArticleTranslator:
             return None, None
 
         parsed = _parse_stage_response(text, 'stage1', (metadata or {}).get('doc_id', 'unknown'))
+        self._save_stage_io('stage1', raw_output=text)
         return parsed, (text or None)
 
     def _stage2_reporter(self, stage1_result: Dict, metadata: Optional[Dict] = None) -> Optional[Dict]:
@@ -466,6 +573,7 @@ class ArticleTranslator:
         draft_json = json.dumps(stage1_result, ensure_ascii=False)
 
         messages = stage2_messages(draft_json)
+        self._save_stage_io('stage2', input_data={'stage1_json': draft_json}, messages=messages)
         _log_stage_debug('stage2', self.model, messages, len(draft_json or ''))
 
         try:
@@ -481,6 +589,7 @@ class ArticleTranslator:
             return None, None
 
         parsed = _parse_stage_response(text, 'stage2', metadata.get('doc_id', 'unknown'))
+        self._save_stage_io('stage2', raw_output=text)
         return parsed, (text or None)
 
     def _stage3_edit_first(self, stage1_result: Dict, stage2_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
@@ -492,6 +601,9 @@ class ArticleTranslator:
         stage2_json = json.dumps(stage2_result, ensure_ascii=False)
 
         messages = stage3_messages(source_text, stage1_json, stage2_json)
+        self._save_stage_io('stage3', 
+                           input_data={'source_text': source_text, 'stage1_json': stage1_json, 'stage2_json': stage2_json},
+                           messages=messages)
         _log_stage_debug('stage3', self.model, messages, len(stage2_json or ''))
 
         try:
@@ -507,6 +619,7 @@ class ArticleTranslator:
             return None, None
 
         parsed = _parse_stage_response(text, 'stage3', metadata.get('doc_id', 'unknown'))
+        self._save_stage_io('stage3', raw_output=text)
         return parsed, (text or None)
 
     def _stage4_edit_final(self, stage1_result: Dict, stage2_result: Dict, stage3_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
@@ -519,44 +632,31 @@ class ArticleTranslator:
         stage3_json = json.dumps(stage3_result, ensure_ascii=False)
 
         messages = stage4_messages(source_text, stage1_json, stage2_json, stage3_json)
+        self._save_stage_io('stage4',
+                           input_data={'source_text': source_text, 'stage1_json': stage1_json, 
+                                      'stage2_json': stage2_json, 'stage3_json': stage3_json},
+                           messages=messages)
         _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
 
-        text = None
+        # Stage 4 always uses Azure OpenAI
         try:
-            import os
-            # Prefer Azure REST (gpt-5.2 deployment) if configured, to run Stage 4 on the new model
-            if os.environ.get('AZURE_OPENAI_ENDPOINT'):
-                try:
-                    system_prompt = ''
-                    user_prompt = ''
-                    if isinstance(messages, list):
-                        for m in messages:
-                            if isinstance(m, dict) and m.get('role') == 'system':
-                                system_prompt += m.get('content', '') + '\n'
-                        last = messages[-1]
-                        user_prompt = last.get('content') if isinstance(last, dict) else str(last)
-                    azure_resp = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=self.stage4_max_tokens, temperature=self.stage4_temperature)
-                    if azure_resp:
-                        text = azure_resp
-                except Exception:
-                    _logger.exception('Stage4 Azure REST call failed; falling back to default client')
-
-            # Fallback to configured client (OpenAI / SDK) if Azure not used or returned empty
+            system_prompt, user_prompt = _extract_system_user_from_messages(messages)
+            _logger.info(f'Stage4 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
+                        f'system_len={len(system_prompt)}, user_len={len(user_prompt)}')
+            text = _azure_chat_completion_rest(system_prompt, user_prompt, 
+                                               max_tokens=self.stage4_max_tokens, 
+                                               temperature=self.stage4_temperature)
             if not text:
-                try:
-                    text = _chat_completion(
-                        self.client,
-                        self.model,
-                        messages,
-                        max_tokens=self.stage4_max_tokens,
-                        temperature=self.stage4_temperature,
-                    )
-                except Exception:
-                    return None, None
-        except Exception:
+                _logger.error(f'Stage4 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
+                             f'Check Azure logs above for details. text={repr(text)}')
+                return None, None
+            _logger.info(f'Stage4 Azure success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
+        except Exception as e:
+            _logger.exception(f'Stage4 Azure exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
             return None, None
 
         parsed = _parse_stage_response(text, 'stage4', metadata.get('doc_id', 'unknown'))
+        self._save_stage_io('stage4', raw_output=text)
         return parsed, (text or None)
 
     def _stage5_publish_md(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
@@ -578,44 +678,31 @@ class ArticleTranslator:
         tech_meta_json = json.dumps(tech_meta, ensure_ascii=False)
 
         messages = stage5_messages(stage4_json, tech_meta_json)
+        self._save_stage_io('stage5', 
+                           input_data={'stage4_json': stage4_json, 'tech_meta_json': tech_meta_json},
+                           messages=messages)
         _log_stage_debug('stage5', self.model, messages, len(stage4_json or ''))
 
+        # Stage 5 always uses Azure OpenAI
         try:
-            text = _chat_completion(
-                self.client,
-                self.model,
-                messages,
-                max_tokens=self.stage5_max_tokens,
-                temperature=self.stage5_temperature,
-            )
+            system_prompt, user_prompt = _extract_system_user_from_messages(messages)
+            _logger.info(f'Stage5 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
+                        f'system_len={len(system_prompt)}, user_len={len(user_prompt)}')
+            # Note: gpt-5.2-chat only supports temperature=1.0
+            text = _azure_chat_completion_rest(system_prompt, user_prompt, 
+                                               max_tokens=self.stage5_max_tokens, 
+                                               temperature=1.0)
+            if not text:
+                _logger.error(f'Stage5 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
+                             f'Check Azure logs above for details. text={repr(text)}')
+                return None, None
+            _logger.info(f'Stage5 Azure success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
         except Exception as e:
-            _logger.exception(f'Stage5 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
-            text = None
-
-        # If chat_completion returned nothing and Azure env is configured, try REST call
-        if not text:
-            try:
-                # build simple system/user prompts from stage5_messages (last message usually contains instruction)
-                system_prompt = ''
-                user_prompt = ''
-                if isinstance(messages, list) and len(messages) >= 1:
-                    # find system and user roles
-                    for m in messages:
-                        if isinstance(m, dict) and m.get('role') == 'system':
-                            system_prompt = m.get('content', '')
-                    # last message as user
-                    last = messages[-1]
-                    user_prompt = last.get('content') if isinstance(last, dict) else str(last)
-                azure_resp = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=self.stage5_max_tokens, temperature=self.stage5_temperature)
-                if azure_resp:
-                    text = azure_resp
-            except Exception:
-                _logger.exception('Stage5 Azure REST fallback failed')
-
-        if not text:
+            _logger.exception(f'Stage5 Azure exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
             return None, None
             
         result = {'publish_md': text.strip()}
+        self._save_stage_io('stage5', raw_output=text)
         import re
         if slug_match := re.search(r'^slug:\s*(.+?)\s*$', text, re.MULTILINE):
             slug = slug_match.group(1).strip().strip('"').strip("'")
@@ -636,36 +723,29 @@ class ArticleTranslator:
         stage4_json = json.dumps(stage4_result, ensure_ascii=False)
 
         messages = stage6_messages(stage4_json, url)
+        self._save_stage_io('stage6',
+                           input_data={'stage4_json': stage4_json, 'url': url},
+                           messages=messages)
         _log_stage_debug('stage6', self.model, messages, len(stage4_json or ''))
 
+        # Stage 6 always uses Azure OpenAI
         try:
-            text = _chat_completion(
-                self.client,
-                self.model,
-                messages,
-                max_tokens=6000,
-                temperature=0.6,
-            )
-        except Exception:
-            text = None
-
-        if not text:
-            try:
-                system_prompt = ''
-                user_prompt = ''
-                if isinstance(messages, list) and len(messages) >= 1:
-                    for m in messages:
-                        if isinstance(m, dict) and m.get('role') == 'system':
-                            system_prompt = m.get('content', '')
-                    last = messages[-1]
-                    user_prompt = last.get('content') if isinstance(last, dict) else str(last)
-                azure_resp = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=6000, temperature=0.6)
-                if azure_resp:
-                    text = azure_resp
-            except Exception:
-                _logger.exception('Stage6 Azure REST fallback failed')
+            system_prompt, user_prompt = _extract_system_user_from_messages(messages)
+            _logger.info(f'Stage6 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
+                        f'system_len={len(system_prompt)}, user_len={len(user_prompt)}')
+            # Note: gpt-5.2-chat only supports temperature=1.0
+            text = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=6000, temperature=1.0)
+            if not text:
+                _logger.error(f'Stage6 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
+                             f'Check Azure logs above for details. text={repr(text)}')
+                return None, None
+            _logger.info(f'Stage6 Azure success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
+        except Exception as e:
+            _logger.exception(f'Stage6 Azure exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
+            return None, None
 
         parsed = _parse_stage_response(text, 'stage6', metadata.get('doc_id', 'unknown'))
+        self._save_stage_io('stage6', raw_output=text)
         if not parsed or not isinstance(parsed, dict):
             return parsed, (text or None)
 
