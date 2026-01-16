@@ -319,16 +319,34 @@ def post_facebook(
     
     # Post photo with message to Facebook Page
     url = f'https://graph.facebook.com/v18.0/{page_id}/photos'
-    params = {
-        'url': image_url,
-        'caption': message,
-        'access_token': access_token
-    }
+
+    # Determine whether image_url is a public HTTP URL or a local filesystem path
+    is_http = isinstance(image_url, str) and image_url.lower().startswith(('http://', 'https://'))
+
     
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
-            resp = requests.post(url, data=params, timeout=30)
+            if is_http:
+                # Send by public URL
+                params = {'url': image_url, 'caption': message, 'access_token': access_token}
+                resp = requests.post(url, data=params, timeout=30)
+            else:
+                # Treat image_url as local filesystem path and upload binary via 'source'
+                from pathlib import Path
+                p = Path(image_url)
+                if not p.is_absolute():
+                    # Resolve relative paths against project root
+                    proj_root = Path(__file__).resolve().parent.parent.parent
+                    p = (proj_root / image_url).resolve()
+
+                if not p.exists():
+                    raise RuntimeError(f'Local image file not found: {p}')
+
+                data = {'caption': message, 'access_token': access_token}
+                with open(p, 'rb') as fh:
+                    files = {'source': fh}
+                    resp = requests.post(url, data=data, files=files, timeout=120)
             
             if resp.status_code == 200:
                 data = resp.json()
