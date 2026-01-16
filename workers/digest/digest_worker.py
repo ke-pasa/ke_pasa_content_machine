@@ -19,8 +19,9 @@ import uuid
 root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir))
 
-from workers.tools.telegram_helper import send_message
+from workers.tools.telegram_helper import send_message, send_photo
 from workers.tools.facebook_helper import post_facebook
+from workers.article_generator.image_generator import ImageGenerator
 
 # Configuration (local to package)
 CONFIG_FILE = Path(__file__).parent / "digest_config.json"
@@ -38,6 +39,14 @@ class DigestWorker:
         self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
         if not self.telegram_token:
             logger.warning("⚠️ TELEGRAM_BOT_TOKEN not set")
+            
+        # Initialize image generator for digest cover images
+        try:
+            self.image_gen = ImageGenerator(model="dall-e-3")
+            logger.info('Image generator initialized for digest covers')
+        except Exception as e:
+            logger.warning(f'Failed to initialize image generator: {e}')
+            self.image_gen = None
             
     def load_config(self):
         try:
@@ -109,8 +118,100 @@ class DigestWorker:
         # Убираем HTML entities
         text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
         return text.strip()
+    
+    def _generate_digest_image(self, content: str, job_id: str) -> str:
+        """Generates a cover image for the digest.
+        
+        Args:
+            content: Digest text content for context
+            job_id: Job ID for unique filename
+            
+        Returns:
+            Image URL or None if generation failed
+        """
+        if not self.image_gen:
+            logger.warning('Image generator not available')
+            return None
+            
+        try:
+            # Extract first few lines for context
+            first_lines = '\n'.join(content.split('\n')[:5])
+            
+            # Create styled prompt for digest cover
+            from workers.tools.openai_client import get_openai_client
+            client = get_openai_client()
+            if not client:
+                logger.warning('OpenAI client not available for prompt generation')
+                # Use simple fallback
+                image_prompt = f"clean minimal comic-style illustration, Que Pasa brand vibe, Spanish news digest theme, colorful but professional"
+            else:
+                # Generate contextual prompt
+                system_prompt = """You create image prompts for news digest covers.
+                
+Create a 1-sentence visual prompt for DALL-E that captures the digest theme.
+The style MUST be: clean minimal comic-style illustration, Que Pasa brand vibe.
+Focus on visual elements that represent Spanish news/culture.
+Return ONLY the image prompt."""
+                
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"Digest preview:\n{first_lines}\n\nGenerate image prompt:"}
+                        ],
+                        max_tokens=100,
+                        temperature=0.7
+                    )
+                    base_prompt = response.choices[0].message.content.strip()
+                    # Ensure style is included
+                    if "clean minimal comic-style" not in base_prompt.lower():
+                        image_prompt = f"{base_prompt}, clean minimal comic-style illustration, Que Pasa brand vibe"
+                    else:
+                        image_prompt = base_prompt
+                except Exception as e:
+                    logger.warning(f'Failed to generate AI prompt: {e}')
+                    image_prompt = f"clean minimal comic-style illustration, Que Pasa brand vibe, Spanish news digest theme"
+            
+            logger.info(f'Generating digest cover image with prompt: {image_prompt[:100]}...')
+            
+            # Generate using Azure DALL-E 3
+            if self.image_gen.use_azure:
+                image_url = self.image_gen._generate_with_azure_dalle(image_prompt)
+            else:
+                response = self.image_gen.client.images.generate(
+                    model="dall-e-3",
+                    prompt=image_prompt,
+                    size="1792x1024",
+                    quality="standard",
+                    n=1
+                )
+                if response.data and len(response.data) > 0:
+                    image_url = response.data[0].url
+                else:
+                    logger.warning('No image generated')
+                    return None
+            
+            if not image_url:
+                return None
+                
+            # Download and save locally
+            doc_id = f"digest_{job_id}_{int(time.time())}"
+            local_path = self.image_gen._download_and_save_image(image_url, doc_id)
+            
+            if local_path:
+                web_url = f"https://ke-pasa.es/images/news/{doc_id}.jpg"
+                logger.info(f'✅ Digest cover image generated: {web_url}')
+                return web_url
+            else:
+                logger.warning('Failed to save digest image')
+                return image_url  # Return original URL as fallback
+                
+        except Exception as e:
+            logger.exception(f'Failed to generate digest image: {e}')
+            return None
 
-    def _post_to_facebook(self, content: str):
+    def _post_to_facebook(self, content: str, image_url: str = None):
         """Публикует дайджест в Facebook."""
         try:
             html_content = self._markdown_to_telegram_html(content)
@@ -119,7 +220,7 @@ class DigestWorker:
             logger.info("Posting digest to Facebook...")
             result = post_facebook(
                 message=plain_text,
-                image_url=None  # Дайджест без изображения
+                image_url=image_url
             )
             
             if result and result.get('id'):
@@ -183,10 +284,17 @@ class DigestWorker:
             logger.error(f"Failed to save translation file: {e}")
             return None
 
-    def publish_content(self, content: str, channels: list):
+    def publish_content(self, content: str, channels: list, job_id: str = 'unknown'):
         if not content:
             logger.warning("No content generated to publish")
             return {}
+
+        # Generate cover image for digest
+        image_url = self._generate_digest_image(content, job_id)
+        if image_url:
+            logger.info(f'🖼️ Using digest cover image: {image_url}')
+        else:
+            logger.warning('⚠️ No digest cover image generated')
 
         html_content = self._markdown_to_telegram_html(content)
         results = {}
@@ -195,15 +303,27 @@ class DigestWorker:
         for channel in channels:
             try:
                 logger.info(f"Sending digest to {channel}...")
-                res = send_message(channel, html_content, token=self.telegram_token, parse_mode='HTML')
+                if image_url:
+                    # Send with photo
+                    res = send_photo(
+                        chat_id=channel,
+                        photo_url=image_url,
+                        caption=html_content,
+                        token=self.telegram_token,
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"✅ Sent digest with image to {channel}")
+                else:
+                    # Send text only
+                    res = send_message(channel, html_content, token=self.telegram_token, parse_mode='HTML')
+                    logger.info(f"✅ Sent text-only digest to {channel}")
                 results[channel] = res
-                logger.info(f"✅ Sent to {channel}")
             except Exception as e:
                 results[channel] = None
                 logger.error(f"❌ Failed to send to {channel}: {e}")
         
-        # Публикуем в Facebook
-        fb_result = self._post_to_facebook(content)
+        # Публикуем в Facebook с изображением
+        fb_result = self._post_to_facebook(content, image_url=image_url)
         results['facebook'] = fb_result
         
         return results
@@ -402,7 +522,7 @@ class DigestWorker:
             except Exception:
                 logger.debug('Failed to save translation in run_immediate')
             channels = [target_channel] if target_channel else job.get('channels', [])
-            publish_results = self.publish_content(content, channels)
+            publish_results = self.publish_content(content, channels, job_id=job_id)
             # Republish as user if configured
             repub = job.get('republish', [])
             if repub:
@@ -450,7 +570,7 @@ class DigestWorker:
                                 except Exception:
                                     logger.debug('Failed to save translation in scheduled run')
 
-                                publish_results = self.publish_content(content, job['channels'])
+                                publish_results = self.publish_content(content, job['channels'], job_id=job['id'])
                                 # Republish to additional channels as user if requested
                                 repub = job.get('republish', [])
                                 if repub:
