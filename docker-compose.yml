@@ -126,10 +126,26 @@ services:
       - TELETHON_API_ID=${TELETHON_API_ID}
       - TELETHON_API_HASH=${TELETHON_API_HASH}
       - TELETHON_SESSION=${TELETHON_SESSION:-republish_session}
+      # Facebook configuration (same as publisher)
+      - FACEBOOK_APP_ID=${FACEBOOK_APP_ID}
+      - FACEBOOK_APP_SECRET=${FACEBOOK_APP_SECRET:-}
+      - FACEBOOK_PAGE_ID=${FACEBOOK_PAGE_ID}
+      - FACEBOOK_PAGE_ACCESS_TOKEN=${FACEBOOK_PAGE_ACCESS_TOKEN:-}
+      - FACEBOOK_USER_TOKEN=${FACEBOOK_USER_TOKEN:-}
+      # Instagram configuration (same as publisher)
+      - INSTAGRAM_USER_ID=${INSTAGRAM_USER_ID}
+      - INSTAGRAM_ACCESS_TOKEN=${INSTAGRAM_ACCESS_TOKEN:-}
+      - INSTAGRAM_SHORT_TOKEN=${INSTAGRAM_SHORT_TOKEN:-}
+      - INSTAGRAM_APP_SECRET=${INSTAGRAM_APP_SECRET:-}
+      - INSTAGRAM_EXPIRES_IN=${INSTAGRAM_EXPIRES_IN:-5184000}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/digest:/var/log/supervisor
       - ./republish_session.session:/app/republish_session.session
+      # Facebook token file (created from env or uploaded via CI)
+      - ./.facebook_tokens.json:/app/.facebook_tokens.json
+      # Instagram token file and envs (same as publisher)
+      - ./.instagram_tokens.json:/app/.instagram_tokens.json
     networks:
       - ke-pasa-network
     depends_on:
