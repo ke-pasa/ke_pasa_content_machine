@@ -3,10 +3,15 @@ FROM ke-pasa-workers-base:latest
 # Copy publisher + digest worker code so the package `workers.digest` is available
 COPY workers/publisher /app/workers/publisher
 COPY workers/digest /app/workers/digest
+# Also include article_generator so digest worker can import it for image generation
+COPY workers/article_generator /app/workers/article_generator
 
 # Install repo requirements
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+# Install article_generator specific requirements if present
+COPY workers/article_generator/requirements.txt /app/workers/article_generator/requirements.txt
+RUN if [ -f /app/workers/article_generator/requirements.txt ]; then pip install --no-cache-dir -r /app/workers/article_generator/requirements.txt; fi
 
 # Try to install telethon (optional dependency - continue if it fails)
 RUN pip install --no-cache-dir 'telethon>=1.24.0' || echo "Warning: Telethon installation failed, continuing without it"
