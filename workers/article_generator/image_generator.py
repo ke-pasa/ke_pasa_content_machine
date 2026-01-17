@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -27,21 +28,22 @@ class ImageGenerator:
         azure_dalle_endpoint = os.getenv('AZURE_DALLE_ENDPOINT')
         azure_dalle_key = os.getenv('AZURE_DALLE_KEY')
         
+        # Always initialize OpenAI client for GPT-4o-mini prompt generation
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise RuntimeError('OPENAI_API_KEY is required for prompt generation')
+        self.client = OpenAI(api_key=api_key)
+        
         if azure_dalle_endpoint and azure_dalle_key:
-            # Use Azure DALL-E
-            self.logger.info('Using Azure DALL-E endpoint')
+            # Use Azure DALL-E for image generation
+            self.logger.info('Using Azure DALL-E endpoint for image generation')
             self.use_azure = True
             self.azure_endpoint = azure_dalle_endpoint
             self.azure_key = azure_dalle_key
-            self.client = None  # Will use REST API directly
         else:
-            # Use OpenAI
-            api_key = os.getenv('OPENAI_API_KEY')
-            if not api_key:
-                raise RuntimeError('OPENAI_API_KEY or Azure DALL-E credentials required')
-            self.logger.info('Using OpenAI DALL-E')
+            # Use OpenAI for image generation
+            self.logger.info('Using OpenAI DALL-E for image generation')
             self.use_azure = False
-            self.client = OpenAI(api_key=api_key)
         
         # Set up images directory
         if images_dir is None:
@@ -51,51 +53,131 @@ class ImageGenerator:
         self.images_dir = Path(images_dir)
         self.images_dir.mkdir(parents=True, exist_ok=True)
         
-    def _create_image_prompt(self, title: str, description: str, content: str) -> str:
+    def _save_raw_prompt(self, doc_id: str, stage: str, content: str) -> None:
+        """Log raw prompt/response for image generation."""
+        try:
+            self.logger.warning(f'Raw {stage} for image generation {doc_id}:\n{content[:2000]}')
+            
+            if os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
+                log_dir = Path(os.environ.get('GITHUB_WORKSPACE', os.getcwd())) / 'logs' / 'openai_raw'
+                log_dir.mkdir(parents=True, exist_ok=True)
+                fname = log_dir / f"{doc_id}_image_{stage}_{int(time.time())}.txt"
+                fname.write_text(content or '', encoding='utf-8')
+                self.logger.warning(f'Wrote CI raw output to {fname}')
+        except Exception as e:
+            self.logger.debug(f'Failed to save raw prompt: {e}')
+        
+    def _create_image_prompt(self, doc_id: str, title: str, description: str, content: str) -> Optional[str]:
         """
         Create a concise image generation prompt from article content.
         
         Args:
+            doc_id: Document ID for logging
             title: Article title
             description: Article description
-            content: Article content (first 500 chars used)
+            content: Article content
             
         Returns:
-            Image generation prompt
+            Image generation prompt for DALL-E
         """
-        # Use GPT to create a visual prompt based on article content
+        # Use GPT-4o-mini to create a specialized prompt for Flux Schnell/DALL-E
         try:
-            system_prompt = """You are an expert at creating image generation prompts for news articles.
-Create a concise, visual prompt for DALL-E that captures the essence of the article.
-The prompt should:
-- Be 1-2 sentences maximum
-- Focus on visual elements and atmosphere
-- Be appropriate for news/editorial content
-- Avoid text in the image
-- Use clear, descriptive language
+            system_prompt = """Ты — нейросистема, создающая точный и безопасный промпт для генерации редакционного изображения моделью Flux Schnell.
 
-Return ONLY the image prompt, nothing else."""
+Вход: текст статьи или её краткое содержание.  
+Выход: один визуально ёмкий промпт.
 
-            content_excerpt = content[:500] if content else description
+Твоя задача — по тексту статьи автоматически определить:
+
+1. Категорию новости: soft news или hard news
+   - soft news → общество, культура, праздники, события, миграция, лайфстайл, советы, погода без катастроф
+   - hard news → политика, экономика, преступления, судебные дела, катастрофы, скандалы, коррупция, аварии, сильные конфликты
+
+2. Выбрать стиль изображения:
+   - Если soft news → использовать стиль 
+     "clean minimal comic-style illustration, Que Pasa brand vibe"
+   - Если hard news → использовать стиль  
+     "highly detailed editorial illustration, realistic but NOT photorealistic"
+
+   *Никогда не создавай фотореалистичные изображения реальных событий.*
+
+3. Сформировать сцену:
+   - Определи главный смысл новости: действие, место, объект, эмоцию.
+   - Собери абстрактно-символическую или метафорическую сцену, которая передаёт идею статьи.
+   - Не изображай реальных людей, политиков, узнаваемые лица.
+   - Не изображай событие так, как будто это реальная фотография.
+
+4. Учитывай тон статьи:
+   - серьёзный → спокойные цвета, строгая композиция  
+   - тревожный → контраст, динамика  
+   - позитивный → мягкий свет, тёплая палитра  
+   - нейтральный → сбалансированная сцена  
+
+5. Запреты:
+   - никаких текстов на изображении  
+   - никаких реальных политиков или конкретных лиц  
+   - никакой фотореалистичности событий  
+   - никакой дезинформации
+
+6. Выходной формат:
+
+PROMPT:
+"<здесь финальный промпт>"
+
+Структура финального промпта:
+- атмосферное описание сцены  
+- стиль (в зависимости от soft/hard news)  
+- эмоция  
+- композиция  
+- художественные характеристики (свет, цвет, детализация)  
+- указание «no real people, no text, no photorealism»
+
+Теперь проанализируй статью и создай промпт."""
+
+            # Combine article information
+            article_text = f"Title: {title}\n\nDescription: {description}\n\nContent:\n{content}"
+            user_prompt = f"[ARTICLE]\n\n{article_text}"
+            
+            # Log system and user prompts
+            self._save_raw_prompt(doc_id, 'system_prompt', system_prompt)
+            self._save_raw_prompt(doc_id, 'user_prompt', user_prompt)
             
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Title: {title}\n\nDescription: {description}\n\nContent: {content_excerpt}\n\nGenerate image prompt:"}
+                    {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=150,
+                max_tokens=300,
                 temperature=0.7
             )
             
-            prompt = response.choices[0].message.content.strip()
-            self.logger.info(f'Created image prompt: {prompt[:100]}...')
+            # Extract prompt from response (should contain PROMPT: "...")
+            response_text = response.choices[0].message.content.strip()
+            
+            # Log GPT response
+            self._save_raw_prompt(doc_id, 'gpt_response', response_text)
+            
+            # Try to extract prompt between quotes after "PROMPT:"
+            if 'PROMPT:' in response_text:
+                # Extract text after PROMPT:
+                prompt_part = response_text.split('PROMPT:', 1)[1].strip()
+                # Try to find quoted text
+                if '"' in prompt_part:
+                    prompt = prompt_part.split('"')[1]
+                else:
+                    # Use everything after PROMPT:
+                    prompt = prompt_part
+            else:
+                # Use entire response if no PROMPT: marker found
+                prompt = response_text
+            
+            self.logger.info(f'Created image prompt: {prompt[:150]}...')
             return prompt
             
         except Exception as e:
-            self.logger.warning(f'Failed to create AI prompt, using fallback: {e}')
-            # Fallback: simple combination of title and description
-            return f"Editorial illustration representing: {title}. {description[:100]}"
+            self.logger.error(f'Failed to create AI prompt: {e}')
+            return None
     
     def _generate_with_azure_dalle(self, prompt: str) -> Optional[str]:
         """
@@ -244,18 +326,20 @@ Return ONLY the image prompt, nothing else."""
             existing_image_url: Existing image URL (if any)
             
         Returns:
-            Image URL (existing or newly generated) or None
+            Image URL (newly generated) or None
         """
-        # Return existing image if present
-        if existing_image_url and existing_image_url.strip():
-            self.logger.debug(f'Using existing image for {doc_id}')
-            return existing_image_url
-        
-        self.logger.info(f'No image found for {doc_id}, generating new image...')
+        self.logger.info(f'Generating new image for {doc_id} (ignoring existing_image_url)...')
         
         try:
             # Create prompt based on content
-            image_prompt = self._create_image_prompt(title, description, content)
+            image_prompt = self._create_image_prompt(doc_id, title, description, content)
+            
+            if not image_prompt:
+                self.logger.error(f'Failed to create image prompt for {doc_id}')
+                return None
+            
+            # Log final prompt that will be sent to DALL-E
+            self._save_raw_prompt(doc_id, 'dalle_prompt', image_prompt)
             
             # Generate image using DALL-E (supports dall-e-2, dall-e-3, gpt-image-1.5)
             self.logger.info(f'Generating image with {self.model} for {doc_id}...')

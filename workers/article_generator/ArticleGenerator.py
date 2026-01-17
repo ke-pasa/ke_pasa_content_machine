@@ -502,10 +502,10 @@ class ArticleGenerator:
             
             title, description, content, article_url, content_source, total_score = self._prepare_article_content(doc_id, data)
             
-            # Generate image if missing
+            # Generate image for every article
             image_url = data.get('image')
-            if self.image_generator and (not image_url or not image_url.strip()):
-                self.logger.info(f'🎨 Generating image for article {doc_id} (no existing image)')
+            if self.image_generator:
+                self.logger.info(f'🎨 Generating image for article {doc_id} (always generate)')
                 try:
                     generated_image_path = self.image_generator.generate_image_for_article(
                         doc_id=doc_id,
