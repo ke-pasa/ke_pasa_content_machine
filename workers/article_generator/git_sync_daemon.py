@@ -190,7 +190,7 @@ def do_sync():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--interval', type=int, default=30, help='Interval in minutes between syncs')
+    parser.add_argument('--interval', type=int, default=10, help='Interval in minutes between syncs')
     parser.add_argument('--once', action='store_true', help='Run once then exit')
     parser.add_argument('--articles-dir', type=str, default='articles', help='Local articles directory')
     parser.add_argument('--trigger-file', type=str, default='', help='Optional path to trigger file; when present the daemon will run sync immediately and remove the file')
