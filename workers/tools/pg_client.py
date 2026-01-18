@@ -728,6 +728,7 @@ class PGClient:
                 WHERE status = %s 
                   AND total_score >= %s
                   AND published_at >= NOW() - INTERVAL '24 hours'
+                  AND updated_at <= NOW() - INTERVAL '30 minutes'
                 ORDER BY total_score DESC NULLS LAST, id ASC 
                 LIMIT %s
                 """,
