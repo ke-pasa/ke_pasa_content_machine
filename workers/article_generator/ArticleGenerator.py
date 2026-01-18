@@ -859,6 +859,84 @@ class ArticleGenerator:
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
 
+    def generate_image_only(self, article_id: str) -> dict:
+        """Generate image for a single article without translation or saving to git.
+        
+        Args:
+            article_id: Article ID to generate image for
+            
+        Returns:
+            dict: Result with status, image_path, and any errors
+        """
+        try:
+            if not article_id:
+                return {'status': 'error', 'message': 'article_id required'}
+
+            self.logger.info(f'🎨 Starting image-only generation for article {article_id}')
+
+            # Fetch the article from database
+            try:
+                row = self.pg.fetch_article_by_id(article_id)
+            except Exception as e:
+                return {'status': 'error', 'message': f'failed to fetch article: {e}'}
+
+            if not row:
+                return {'status': 'error', 'message': f'article {article_id} not found'}
+
+            # Extract article data
+            data = row if isinstance(row, dict) else {}
+            title = data.get('title', '') or ''
+            description = data.get('description', '') or ''
+            content = data.get('content', '') or ''
+            existing_image_url = data.get('image')
+
+            if not title and not description and not content:
+                return {'status': 'error', 'message': 'article has no content to generate image from'}
+
+            # Check if image generator is available
+            if not self.image_generator:
+                return {'status': 'error', 'message': 'image generator not initialized'}
+
+            # Generate image
+            self.logger.info(f'🎨 Generating image for article {article_id}')
+            self.logger.info(f'   Title: {title[:100]}...' if len(title) > 100 else f'   Title: {title}')
+            
+            try:
+                generated_image_path = self.image_generator.generate_image_for_article(
+                    doc_id=article_id,
+                    title=title,
+                    description=description,
+                    content=content,
+                    existing_image_url=existing_image_url
+                )
+                
+                if generated_image_path:
+                    self.logger.info(f'✅ Successfully generated image: {generated_image_path}')
+                    return {
+                        'status': 'success',
+                        'article_id': article_id,
+                        'image_path': generated_image_path,
+                        'message': f'Image generated successfully: {generated_image_path}'
+                    }
+                else:
+                    return {
+                        'status': 'error',
+                        'article_id': article_id,
+                        'message': 'Image generation returned no path'
+                    }
+                    
+            except Exception as img_err:
+                self.logger.exception(f'❌ Image generation failed for {article_id}')
+                return {
+                    'status': 'error',
+                    'article_id': article_id,
+                    'message': f'Image generation failed: {img_err}'
+                }
+                
+        except Exception as e:
+            self.logger.exception(f'❌ Unexpected error in generate_image_only for {article_id}')
+            return {'status': 'error', 'message': str(e)}
+
     def process_continuous(self, git_sync_interval_minutes: int = 30) -> None:
         """
         Continuously process articles in an infinite loop.

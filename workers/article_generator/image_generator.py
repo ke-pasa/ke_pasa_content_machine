@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 from PIL import Image
 from openai import OpenAI
+import json
 
 
 class ImageGenerator:
@@ -80,60 +81,66 @@ class ImageGenerator:
         Returns:
             Image generation prompt for DALL-E
         """
-        # Use GPT-4o-mini to create a specialized prompt for Flux Schnell/DALL-E
+        # Use GPT-4o-mini to create a specialized prompt for DALL-E 3
         try:
-            system_prompt = """Ты — нейросистема, создающая точный и безопасный промпт для генерации редакционного изображения моделью Flux Schnell.
+            system_prompt = """You are an automated prompt generator for DALL·E 3,
+specialized in creating realistic, policy-safe editorial images for news websites.
 
-Вход: текст статьи или её краткое содержание.  
-Выход: один визуально ёмкий промпт.
+INPUT: a news article.
+OUTPUT: ONE final image prompt in English.
+Return ONLY the image prompt.
 
-Твоя задача — по тексту статьи автоматически определить:
+GOAL:
+Create an image that feels like a real editorial photograph,
+without visual glitches, distorted faces, or artificial crowd scenes.
 
-1. Категорию новости: soft news или hard news
-   - soft news → общество, культура, праздники, события, миграция, лайфстайл, советы, погода без катастроф
-   - hard news → политика, экономика, преступления, судебные дела, катастрофы, скандалы, коррупция, аварии, сильные конфликты
+CRITICAL CONSTRAINTS (MANDATORY):
 
-2. Выбрать стиль изображения:
-   - Если soft news → использовать стиль 
-     "clean minimal comic-style illustration, Que Pasa brand vibe"
-   - Если hard news → использовать стиль  
-     "highly detailed editorial illustration, realistic but NOT photorealistic"
+- Avoid crowds, queues, or many visible people.
+- Prefer empty spaces, partial figures, silhouettes, or people seen from behind.
+- Never show multiple clear faces in one image.
+- If people are present, they must be out of focus, turned away, or partially visible.
 
-   *Никогда не создавай фотореалистичные изображения реальных событий.*
+VISUAL STRATEGY:
 
-3. Сформировать сцену:
-   - Определи главный смысл новости: действие, место, объект, эмоцию.
-   - Собери абстрактно-символическую или метафорическую сцену, которая передаёт идею статьи.
-   - Не изображай реальных людей, политиков, узнаваемые лица.
-   - Не изображай событие так, как будто это реальная фотография.
+1. Read the article and identify context (soft or hard news).
 
-4. Учитывай тон статьи:
-   - серьёзный → спокойные цвета, строгая композиция  
-   - тревожный → контраст, динамика  
-   - позитивный → мягкий свет, тёплая палитра  
-   - нейтральный → сбалансированная сцена  
+2. Choose ONE realistic scene that could exist in real life,
+   but can be photographed without showing crowds or faces.
 
-5. Запреты:
-   - никаких текстов на изображении  
-   - никаких реальных политиков или конкретных лиц  
-   - никакой фотореалистичности событий  
-   - никакой дезинформации
+3. Use ONE of these safe patterns:
+   - environment without people
+   - single anonymous person seen from behind
+   - blurred silhouettes or motion-blurred figures
+   - close-up of objects, hands, or infrastructure
 
-6. Выходной формат:
+4. Visual style (mandatory):
+   - photorealistic editorial photography
+   - documentary look
+   - natural daylight
+   - muted, realistic colors
+   - shallow depth of field when people are present
+   - imperfect, non-symmetrical framing
 
-PROMPT:
-"<здесь финальный промпт>"
+5. Camera anchors (include at least two):
+   - 35mm documentary photography
+   - full-frame DSLR look
+   - natural lens imperfections
+   - realistic color grading
 
-Структура финального промпта:
-- атмосферное описание сцены  
-- стиль (в зависимости от soft/hard news)  
-- эмоция  
-- композиция  
-- художественные характеристики (свет, цвет, детализация)  
-- указание «no real people, no text, no photorealism»
+6. Never include:
+   - text or signage in focus
+   - logos or watermarks
+   - illustration, concept art, or cinematic language
+   - multiple clear faces
+   - staged or posed scenes
 
-Теперь проанализируй статью и создай промпт."""
+End the prompt with:
+"No text, no illustration, no cinematic style, no surreal elements."
 
+ARTICLE:
+[ARTICLE]"""
+            
             # Combine article information
             article_text = f"Title: {title}\n\nDescription: {description}\n\nContent:\n{content}"
             user_prompt = f"[ARTICLE]\n\n{article_text}"
@@ -148,31 +155,25 @@ PROMPT:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=300,
-                temperature=0.7
+                max_tokens=400,
+                temperature=0.4
             )
             
-            # Extract prompt from response (should contain PROMPT: "...")
+            # Extract prompt from response - now expecting plain text, not JSON
             response_text = response.choices[0].message.content.strip()
             
             # Log GPT response
             self._save_raw_prompt(doc_id, 'gpt_response', response_text)
             
-            # Try to extract prompt between quotes after "PROMPT:"
-            if 'PROMPT:' in response_text:
-                # Extract text after PROMPT:
-                prompt_part = response_text.split('PROMPT:', 1)[1].strip()
-                # Try to find quoted text
-                if '"' in prompt_part:
-                    prompt = prompt_part.split('"')[1]
-                else:
-                    # Use everything after PROMPT:
-                    prompt = prompt_part
-            else:
-                # Use entire response if no PROMPT: marker found
-                prompt = response_text
+            # Response should be the prompt directly, no JSON parsing needed
+            prompt = response_text.strip()
             
-            self.logger.info(f'Created image prompt: {prompt[:150]}...')
+            if not prompt:
+                self.logger.error(f'Empty prompt received for {doc_id}')
+                return None
+
+            self.logger.info(f'Created image prompt for {doc_id}')
+            self.logger.info(f'Prompt: {prompt[:200]}...' if len(prompt) > 200 else f'Prompt: {prompt}')
             return prompt
             
         except Exception as e:
@@ -313,7 +314,9 @@ PROMPT:
         title: str, 
         description: str, 
         content: str,
-        existing_image_url: Optional[str] = None
+        existing_image_url: Optional[str] = None,
+        *,
+        save_locally: bool = True
     ) -> Optional[str]:
         """
         Generate an image for an article if no image exists.
@@ -324,6 +327,7 @@ PROMPT:
             description: Article description  
             content: Article content
             existing_image_url: Existing image URL (if any)
+            save_locally: Persist the generated image locally when True; return provider URL otherwise
             
         Returns:
             Image URL (newly generated) or None
@@ -387,8 +391,12 @@ PROMPT:
                 image_url = response.data[0].url
                 self.logger.info(f'✅ Successfully generated image via OpenAI')
             
-            # Download and save image locally
+            if not save_locally:
+                self.logger.info(f'Skipping local persistence for {doc_id}, returning provider URL')
+                return image_url
+
             self.logger.info(f'Downloading generated image...')
+            # Download and save image locally
             local_path = self._download_and_save_image(image_url, doc_id)
             if local_path:
                 # Return absolute URL for ke-pasa.es domain

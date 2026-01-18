@@ -176,6 +176,7 @@ def main() -> None:
     parser.add_argument('--continuous', action='store_true', help='Run in continuous mode (infinite loop processing top articles)')
     parser.add_argument('--git-sync-interval', type=int, default=30, help='Git sync interval in minutes (for continuous mode, default 30)')
     parser.add_argument('--save-stages', action='store_true', help='Save translation stage outputs to logs/article_generator_stages/{doc_id}.json')
+    parser.add_argument('--generate-image-only', action='store_true', help='Generate image only for article (requires --article-id, no translation or git sync)')
     args = parser.parse_args()
 
     # Always configure logging to stdout so CI (GitHub Actions) captures worker logs
@@ -212,6 +213,21 @@ def main() -> None:
             worker.save_stages = True
         except Exception:
             logging.getLogger('workers.article_generator').exception('Failed to set save_stages on worker')
+    
+    # Image-only mode - generate image without translation or git sync
+    if args.generate_image_only:
+        if not args.article_id:
+            logging.error('❌ --generate-image-only requires --article-id')
+            print(json.dumps({'status': 'error', 'message': '--generate-image-only requires --article-id'}, ensure_ascii=False, indent=2))
+            sys.exit(1)
+        
+        logging.info(f'🎨 Starting image-only generation mode for article {args.article_id}')
+        result = worker.generate_image_only(args.article_id)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        
+        # Exit with appropriate code
+        exit_code = 0 if result.get('status') == 'success' else 1
+        sys.exit(exit_code)
     
     # Continuous mode - runs indefinitely
     if args.continuous:
