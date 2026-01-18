@@ -167,18 +167,36 @@ class PublisherWorker:
             if post_tweet is None:
                 raise ValueError("X helper not installed")
             
-            # Try to get valid access token
-            token = _get_valid_access_token()
+            # Try to get valid access token - this will attempt refresh if needed
+            try:
+                token = _get_valid_access_token()
+            except Exception as token_error:
+                # If token refresh failed, it's unhealthy
+                raise Exception(f"Token validation/refresh failed: {token_error}")
             
-            if token:
+            if not token:
+                raise Exception("No valid access token available")
+            
+            # Actually test the token by making a real API call
+            import requests
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
+            # Use /users/me endpoint to verify token works
+            response = requests.get('https://api.twitter.com/2/users/me', headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                user_data = response.json().get('data', {})
                 health_status['platforms']['x'] = {
                     'status': 'healthy',
                     'has_token': True,
-                    'token_preview': f"{token[:10]}..." if len(token) > 10 else "***"
+                    'username': user_data.get('username'),
+                    'user_id': user_data.get('id')
                 }
-                logger.info(f"✅ X (Twitter): OK (token valid)")
+                logger.info(f"✅ X (Twitter): OK (user: @{user_data.get('username')})")
             else:
-                raise Exception("No valid access token")
+                raise Exception(f"API test failed: {response.status_code} - {response.text[:200]}")
                 
         except Exception as e:
             health_status['platforms']['x'] = {
@@ -353,9 +371,12 @@ class PublisherWorker:
         
         return health_status
 
-    def publish_articles(self) -> Dict:
+    def publish_articles(self, force: bool = False) -> Dict:
         """
         Publishes ready articles to Telegram
+        
+        Args:
+            force: If True, skip night hours check and publish anyway
         
         Returns:
             Dictionary with publication results
@@ -371,7 +392,7 @@ class PublisherWorker:
                 logger.warning(f"⚠️ X token refresh failed: {e} (will retry on actual post)")
 
             # Check if we're in night hours (23:00 - 09:00 Madrid time)
-            if self._is_night_hours():
+            if not force and self._is_night_hours():
                 logger.info("🌙 Night hours (23:00-09:00) - skipping publication")
                 return {
                     'status': 'skipped',
@@ -383,6 +404,9 @@ class PublisherWorker:
                     'instance_id': self.instance_id,
                     'timestamp': datetime.now(timezone.utc).isoformat()
                 }
+            
+            if force and self._is_night_hours():
+                logger.info("⚠️ FORCE mode: Publishing during night hours")
 
             target = int(self.config.max_articles_per_run or 1)
             results = self.publish_articles_from_articles_ru(max_to_publish=target)
@@ -872,7 +896,10 @@ class PublisherWorker:
                     threads_res, threads_err = self._post_to_threads(message, data)
                     logger.debug(f"Threads post attempt result: res={threads_res} err={threads_err}")
                     if threads_err:
-                        logger.info(f"ℹ️ Threads post skipped/failed for {article_id}: {threads_err}")
+                        if '500' in str(threads_err) or 'not connected' in str(threads_err):
+                            logger.warning(f"⚠️ Threads not configured properly for {article_id}. Skipping Threads (Instagram needs to be connected to Threads and have proper permissions)")
+                        else:
+                            logger.info(f"ℹ️ Threads post skipped/failed for {article_id}: {threads_err}")
                 except Exception as e:
                     logger.warning(f"⚠️ Unexpected error while posting to Threads: {e}")
 
@@ -905,6 +932,8 @@ def main():
     parser = argparse.ArgumentParser(description='Publisher Worker - Telegram Publication Handler')
     parser.add_argument('--health-check', action='store_true', 
                        help='Run health check on all integrations instead of publishing')
+    parser.add_argument('--force', action='store_true',
+                       help='Force publication even during night hours (23:00-09:00)')
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -927,7 +956,7 @@ def main():
             sys.exit(exit_code)
         else:
             # Normal publication flow
-            result = worker.publish_articles()
+            result = worker.publish_articles(force=args.force)
             
             logger.info("\n" + "=" * 60)
             logger.info("📊 RESULTS")
