@@ -22,6 +22,7 @@ from workers.tools.telegram_helper import send_message, send_photo
 from workers.tools.x_helper import post_tweet
 from workers.tools.instagram_helper import post_instagram
 from workers.tools.facebook_helper import post_facebook
+from workers.tools.threads_helper import post_threads
 from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
 from workers.tools.constants import MIN_PUBLISH_SCORE
@@ -107,6 +108,250 @@ class PublisherWorker:
         text = html.unescape(text)
         
         return text
+
+    def check_integrations_health(self) -> Dict:
+        """
+        Check health of all social media integrations
+        
+        Returns:
+            Dictionary with health status for each platform
+        """
+        logger.info("=" * 60)
+        logger.info("🏥 Starting Integrations Health Check")
+        logger.info("=" * 60)
+        
+        health_status = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'overall_status': 'healthy',
+            'platforms': {}
+        }
+        
+        # Check Telegram
+        logger.info("\n📱 Checking Telegram...")
+        try:
+            if not self.telegram_token:
+                raise ValueError("TELEGRAM_BOT_TOKEN not configured")
+            
+            chat_id = self._get_chat_id()
+            if not chat_id:
+                raise ValueError("TELEGRAM_CHAT_ID not configured")
+            
+            # Test API call
+            import requests
+            url = f"https://api.telegram.org/bot{self.telegram_token}/getMe"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                bot_info = response.json().get('result', {})
+                health_status['platforms']['telegram'] = {
+                    'status': 'healthy',
+                    'bot_username': bot_info.get('username'),
+                    'bot_id': bot_info.get('id'),
+                    'chat_id': chat_id
+                }
+                logger.info(f"✅ Telegram: OK (bot: @{bot_info.get('username')})")
+            else:
+                raise Exception(f"API returned {response.status_code}")
+                
+        except Exception as e:
+            health_status['platforms']['telegram'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_status['overall_status'] = 'degraded'
+            logger.error(f"❌ Telegram: FAILED - {e}")
+        
+        # Check X (Twitter)
+        logger.info("\n𝕏 Checking X (Twitter)...")
+        try:
+            if post_tweet is None:
+                raise ValueError("X helper not installed")
+            
+            # Try to get valid access token
+            token = _get_valid_access_token()
+            
+            if token:
+                health_status['platforms']['x'] = {
+                    'status': 'healthy',
+                    'has_token': True,
+                    'token_preview': f"{token[:10]}..." if len(token) > 10 else "***"
+                }
+                logger.info(f"✅ X (Twitter): OK (token valid)")
+            else:
+                raise Exception("No valid access token")
+                
+        except Exception as e:
+            health_status['platforms']['x'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_status['overall_status'] = 'degraded'
+            logger.error(f"❌ X (Twitter): FAILED - {e}")
+        
+        # Check Instagram
+        logger.info("\n🟣 Checking Instagram...")
+        try:
+            if post_instagram is None:
+                raise ValueError("Instagram helper not installed")
+            
+            access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN')
+            user_id = os.getenv('INSTAGRAM_USER_ID')
+            
+            if not access_token or not user_id:
+                raise ValueError("INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_USER_ID not configured")
+            
+            # Test API call
+            import requests
+            url = f"https://graph.facebook.com/v18.0/{user_id}"
+            params = {'fields': 'username', 'access_token': access_token}
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                user_info = response.json()
+                health_status['platforms']['instagram'] = {
+                    'status': 'healthy',
+                    'username': user_info.get('username'),
+                    'user_id': user_id
+                }
+                logger.info(f"✅ Instagram: OK (user: @{user_info.get('username')})")
+            else:
+                raise Exception(f"API returned {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            health_status['platforms']['instagram'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_status['overall_status'] = 'degraded'
+            logger.error(f"❌ Instagram: FAILED - {e}")
+        
+        # Check Facebook
+        logger.info("\n🔵 Checking Facebook...")
+        try:
+            if post_facebook is None:
+                raise ValueError("Facebook helper not installed")
+            
+            access_token = os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN')
+            page_id = os.getenv('FACEBOOK_PAGE_ID')
+            
+            if not access_token or not page_id:
+                raise ValueError("FACEBOOK_PAGE_ACCESS_TOKEN or FACEBOOK_PAGE_ID not configured")
+            
+            # Test API call
+            import requests
+            url = f"https://graph.facebook.com/v18.0/{page_id}"
+            params = {'fields': 'name,access_token', 'access_token': access_token}
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                page_info = response.json()
+                health_status['platforms']['facebook'] = {
+                    'status': 'healthy',
+                    'page_name': page_info.get('name'),
+                    'page_id': page_id
+                }
+                logger.info(f"✅ Facebook: OK (page: {page_info.get('name')})")
+            else:
+                raise Exception(f"API returned {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            health_status['platforms']['facebook'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_status['overall_status'] = 'degraded'
+            logger.error(f"❌ Facebook: FAILED - {e}")
+        
+        # Check Threads
+        logger.info("\n🧵 Checking Threads...")
+        try:
+            if post_threads is None:
+                raise ValueError("Threads helper not installed")
+            
+            # Threads uses Facebook credentials
+            app_id = os.getenv('FACEBOOK_APP_ID')
+            user_id = os.getenv('INSTAGRAM_USER_ID')
+            access_token = os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN')
+            
+            if not app_id:
+                raise ValueError("FACEBOOK_APP_ID not configured (required for Threads)")
+            if not user_id:
+                raise ValueError("INSTAGRAM_USER_ID not configured (required for Threads)")
+            if not access_token:
+                raise ValueError("FACEBOOK_PAGE_ACCESS_TOKEN not configured (required for Threads)")
+            
+            # Test API call - get user profile
+            import requests
+            url = f"https://graph.threads.net/v1.0/{user_id}"
+            params = {'fields': 'username,threads_profile_picture_url', 'access_token': access_token}
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                user_info = response.json()
+                health_status['platforms']['threads'] = {
+                    'status': 'healthy',
+                    'username': user_info.get('username'),
+                    'user_id': user_id,
+                    'note': 'Uses Facebook credentials'
+                }
+                logger.info(f"✅ Threads: OK (user: @{user_info.get('username')}, using Facebook credentials)")
+            else:
+                raise Exception(f"API returned {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            health_status['platforms']['threads'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_status['overall_status'] = 'degraded'
+            logger.error(f"❌ Threads: FAILED - {e}")
+        
+        # Check Database
+        logger.info("\n🗄️ Checking Database (PostgreSQL)...")
+        try:
+            pg = getattr(self, 'pg', None)
+            if not pg:
+                raise ValueError("Postgres client not available")
+            
+            # Test query
+            conn, pooled = pg._get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM public.articles_ru WHERE status = 'TRANSLATED'")
+                count = cur.fetchone()[0]
+                health_status['platforms']['database'] = {
+                    'status': 'healthy',
+                    'translated_articles': count
+                }
+                logger.info(f"✅ Database: OK ({count} articles ready to publish)")
+            finally:
+                cur.close()
+                pg._put_conn(conn, pooled)
+                
+        except Exception as e:
+            health_status['platforms']['database'] = {
+                'status': 'unhealthy',
+                'error': str(e)
+            }
+            health_status['overall_status'] = 'degraded'
+            logger.error(f"❌ Database: FAILED - {e}")
+        
+        # Summary
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 HEALTH CHECK SUMMARY")
+        logger.info("=" * 60)
+        
+        healthy = sum(1 for p in health_status['platforms'].values() if p['status'] == 'healthy')
+        total = len(health_status['platforms'])
+        
+        logger.info(f"Overall Status: {health_status['overall_status'].upper()}")
+        logger.info(f"Healthy Platforms: {healthy}/{total}")
+        
+        for platform, status in health_status['platforms'].items():
+            status_icon = "✅" if status['status'] == 'healthy' else "❌"
+            logger.info(f"  {status_icon} {platform.capitalize()}: {status['status']}")
+        
+        return health_status
 
     def publish_articles(self) -> Dict:
         """
@@ -383,7 +628,6 @@ class PublisherWorker:
         
         Posts image with caption to Instagram Business/Creator account.
         Uses the same message as Telegram (telegram_final) but converts HTML to plain text.
-        Adds article link at the end (not clickable in Instagram but visible).
         """
         if post_instagram is None:
             return None, 'instagram_helper_not_installed'
@@ -399,8 +643,7 @@ class PublisherWorker:
             caption = self._html_to_plain_text(message)
             
             # Instagram doesn't support clickable links in posts
-            # Add "Link in bio" message
-            caption = f"{caption}\n\n🔗 Link in bio"
+            caption = f"{caption}\n\nПодробности по ссылке в профиле @kepasa.es"
 
             # Post to Instagram
             res = post_instagram(image_url, caption)
@@ -442,6 +685,47 @@ class PublisherWorker:
             return res, None
         except Exception as e:
             logger.warning(f"⚠️ Failed to post to Facebook: {e}")
+            return None, str(e)
+
+    def _post_to_threads(self, message: str, data: dict) -> tuple:
+        """Attempt to post to Threads if configured. Returns (result, error_str).
+        
+        Posts image with text to Threads (Instagram's text-based app).
+        Uses the same format as X (Twitter): description_ru + article link.
+        Simple and clean format without HTML.
+        """
+        if post_threads is None:
+            return None, 'threads_helper_not_installed'
+
+        try:
+            # Extract data
+            image_url = data.get('image_url') or data.get('image')
+            if not image_url:
+                logger.warning(f"⚠️ No image_url for Threads post")
+                return None, 'no_image_url'
+
+            # Use same format as X (Twitter): description + link
+            description = data.get('description_ru') or data.get('content_ru') or ''
+            slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
+            
+            # Build URL
+            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            
+            # Format: Description\n\n<URL> (same as X)
+            parts = []
+            if description:
+                parts.append(description)
+            if article_url:
+                parts.append(article_url)
+            
+            post_text = '\n\n'.join([p for p in parts if p])
+
+            # Post to Threads
+            res = post_threads(image_url, post_text)
+            logger.info(f"🧵 Threads post successful: {res.get('id')}")
+            return res, None
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to post to Threads: {e}")
             return None, str(e)
 
     def publish_articles_from_articles_ru(self, max_to_publish: int | None = None) -> Dict:
@@ -583,6 +867,15 @@ class PublisherWorker:
                 except Exception as e:
                     logger.warning(f"⚠️ Unexpected error while posting to Facebook: {e}")
 
+                # Attempt to post to Threads if enabled
+                try:
+                    threads_res, threads_err = self._post_to_threads(message, data)
+                    logger.debug(f"Threads post attempt result: res={threads_res} err={threads_err}")
+                    if threads_err:
+                        logger.info(f"ℹ️ Threads post skipped/failed for {article_id}: {threads_err}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Unexpected error while posting to Threads: {e}")
+
                 if sent_message:
                     results['published'] += 1
                     logger.info(f"✅ Published article {article_id} to Telegram")
@@ -598,6 +891,8 @@ class PublisherWorker:
 
 def main():
     """Entry point for worker execution"""
+    import argparse
+    
     # Configure logging (verbose for debugging X posts)
     logging.basicConfig(
         level=logging.DEBUG,
@@ -606,32 +901,48 @@ def main():
     )
     logger = logging.getLogger('workers.publisher')
 
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Publisher Worker - Telegram Publication Handler')
+    parser.add_argument('--health-check', action='store_true', 
+                       help='Run health check on all integrations instead of publishing')
+    args = parser.parse_args()
+
     logger.info("=" * 60)
-    logger.info("📢 Publisher Worker - Telegram Publication Handler")
+    if args.health_check:
+        logger.info("🏥 Publisher Worker - Health Check Mode")
+    else:
+        logger.info("📢 Publisher Worker - Telegram Publication Handler")
     logger.info("=" * 60)
     
     try:
         config = PublisherConfig.from_env()
-
-        # Use configuration from environment (no CLI or new env overrides)
         worker = PublisherWorker(config)
-        result = worker.publish_articles()
         
-
-        logger.info("\n" + "=" * 60)
-        logger.info("📊 RESULTS")
-        logger.info("=" * 60)
-        logger.info(f"Status: {result['status']}")
-        logger.info(f"Published: {result.get('published', 0)}")
-        logger.info(f"Total checked: {result.get('total_checked', 0)}")
-        
-        if result.get('errors'):
-            logger.info(f"\nErrors ({len(result['errors'])}):")
-            for error in result['errors'][:5]:
-                logger.info(f"  • {error}")
-        
-        exit_code = 0 if result['status'] == 'success' else 1
-        sys.exit(exit_code)
+        if args.health_check:
+            # Run health check instead of publishing
+            result = worker.check_integrations_health()
+            
+            # Exit with error code if any platform is unhealthy
+            exit_code = 0 if result['overall_status'] == 'healthy' else 1
+            sys.exit(exit_code)
+        else:
+            # Normal publication flow
+            result = worker.publish_articles()
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("📊 RESULTS")
+            logger.info("=" * 60)
+            logger.info(f"Status: {result['status']}")
+            logger.info(f"Published: {result.get('published', 0)}")
+            logger.info(f"Total checked: {result.get('total_checked', 0)}")
+            
+            if result.get('errors'):
+                logger.info(f"\nErrors ({len(result['errors'])}):")
+                for error in result['errors'][:5]:
+                    logger.info(f"  • {error}")
+            
+            exit_code = 0 if result['status'] == 'success' else 1
+            sys.exit(exit_code)
         
     except KeyboardInterrupt:
         logger.info("\n⚠️  Interrupted by user")

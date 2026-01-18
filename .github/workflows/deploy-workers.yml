@@ -78,7 +78,7 @@ jobs:
           INSTAGRAM_SHORT_TOKEN=${{ secrets.INSTAGRAM_SHORT_TOKEN || '' }}
           INSTAGRAM_APP_SECRET=${{ secrets.INSTAGRAM_APP_SECRET || '' }}
 
-          # Facebook API credentials
+          # Facebook API credentials (also used for Threads - same Meta ecosystem)
           FACEBOOK_APP_ID=${{ secrets.FACEBOOK_APP_ID || '' }}
           FACEBOOK_APP_SECRET=${{ secrets.FACEBOOK_APP_SECRET || '' }}
           FACEBOOK_PAGE_ID=${{ secrets.FACEBOOK_PAGE_ID || '' }}
