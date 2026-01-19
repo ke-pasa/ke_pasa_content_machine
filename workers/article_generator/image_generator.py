@@ -256,9 +256,9 @@ ARTICLE:
             top = (height - new_height) // 2
             img = img.crop((0, top, width, top + new_height))
         
-        # Resize to standard 16:9 resolution (1792x1008 for high quality)
-        img = img.resize((1792, 1008), Image.Resampling.LANCZOS)
-        self.logger.info(f'Cropped/resized image to 16:9 (1792x1008)')
+        # Resize to standard 16:9 resolution (1280x720 for optimal file size ~80-100kb)
+        img = img.resize((1280, 720), Image.Resampling.LANCZOS)
+        self.logger.info(f'Cropped/resized image to 16:9 (1280x720)')
         return img
     
     def _download_and_save_image(self, image_url: str, doc_id: str) -> Optional[str]:
@@ -294,10 +294,10 @@ ARTICLE:
             # Crop/resize to 16:9 aspect ratio
             img = self._crop_to_16_9(img)
             
-            # Save as JPEG
+            # Save as JPEG with optimized quality for ~80-100kb file size
             filename = f"{doc_id}.jpg"
             file_path = self.images_dir / filename
-            img.save(file_path, 'JPEG', quality=90, optimize=True)
+            img.save(file_path, 'JPEG', quality=75, optimize=True)
             
             # Return relative path from project root
             relative_path = f"public/images/news/{filename}"
