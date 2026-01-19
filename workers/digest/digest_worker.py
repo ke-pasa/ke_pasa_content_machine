@@ -19,9 +19,7 @@ import uuid
 root_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(root_dir))
 
-from workers.tools.telegram_helper import send_message, send_photo
-from workers.tools.facebook_helper import post_facebook
-from workers.article_generator.image_generator import ImageGenerator
+# Publishing is handled by individual digest scripts
 
 # Configuration (local to package)
 CONFIG_FILE = Path(__file__).parent / "digest_config.json"
@@ -36,18 +34,7 @@ logger = logging.getLogger("workers.digest")
 
 class DigestWorker:
     def __init__(self):
-        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not self.telegram_token:
-            logger.warning("⚠️ TELEGRAM_BOT_TOKEN not set")
-            
-        # Initialize image generator for digest cover images
-        try:
-            self.image_gen = ImageGenerator(model="dall-e-3")
-            logger.info('Image generator initialized for digest covers')
-        except Exception as e:
-            logger.warning(f'Failed to initialize image generator: {e}')
-            self.image_gen = None
-            
+        self.dry_run = False
     def load_config(self):
         try:
             if CONFIG_FILE.exists():
@@ -73,450 +60,31 @@ class DigestWorker:
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
-    def execute_digest(self, script_module: str) -> str:
-        """Dynamically imports module and calls generate_digest()"""
+    def execute_job(self, job: dict):
+        """Import digest module and delegate full execution to it.
+
+        Prefers calling `run_job(job)` or `run(job)`. Falls back to `generate_digest()` for legacy scripts.
+        """
+        script_module = job.get('script_module')
         try:
             logger.debug(f"Importing digest module {script_module}")
             module = importlib.import_module(script_module)
             importlib.reload(module)
+            if hasattr(module, 'run_job'):
+                logger.info("Delegating to module.run_job(job)")
+                return module.run_job(job)
+            if hasattr(module, 'run'):
+                logger.info("Delegating to module.run(job)")
+                return module.run(job)
             if hasattr(module, 'generate_digest'):
-                try:
-                    return module.generate_digest()
-                except Exception as e:
-                    logger.error(f"Error while running generate_digest(): {e}")
-                    raise
-            else:
-                logger.error(f"Module {script_module} has no generate_digest function")
+                logger.info("Legacy module: calling generate_digest(); module must handle publishing itself.")
+                return module.generate_digest()
+            logger.error(f"Module {script_module} has no run_job/run/generate_digest entrypoints")
         except Exception:
             import traceback
             traceback.print_exc()
-            logger.exception(f"Error executing script {script_module}")
+            logger.exception(f"Error executing module {script_module}")
         return None
-
-    def _markdown_to_telegram_html(self, text: str) -> str:
-        if not text:
-            return ""
-        import re
-        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        text = re.sub(r'^#+\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
-        text = re.sub(r'^\s*\*\s+(.+)$', r'• \1', text, flags=re.MULTILINE)
-        return text
-
-    def _html_to_plain_text(self, html: str) -> str:
-        """Конвертирует HTML в обычный текст для Facebook."""
-        if not html:
-            return ""
-        import re
-        # Убираем HTML теги
-        text = re.sub(r'<b>(.*?)</b>', r'\1', html)
-        text = re.sub(r'<i>(.*?)</i>', r'\1', text)
-        text = re.sub(r'<a href="(.*?)">(.*?)</a>', r'\2', text)
-        text = re.sub(r'<.*?>', '', text)
-        # Убираем HTML entities
-        text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
-        return text.strip()
-    
-    def _generate_digest_image(self, content: str, job_id: str) -> str:
-        """Generates a cover image for the digest.
-        
-        Args:
-            content: Digest text content for context
-            job_id: Job ID for unique filename
-            
-        Returns:
-            Image URL or None if generation failed
-        """
-        if not self.image_gen:
-            logger.warning('Image generator not available')
-            return None
-            
-        try:
-            # Extract first few lines for context
-            first_lines = '\n'.join(content.split('\n')[:5])
-            
-            # Create styled prompt for digest cover
-            from workers.tools.openai_client import get_openai_client
-            client = get_openai_client()
-            if not client:
-                logger.warning('OpenAI client not available for prompt generation')
-                # Use simple fallback
-                image_prompt = f"clean minimal comic-style illustration, Que Pasa brand vibe, Spanish news digest theme, colorful but professional"
-            else:
-                # Generate contextual prompt
-                system_prompt = """You create image prompts for news digest covers. Your goal is a high-end, minimalist editorial illustration in the style of The New Yorker or Meduza.
-
-Create a 1-sentence visual prompt for DALL-E 3. 
-
-STYLE RULES:
-- Minimalist vector-style editorial illustration.
-- Clean lines, limited sophisticated color palette (e.g., muted blue, deep ochre, slate grey).
-- Conceptual and metaphor-driven imagery related to Spanish news (infrastructure, heat, bureaucracy, or Mediterranean landscape).
-- No text, no logos, no complex crowd scenes.
-- Composition: bold, central focus, lots of negative space.
-
-Return ONLY the image prompt in English."""
-                
-                try:
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Digest preview:\n{first_lines}\n\nGenerate image prompt:"}
-                        ],
-                        max_tokens=100,
-                        temperature=0.7
-                    )
-                    base_prompt = response.choices[0].message.content.strip()
-                    # Use prompt as-is since style rules are in system prompt
-                    image_prompt = base_prompt
-                except Exception as e:
-                    logger.warning(f'Failed to generate AI prompt: {e}')
-                    image_prompt = "minimalist vector-style editorial illustration, Spanish news digest theme, clean lines, muted blue and ochre palette, central focus, negative space, The New Yorker style"
-            
-            logger.info(f'Generating digest cover image with prompt: {image_prompt[:100]}...')
-            
-            # Generate using Azure DALL-E 3
-            if self.image_gen.use_azure:
-                image_url = self.image_gen._generate_with_azure_dalle(image_prompt)
-            else:
-                response = self.image_gen.client.images.generate(
-                    model="dall-e-3",
-                    prompt=image_prompt,
-                    size="1024x1024",
-                    quality="standard",
-                    n=1
-                )
-                if response.data and len(response.data) > 0:
-                    image_url = response.data[0].url
-                else:
-                    logger.warning('No image generated')
-                    return None
-            
-            if not image_url:
-                return None
-                
-            # Download and save locally
-            doc_id = f"digest_{job_id}_{int(time.time())}"
-            local_path = self.image_gen._download_and_save_image(image_url, doc_id)
-            
-            if local_path:
-                # _download_and_save_image returns a relative path like 'public/images/news/<file>.jpg'
-                # Prefer returning the local filesystem path for upload when publishing via Telegram.
-                try:
-                    project_root = Path(__file__).resolve().parent.parent.parent
-                    fs_path = project_root / local_path
-                    if fs_path.exists():
-                        logger.info(f'✅ Digest cover image generated (saved locally): {fs_path}')
-                        return str(fs_path)
-                except Exception:
-                    pass
-                web_url = f"https://ke-pasa.es/images/news/{doc_id}.jpg"
-                logger.info(f'✅ Digest cover image generated: {web_url}')
-                return web_url
-            else:
-                logger.warning('Failed to save digest image')
-                return image_url  # Return original URL as fallback
-                
-        except Exception as e:
-            logger.exception(f'Failed to generate digest image: {e}')
-            return None
-
-    def _post_to_facebook(self, content: str, image_url: str = None):
-        """Публикует дайджест в Facebook."""
-        try:
-            html_content = self._markdown_to_telegram_html(content)
-            plain_text = self._html_to_plain_text(html_content)
-            
-            logger.info("Posting digest to Facebook...")
-            result = post_facebook(
-                message=plain_text,
-                image_url=image_url
-            )
-            
-            if result and result.get('id'):
-                logger.info(f"✅ Posted digest to Facebook: {result.get('id')}")
-                return result
-            else:
-                logger.error(f"❌ Facebook post failed: {result}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Error posting to Facebook: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def _maybe_save_translation(self, job: dict, content: str):
-        """If job or env enables saving translations, write content to a file.
-
-        Saves into SAVE_TRANSLATIONS_DIR if set, otherwise into workers/digest/translations.
-        Ensures a .gitignore exists in the translations folder so files are not accidentally committed.
-        Returns path string or None.
-        """
-        if not content:
-            return None
-
-        save_flag = False
-        try:
-            save_flag = bool(job.get('save_translations', False))
-        except Exception:
-            save_flag = False
-
-        if not save_flag:
-            save_flag = os.getenv('SAVE_TRANSLATIONS', 'false').lower() in ('1', 'true', 'yes')
-        if not save_flag:
-            return None
-
-        out_dir = os.getenv('SAVE_TRANSLATIONS_DIR')
-        if out_dir:
-            out_path = Path(out_dir)
-        else:
-            out_path = Path(__file__).parent / 'translations'
-
-        try:
-            out_path.mkdir(parents=True, exist_ok=True)
-            # create a .gitignore so translations are not committed
-            gi = out_path / '.gitignore'
-            try:
-                if not gi.exists():
-                    gi.write_text("*\n!.gitignore\n", encoding='utf-8')
-            except Exception:
-                logger.debug('Could not write .gitignore in translations folder')
-
-            job_id = job.get('id', 'unknown')
-            ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-            uid = uuid.uuid4().hex[:8]
-            filename = out_path / f"{job_id}_{ts}_{uid}.md"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(content)
-            logger.info(f"💾 Saved translation for job '{job_id}' -> {filename}")
-            return str(filename)
-        except Exception as e:
-            logger.error(f"Failed to save translation file: {e}")
-            return None
-
-    def publish_content(self, content: str, channels: list, job_id: str = 'unknown'):
-        if not content:
-            logger.warning("No content generated to publish")
-            return {}
-
-        # Generate cover image for digest
-        image_url = self._generate_digest_image(content, job_id)
-        if image_url:
-            logger.info(f'🖼️ Using digest cover image: {image_url}')
-        else:
-            logger.warning('⚠️ No digest cover image generated')
-
-        html_content = self._markdown_to_telegram_html(content)
-        results = {}
-        
-        # Публикуем в Telegram
-        for channel in channels:
-            try:
-                logger.info(f"Sending digest to {channel}...")
-                if image_url:
-                    # Send with photo
-                    res = send_photo(
-                        chat_id=channel,
-                        photo_url=image_url,
-                        caption=html_content,
-                        token=self.telegram_token,
-                        parse_mode='HTML'
-                    )
-                    logger.info(f"✅ Sent digest with image to {channel}")
-                else:
-                    # Send text only
-                    res = send_message(channel, html_content, token=self.telegram_token, parse_mode='HTML')
-                    logger.info(f"✅ Sent text-only digest to {channel}")
-                results[channel] = res
-            except Exception as e:
-                results[channel] = None
-                logger.error(f"❌ Failed to send to {channel}: {e}")
-        
-        # Публикуем в Facebook с изображением
-        fb_result = self._post_to_facebook(content, image_url=image_url)
-        results['facebook'] = fb_result
-        
-        return results
-
-    def republish_content(self, content: str, republish_channels: list, original_results: dict = None):
-        """Republish content as a user using Telethon to the provided channels.
-
-        Requires TELETHON_API_ID and TELETHON_API_HASH env vars and a valid
-        Telethon session file (or an already-authorized session name).
-        """
-        if not republish_channels:
-            return
-
-        api_id = os.getenv('TELETHON_API_ID')
-        api_hash = os.getenv('TELETHON_API_HASH')
-        session_name = os.getenv('TELETHON_SESSION', 'republish_session')
-
-        if not api_id or not api_hash:
-            logger.warning("Telethon credentials not set; skipping republish")
-            return
-
-        if TelegramClient is None:
-            logger.error("Telethon not installed; cannot republish")
-            return
-
-        try:
-            api_id_int = int(api_id)
-        except Exception:
-            logger.error("Invalid TELETHON_API_ID")
-            return
-
-        # If we have original send results, try to pick a source message to forward
-        source_msg = None
-        source_chat = None
-        if original_results:
-            for ch, res in (original_results or {}).items():
-                if not res:
-                    continue
-                # extract message id and chat id robustly
-                try:
-                    msg_id = res.get('message_id') or (res.get('message') or {}).get('message_id')
-                except Exception:
-                    msg_id = None
-                try:
-                    chat_info = res.get('chat') or res.get('sender_chat') or {}
-                    chat_id = chat_info.get('id') if isinstance(chat_info, dict) else None
-                    # fallback: if chat id not present, use channel username if available
-                    if not chat_id:
-                        chat_id = chat_info.get('username') if isinstance(chat_info, dict) else None
-                except Exception:
-                    chat_id = None
-
-                if msg_id and chat_id:
-                    source_msg = int(msg_id)
-                    source_chat = chat_id
-                    break
-
-        if not source_msg or not source_chat:
-            logger.warning("No source message available to forward; skipping republish")
-            return
-
-        try:
-            import asyncio
-
-            async def _forward_async():
-                async with TelegramClient(session_name, api_id_int, api_hash) as client:
-                    try:
-                        authorized = await client.is_user_authorized()
-                        if not authorized:
-                            logger.warning("Telethon client not authorized; skipping republish")
-                            return
-
-                        # Build list of target groups from the user's dialogs (exclude source and specific exceptions)
-                        exclude_usernames = set()
-                        # normalize source_chat to username if possible (could be id or username)
-                        if isinstance(source_chat, str) and source_chat.startswith('@'):
-                            exclude_usernames.add(source_chat.lstrip('@'))
-                        elif isinstance(source_chat, str):
-                            exclude_usernames.add(source_chat)
-
-                        # Always exclude the main channel used for publishing (spain_kepasa)
-                        exclude_usernames.add('spain_kepasa')
-
-                        logger.info(f"Scanning user dialogs to find groups (excluding: {exclude_usernames})...")
-                        targets = []  # Groups where forward is possible
-                        send_only_targets = []  # Groups where only send_message is possible
-                        
-                        async for dialog in client.iter_dialogs():
-                            ent = dialog.entity
-                            uname = getattr(ent, 'username', None)
-                            is_group = False
-                            if isinstance(ent, Channel):
-                                is_group = not getattr(ent, 'broadcast', False)
-                            elif isinstance(ent, Chat):
-                                is_group = True
-
-                            if not is_group:
-                                continue
-
-                            # Skip excluded usernames
-                            if uname and uname in exclude_usernames:
-                                logger.debug(f"Skipping excluded group: @{uname}")
-                                continue
-
-                            # Check if we can forward or only send messages
-                            can_send = True
-                            can_forward = True
-                            
-                            if isinstance(ent, Channel):
-                                banned_rights = getattr(ent, 'banned_rights', None)
-                                if banned_rights:
-                                    # banned_rights.send_messages == True means CANNOT send messages
-                                    send_messages_banned = getattr(banned_rights, 'send_messages', False)
-                                    if send_messages_banned:
-                                        # Can't send regular messages, but we'll still try (might work for forwards)
-                                        can_send = False
-                                        can_forward = True  # We'll try forwarding anyway
-                                        logger.debug(f"Group {uname or ent.id}: send_messages=true (banned), will try forward")
-
-                            # Prefer username (with @) for target, else use id
-                            target_id = f"@{uname}" if uname else ent.id
-                            
-                            # Add to appropriate list
-                            if can_send:
-                                targets.append(target_id)  # Normal groups - try forward
-                            else:
-                                send_only_targets.append(target_id)  # Restricted - try forward, fallback to send
-
-                        logger.info(f"Found {len(targets)} groups for normal forward and {len(send_only_targets)} restricted groups to try")
-
-                        # Get the original message text in case we need to copy it
-                        original_message = None
-                        try:
-                            original_message = await client.get_messages(source_chat, ids=source_msg)
-                        except Exception as e:
-                            logger.warning(f"Could not fetch original message: {e}")
-
-                        # Perform forwards for groups where it's normally allowed
-                        for target in targets:
-                            try:
-                                logger.info(f"Forwarding message {source_msg} from {source_chat} to {target} as user...")
-                                await client.forward_messages(target, source_msg, source_chat)
-                                logger.info(f"✅ Forwarded to {target}")
-                            except Exception as forward_error:
-                                logger.error(f"Failed to forward to {target}: {forward_error}")
-                                
-                                # Try to send as regular message if forward failed
-                                if original_message and original_message.text:
-                                    try:
-                                        logger.info(f"Attempting to send as regular message to {target}...")
-                                        await client.send_message(target, original_message.text, link_preview=False)
-                                        logger.info(f"✅ Sent as regular message to {target}")
-                                    except Exception as send_error:
-                                        logger.error(f"Failed to send regular message to {target}: {send_error}")
-                        
-                        # Try forwarding to restricted groups (where send_messages is banned)
-                        # Sometimes forward works even when regular messages don't
-                        if send_only_targets:
-                            for target in send_only_targets:
-                                try:
-                                    logger.info(f"Trying forward to restricted group {target}...")
-                                    await client.forward_messages(target, source_msg, source_chat)
-                                    logger.info(f"✅ Forwarded to restricted group {target}")
-                                except Exception as forward_error:
-                                    logger.warning(f"Forward to restricted group {target} failed: {forward_error}")
-                                    
-                                    # Try sending as regular message anyway
-                                    if original_message and original_message.text:
-                                        try:
-                                            logger.info(f"Attempting to send message to restricted group {target}...")
-                                            await client.send_message(target, original_message.text, link_preview=False)
-                                            logger.info(f"✅ Sent message to restricted group {target}")
-                                        except Exception as send_error:
-                                            logger.error(f"Cannot send to restricted group {target}: {send_error}")
-                    except Exception as e:
-                        logger.error(f"Telethon forward error: {e}")
-
-            asyncio.run(_forward_async())
-        except Exception as e:
-            logger.error(f"Telethon error: {e}")
 
     def run_immediate(self, job_id, target_channel=None):
         logger.info(f"🚀 Manual run for job: {job_id}")
@@ -526,24 +94,12 @@ Return ONLY the image prompt in English."""
         if not job:
             logger.error(f"Job {job_id} not found in config")
             return
-        # Run the job: generate, publish, and optionally republish
-        content = self.execute_digest(job['script_module'])
-        if content:
-            # Save translation/content if enabled (safe, with .gitignore)
-            try:
-                self._maybe_save_translation(job, content)
-            except Exception:
-                logger.debug('Failed to save translation in run_immediate')
-            channels = [target_channel] if target_channel else job.get('channels', [])
-            publish_results = self.publish_content(content, channels, job_id=job_id)
-            # Republish as user if configured
-            repub = job.get('republish', [])
-            if repub:
-                # Convert Markdown to HTML for Telethon and forward original message
-                html_content = self._markdown_to_telegram_html(content)
-                self.republish_content(html_content, repub, original_results=publish_results)
-        else:
-            logger.error("Failed to generate content")
+        # Inject dry-run flag and delegate to the digest module
+        try:
+            job['dry_run'] = bool(self.dry_run)
+        except Exception:
+            pass
+        self.execute_job(job)
 
     def run_daemon(self):
         logger.info("🕒 Starting Digest Worker Daemon")
@@ -575,24 +131,16 @@ Return ONLY the image prompt in English."""
                                 
                         if not already_run:
                             logger.info(f"  ▶️  Executing '{job_id}'...")
-                            content = self.execute_digest(job['script_module'])
-                            if content:
-                                # Save translation/content if enabled for scheduled runs
-                                try:
-                                    self._maybe_save_translation(job, content)
-                                except Exception:
-                                    logger.debug('Failed to save translation in scheduled run')
-
-                                publish_results = self.publish_content(content, job['channels'], job_id=job['id'])
-                                # Republish to additional channels as user if requested
-                                repub = job.get('republish', [])
-                                if repub:
-                                    html_content = self._markdown_to_telegram_html(content)
-                                    self.republish_content(html_content, repub, original_results=publish_results)
-                                if job_id not in state: state[job_id] = {}
-                                state[job_id]['last_run_iso'] = now_utc.isoformat()
-                                self.save_state(state)
-                                logger.info(f"  ✅ Completed '{job_id}'")
+                            # Inject dry-run flag and delegate full job execution to the digest module
+                            try:
+                                job['dry_run'] = bool(self.dry_run)
+                            except Exception:
+                                pass
+                            self.execute_job(job)
+                            if job_id not in state: state[job_id] = {}
+                            state[job_id]['last_run_iso'] = now_utc.isoformat()
+                            self.save_state(state)
+                            logger.info(f"  ✅ Completed '{job_id}'")
                     else:
                         iter_cron = croniter(cron_expr, now_utc)
                         next_run = iter_cron.get_next(datetime)
@@ -609,10 +157,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Digest Worker")
     parser.add_argument("--run-now", help="ID of job to run immediately")
     parser.add_argument("--target-channel", help="Override target channel for immediate run")
+    parser.add_argument("--dry-run", action="store_true", help="Generate content only; skip publish/republish")
     
     args = parser.parse_args()
     
     worker = DigestWorker()
+    worker.dry_run = bool(args.dry_run)
     
     if args.run_now:
         worker.run_immediate(args.run_now, args.target_channel)
