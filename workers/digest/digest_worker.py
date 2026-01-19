@@ -146,12 +146,18 @@ class DigestWorker:
                 image_prompt = f"clean minimal comic-style illustration, Que Pasa brand vibe, Spanish news digest theme, colorful but professional"
             else:
                 # Generate contextual prompt
-                system_prompt = """You create image prompts for news digest covers.
-                
-Create a 1-sentence visual prompt for DALL-E that captures the digest theme.
-The style MUST be: clean minimal comic-style illustration, Que Pasa brand vibe.
-Focus on visual elements that represent Spanish news/culture.
-Return ONLY the image prompt."""
+                system_prompt = """You create image prompts for news digest covers. Your goal is a high-end, minimalist editorial illustration in the style of The New Yorker or Meduza.
+
+Create a 1-sentence visual prompt for DALL-E 3. 
+
+STYLE RULES:
+- Minimalist vector-style editorial illustration.
+- Clean lines, limited sophisticated color palette (e.g., muted blue, deep ochre, slate grey).
+- Conceptual and metaphor-driven imagery related to Spanish news (infrastructure, heat, bureaucracy, or Mediterranean landscape).
+- No text, no logos, no complex crowd scenes.
+- Composition: bold, central focus, lots of negative space.
+
+Return ONLY the image prompt in English."""
                 
                 try:
                     response = client.chat.completions.create(
@@ -164,14 +170,11 @@ Return ONLY the image prompt."""
                         temperature=0.7
                     )
                     base_prompt = response.choices[0].message.content.strip()
-                    # Ensure style is included
-                    if "clean minimal comic-style" not in base_prompt.lower():
-                        image_prompt = f"{base_prompt}, clean minimal comic-style illustration, Que Pasa brand vibe"
-                    else:
-                        image_prompt = base_prompt
+                    # Use prompt as-is since style rules are in system prompt
+                    image_prompt = base_prompt
                 except Exception as e:
                     logger.warning(f'Failed to generate AI prompt: {e}')
-                    image_prompt = f"clean minimal comic-style illustration, Que Pasa brand vibe, Spanish news digest theme"
+                    image_prompt = "minimalist vector-style editorial illustration, Spanish news digest theme, clean lines, muted blue and ochre palette, central focus, negative space, The New Yorker style"
             
             logger.info(f'Generating digest cover image with prompt: {image_prompt[:100]}...')
             
