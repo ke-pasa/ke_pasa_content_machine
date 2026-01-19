@@ -185,7 +185,7 @@ Return ONLY the image prompt in English."""
                 response = self.image_gen.client.images.generate(
                     model="dall-e-3",
                     prompt=image_prompt,
-                    size="1792x1024",
+                    size="1024x1024",
                     quality="standard",
                     n=1
                 )
