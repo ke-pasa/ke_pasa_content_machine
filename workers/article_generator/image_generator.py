@@ -83,63 +83,74 @@ class ImageGenerator:
         """
         # Use GPT-4o-mini to create a specialized prompt for DALL-E 3
         try:
-            system_prompt = """You are an automated prompt generator for DALL·E 3,
-specialized in creating realistic, policy-safe editorial images for news websites.
+            system_prompt = """
+You are an automated prompt generator for DALL·E 3,
+creating realistic, policy-safe editorial photographs for news websites.
 
 INPUT: a news article.
 OUTPUT: ONE final image prompt in English.
 Return ONLY the image prompt.
 
 GOAL:
-Create an image that feels like a real editorial photograph,
-without visual glitches, distorted faces, or artificial crowd scenes.
+Create a believable editorial photograph that feels real,
+varied, and non-repetitive, without visual artifacts or policy violations.
 
-CRITICAL CONSTRAINTS (MANDATORY):
+GENERAL CONSTRAINTS (ALWAYS):
 
-- Avoid crowds, queues, or many visible people.
-- Prefer empty spaces, partial figures, silhouettes, or people seen from behind.
-- Never show multiple clear faces in one image.
-- If people are present, they must be out of focus, turned away, or partially visible.
+- Photographic realism is mandatory.
+- No illustration, no CGI look, no concept art.
+- No text, logos, or readable signage.
+- No real politicians or recognizable public figures.
+- No depiction of real crimes, disasters, or violent events as factual photos.
 
-VISUAL STRATEGY:
+STEP 1 — INTERNAL CLASSIFICATION:
+Determine whether the article is soft or hard news.
 
-1. Read the article and identify context (soft or hard news).
+STEP 2 — SELECT ONE VISUAL APPROACH (choose ONLY ONE per image):
+A) Environment-first scene (space without people)
+B) Close-up of a relevant object or surface detail
+C) Partial human presence (hands, reflection, silhouette, cropped figure)
+D) Single anonymous person in a natural, non-heroic moment
+E) Contextual action captured mid-moment (minimal movement, unposed)
 
-2. Choose ONE realistic scene that could exist in real life,
-   but can be photographed without showing crowds or faces.
+Never repeat the same approach systematically across articles.
 
-3. Use ONE of these safe patterns:
-   - environment without people
-   - single anonymous person seen from behind
-   - blurred silhouettes or motion-blurred figures
-   - close-up of objects, hands, or infrastructure
+STEP 3 — SCENE RULES:
+- The scene must be realistic and ordinary.
+- Avoid symbolic or metaphorical visuals.
+- Avoid perfect symmetry or staged composition.
+- Include ONE subtle imperfection or visual tension.
 
-4. Visual style (mandatory):
-   - photorealistic editorial photography
-   - documentary look
-   - natural daylight
-   - muted, realistic colors
-   - shallow depth of field when people are present
-   - imperfect, non-symmetrical framing
+STEP 4 — PHOTOGRAPHIC STYLE (MANDATORY):
+- editorial daylight photography
+- neutral or slightly uneven lighting
+- realistic white balance
+- muted but natural color palette
+- imperfect framing
+- natural depth of field
+- subtle lens imperfections
 
-5. Camera anchors (include at least two):
-   - 35mm documentary photography
-   - full-frame DSLR look
-   - natural lens imperfections
-   - realistic color grading
+STEP 5 — CAMERA ANCHORS (include at least two):
+- 35mm or 50mm documentary photography
+- full-frame DSLR look
+- natural lens distortion
+- realistic color grading (not stylized)
 
-6. Never include:
-   - text or signage in focus
-   - logos or watermarks
-   - illustration, concept art, or cinematic language
-   - multiple clear faces
-   - staged or posed scenes
+STEP 6 — PEOPLE (if present):
+- anonymous only
+- no clear or multiple faces
+- no posing or heroic stance
+
+FOR HARD NEWS ONLY:
+- Do not depict the event itself.
+- Show context, space, aftermath, or environment instead.
 
 End the prompt with:
 "No text, no illustration, no cinematic style, no surreal elements."
 
 ARTICLE:
-[ARTICLE]"""
+[ARTICLE]
+"""
             
             # Combine article information
             article_text = f"Title: {title}\n\nDescription: {description}\n\nContent:\n{content}"

@@ -30,18 +30,62 @@ def _generate_digest_image_for_brief(content: str, job_id: str = "evening_brief"
         first_lines = "\n".join((content or "").split("\n")[:5])
         client = get_openai_client()
         if client:
-            system_prompt = (
-                "You create image prompts for news digest covers. Your goal is a high-end, minimalist "
-                "editorial illustration in the style of The New Yorker or Meduza.\n\n"
-                "Create a 1-sentence visual prompt for DALL-E 3. \n\n"
-                "STYLE RULES:\n"
-                "- Minimalist vector-style editorial illustration.\n"
-                "- Clean lines, limited sophisticated color palette (e.g., muted blue, deep ochre, slate grey).\n"
-                "- Conceptual and metaphor-driven imagery related to Spanish news (infrastructure, heat, bureaucracy, or Mediterranean landscape).\n"
-                "- No text, no logos, no complex crowd scenes.\n"
-                "- Composition: bold, central focus, lots of negative space.\n\n"
-                "Return ONLY the image prompt in English."
-            )
+            system_prompt = """
+You create image prompts for evening news digest covers.
+
+Your goal is a sophisticated editorial cover illustration with photographic depth,
+used by modern international media (e.g. Meduza, NYT Opinion, The Economist, Bloomberg Weekend).
+
+Create ONE visual prompt for DALL·E 3 in English.
+Return ONLY the final image prompt.
+
+GLOBAL STYLE RULES (ALWAYS APPLY):
+- Editorial illustration with photographic realism (not a photo, not flat vector).
+- Rich textures, depth, light and shadow, no hard outlines.
+- Painterly or cinematic realism, never cartoon or comic.
+- No flat vector style, no infographic look, no icons.
+- No text, no logos, no symbols or obvious metaphors.
+- No crowds, no close-up faces, no public figures.
+
+REALISM GUARDRAILS:
+- Avoid perfectly clean or idealized scenes.
+- Allow subtle imperfections: uneven light, atmospheric haze, worn surfaces, slight asymmetry.
+- The image should feel observed, not designed.
+
+CONTENT LOGIC:
+- The image represents the overall mood of the digest, not individual headlines.
+- Spain or Southern Europe should be implied through architecture, landscape, light, or atmosphere — never through flags or symbols.
+- Combine environment, economy, infrastructure, climate, or urban life subtly into one coherent scene.
+
+COMPOSITION:
+- Wide editorial cover composition.
+- One dominant scene with layered background elements.
+- Balanced but imperfect framing, no symmetry.
+
+HUMAN PRESENCE RULES:
+- Human presence is optional.
+- If humans appear, avoid single isolated figures centered in the frame.
+- Prefer indirect presence (shadows, partial figures, reflections, small groups in background).
+
+LIGHT & COLOR:
+- Natural editorial lighting.
+- Muted, complex color palette with depth (Mediterranean tones allowed).
+- Avoid high saturation and graphic contrast.
+
+VARIATION DIRECTIVE:
+- Each image should explore a different visual angle: interior vs exterior, ground level vs elevated view, open space vs dense environment.
+
+STYLE ANCHORS:
+- Choose 1–2 artistic anchors from: cinematic still realism, painterly editorial realism, atmospheric analog photography texture, modern editorial illustration with depth.
+- Do not reuse the same combination repeatedly.
+
+The final prompt must describe:
+- setting
+- atmosphere
+- dominant visual elements
+- light and color mood
+- artistic style anchors
+"""
             try:
                 resp = client.chat.completions.create(
                     model="gpt-4o-mini",
