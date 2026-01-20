@@ -569,6 +569,96 @@ class ArticleGenerator:
 
         import re as _re
         md = publish_md
+        
+        # ===== ГЕНЕРАЦИЯ ДОПОЛНИТЕЛЬНЫХ КАРТИНОК =====
+        additional_images = []
+        if self.image_generator:
+            try:
+                # Парсим контент без frontmatter для подсчета абзацев
+                content_without_fm = _re.sub(r'^---\n.*?\n---\n', '', md, flags=_re.DOTALL)
+                paragraphs = [p.strip() for p in content_without_fm.split('\n\n') if p.strip() and not p.strip().startswith('#')]
+                
+                # Определяем сколько нужно дополнительных картинок
+                images_needed = 0
+                if len(paragraphs) >= 3:
+                    images_needed = 1  # После 2-го абзаца
+                if len(paragraphs) >= 5:
+                    images_needed = 2  # + после 4-го абзаца
+                
+                if images_needed > 0:
+                    self.logger.info(f'📊 Article {doc_id}: {len(paragraphs)} paragraphs, generating {images_needed} additional images')
+                    
+                    title_ru = tr.get('title_ru') or ''
+                    
+                    # Генерируем картинки с контекстом следующего абзаца
+                    for i in range(images_needed):
+                        try:
+                            # Определяем позицию вставки и берем контекст следующего абзаца
+                            insert_after_idx = 2 if i == 0 else 4
+                            context_start = max(0, insert_after_idx - 1)
+                            context_end = min(len(paragraphs), insert_after_idx + 2)
+                            context_paragraphs = paragraphs[context_start:context_end]
+                            context_text = '\n\n'.join(context_paragraphs)
+                            
+                            self.logger.info(f'🎨 Generating additional image {i+1}/{images_needed} for {doc_id} (context: paragraphs {context_start+1}-{context_end})')
+                            
+                            # Генерируем картинку в том же стиле, что и основная
+                            img_path = self.image_generator.generate_image_for_article(
+                                doc_id=f"{doc_id}_img{i+1}",
+                                title=title_ru,
+                                description=f"Иллюстрация к части статьи ({i+1})",
+                                content=context_text[:1500],  # Контекст следующего абзаца
+                                existing_image_url=data.get('image')  # Используем основную картинку для стиля
+                            )
+                            
+                            if img_path:
+                                additional_images.append(img_path)
+                                self.logger.info(f'✅ Generated additional image {i+1}: {img_path}')
+                            else:
+                                self.logger.warning(f'⚠️ Failed to generate additional image {i+1} (no path returned)')
+                                
+                        except Exception as img_err:
+                            self.logger.warning(f'⚠️ Error generating additional image {i+1}: {img_err}')
+                            
+            except Exception as e:
+                self.logger.warning(f'⚠️ Failed to generate additional images for {doc_id}: {e}')
+        
+        # ===== ВСТАВКА КАРТИНОК В MARKDOWN =====
+        if additional_images:
+            try:
+                # Разбиваем markdown на frontmatter и контент
+                fm_match = _re.match(r'^(---\n.*?\n---\n)(.*)', md, flags=_re.DOTALL)
+                if fm_match:
+                    frontmatter = fm_match.group(1)
+                    content = fm_match.group(2)
+                else:
+                    frontmatter = ''
+                    content = md
+                
+                # Разбиваем контент на параграфы (исключая заголовки)
+                parts = []
+                for part in content.split('\n\n'):
+                    stripped = part.strip()
+                    if stripped:
+                        parts.append(part)
+                
+                # Вставляем картинки с конца (чтобы не сбивать индексы)
+                if len(additional_images) >= 2 and len(parts) >= 5:
+                    # После 4-го параграфа
+                    parts.insert(4, f'![Иллюстрация]({additional_images[1]})')
+                    self.logger.info(f'📌 Inserted image 2 after paragraph 4')
+                
+                if len(additional_images) >= 1 and len(parts) >= 3:
+                    # После 2-го параграфа
+                    parts.insert(2, f'![Иллюстрация]({additional_images[0]})')
+                    self.logger.info(f'📌 Inserted image 1 after paragraph 2')
+                
+                # Собираем обратно
+                md = frontmatter + '\n\n'.join(parts)
+                
+            except Exception as e:
+                self.logger.warning(f'⚠️ Failed to insert additional images into markdown: {e}')
+        
         # locate YAML frontmatter
         fm_start = md.find('---')
         fm_end = -1

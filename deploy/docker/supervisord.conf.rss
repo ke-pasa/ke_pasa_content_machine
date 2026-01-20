@@ -1,5 +1,5 @@
 [program:rss-worker]
-command=/bin/bash -c "while true; do python -m workers.rss.worker; sleep 3600; done"
+command=/bin/bash -c "while true; do python -m workers.rss.worker; sleep 2400; done"
 directory=/app
 user=root
 autostart=true

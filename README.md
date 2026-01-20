@@ -6,10 +6,10 @@
 
 Система состоит из 6 независимых workers, работающих в Docker контейнерах:
 
-- **RSS Worker** - парсинг RSS feeds из испанских источников (каждые 2 часа)
-- **Categorization Worker** - категоризация статей через OpenAI (каждые 2 часа)
+- **RSS Worker** - парсинг RSS feeds из испанских источников (каждые 40 минут)
+- **Categorization Worker** - категоризация статей через OpenAI (каждые 40 минут)
 - **Article Generator Worker** - перевод и генерация статей (каждые 30 минут)
-- **Publisher Worker** - публикация в социальные сети (каждый час с 9:00 до 23:00 Madrid time)
+- **Publisher Worker** - публикация в социальные сети (каждые 45 минут с 9:00 до 23:00 Madrid time)
 - **Digest Worker** - генерация еженедельных дайджестов (по расписанию)
 - **Events Importer Worker** - импорт событий из Telegram каналов (каждые 4 часа)
 
@@ -276,10 +276,10 @@ docker compose up -d publisher-worker
 
 | Worker | Интервал | Время работы | Описание |
 |--------|----------|--------------|----------|
-| RSS Worker | 2 часа | 24/7 | Парсит RSS feeds испанских источников |
-| Categorization Worker | 2 часа | 24/7 | Категоризирует статьи через OpenAI |
+| RSS Worker | 40 минут | 24/7 | Парсит RSS feeds испанских источников |
+| Categorization Worker | 40 минут | 24/7 | Категоризирует статьи через OpenAI |
 | Article Generator Worker | 30 минут | 24/7 | Переводит статьи на русский |
-| Publisher Worker | 1 час | **9:00-23:00 Madrid** | Публикует в 6 социальных сетей |
+| Publisher Worker | 45 минут | **9:00-23:00 Madrid** | Публикует в 6 социальных сетей |
 | Digest Worker | По расписанию | Выходные | Генерирует еженедельные дайджесты |
 | Events Importer Worker | 4 часа | 24/7 | Импортирует события из Telegram |
 
