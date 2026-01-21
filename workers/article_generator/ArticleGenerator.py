@@ -642,16 +642,39 @@ class ArticleGenerator:
                     if stripped:
                         parts.append(part)
                 
+                # Функция для поиска ближайшего подзаголовка
+                def find_nearest_heading(parts_list, position):
+                    """Найти ближайший подзаголовок (## или ###) после или до позиции"""
+                    # Ищем вперед от позиции
+                    for i in range(position, len(parts_list)):
+                        part = parts_list[i].strip()
+                        if part.startswith('##'):
+                            # Убираем ## или ### и очищаем
+                            heading = _re.sub(r'^#+\s*', '', part).strip()
+                            return heading
+                    
+                    # Ищем назад от позиции
+                    for i in range(position - 1, -1, -1):
+                        part = parts_list[i].strip()
+                        if part.startswith('##'):
+                            heading = _re.sub(r'^#+\s*', '', part).strip()
+                            return heading
+                    
+                    # Fallback - используем заголовок статьи
+                    return title_ru[:50] if title_ru else 'статье'
+                
                 # Вставляем картинки с конца (чтобы не сбивать индексы)
                 if len(additional_images) >= 2 and len(parts) >= 5:
                     # После 4-го параграфа
-                    parts.insert(4, f'![Иллюстрация]({additional_images[1]})')
-                    self.logger.info(f'📌 Inserted image 2 after paragraph 4')
+                    nearest_heading = find_nearest_heading(parts, 4)
+                    parts.insert(4, f'![Иллюстрация к статье: {nearest_heading}]({additional_images[1]})')
+                    self.logger.info(f'📌 Inserted image 2 after paragraph 4 with heading: {nearest_heading}')
                 
                 if len(additional_images) >= 1 and len(parts) >= 3:
                     # После 2-го параграфа
-                    parts.insert(2, f'![Иллюстрация]({additional_images[0]})')
-                    self.logger.info(f'📌 Inserted image 1 after paragraph 2')
+                    nearest_heading = find_nearest_heading(parts, 2)
+                    parts.insert(2, f'![Иллюстрация к статье: {nearest_heading}]({additional_images[0]})')
+                    self.logger.info(f'📌 Inserted image 1 after paragraph 2 with heading: {nearest_heading}')
                 
                 # Собираем обратно
                 md = frontmatter + '\n\n'.join(parts)
