@@ -495,14 +495,23 @@ class CategorizationWorker:
             total = interest_result.get('total_score') or interest_result.get('total')
             if total is None and isinstance(interest_result.get('scores'), dict):
                 s = interest_result.get('scores') or {}
-                # Sum known score components defensively
+                # Try new field names first (hub, source, value, scale, expat)
                 comps = [
-                    s.get('region_score'),
-                    s.get('source_score'),
-                    s.get('editorial_value'),
-                    s.get('expat_relevance_bonus'),
-                    s.get('urgency_score')
+                    s.get('hub'),
+                    s.get('source'),
+                    s.get('value'),
+                    s.get('scale'),
+                    s.get('expat')
                 ]
+                # If new fields are not present, try old field names for backward compatibility
+                if all(v is None for v in comps):
+                    comps = [
+                        s.get('region_score'),
+                        s.get('source_score'),
+                        s.get('editorial_value'),
+                        s.get('expat_relevance_bonus'),
+                        s.get('urgency_score')
+                    ]
                 total_sum = 0
                 any_numeric = False
                 for v in comps:

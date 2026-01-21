@@ -57,9 +57,12 @@ OUTPUT FORMAT (JSON):
   "category": "migration | policy | weather | health | crime | transport | economy | culture | society",
   "region": "...",
   "scores": {"hub": 0, "source": 0, "value": 0, "scale": 0, "expat": 0},
+  "total_score": 0,
   "rating": "publish (80-100) | short_note (50-79) | skip (<50)",
   "comment": "1 sentence in Russian explaining the systemic or planning value."
 }
+
+IMPORTANT: Calculate total_score as the sum of all scores (hub + source + value + scale + expat) and include it in the response.
 
 Input fields:
 Title: {title}
