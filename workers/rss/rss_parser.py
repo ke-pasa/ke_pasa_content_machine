@@ -607,7 +607,8 @@ class RSSParser:
             'created_at': article.get('created_at') or datetime.now().isoformat(),
             'updated_at': article.get('updated_at') or datetime.now().isoformat(),
             'status': article.get('status', 'NEW'),
-            'published': article.get('published_flag') if 'published_flag' in article else None
+            'published': article.get('published_flag') if 'published_flag' in article else None,
+            'total_score': article.get('total_score')
         }
 
         self.pg = get_pg_client()
