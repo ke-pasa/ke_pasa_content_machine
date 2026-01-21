@@ -15,12 +15,12 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 sys.path.insert(0, '.')
 
 
-def sync_to_git_repo(article_ids=None) -> dict:
+def python workers/article_generator/git_sync_daemon.py --interval 30sync_to_git_repo(article_ids=None) -> dict:
     results = {'synced': 0, 'errors': [], 'article_ids': article_ids or []}
     pat = os.getenv('GIT_KE_PASA_PAT')
     if not pat:
@@ -180,6 +180,18 @@ def handle_sigterm(signum, frame):
     stop_requested = True
 
 
+def is_quiet_hours() -> bool:
+    """Check if current time is in quiet hours (23:00-7:00 GMT).
+    
+    Returns:
+        True if current time is between 23:00 and 7:00 GMT (no sync allowed)
+    """
+    now_utc = datetime.now(timezone.utc)
+    hour = now_utc.hour
+    # Quiet hours: 23:00 (23) to 7:00 (7) GMT
+    return hour >= 23 or hour < 7
+
+
 def do_sync():
     try:
         res = sync_to_git_repo()
@@ -217,10 +229,15 @@ def main():
         return
 
     logging.info('Starting git sync daemon: interval=%d minutes, articles_dir=%s', args.interval, articles_dir)
+    logging.info('⏰ Quiet hours enabled: no sync between 23:00-7:00 GMT')
     while not stop_requested:
         try:
-            # Priority: if trigger file exists, run sync immediately
-            if trigger_path and trigger_path.exists():
+            # Check if we're in quiet hours
+            if is_quiet_hours():
+                now_utc = datetime.now(timezone.utc)
+                logging.info('🌙 Currently in quiet hours (23:00-7:00 GMT). Current time: %s GMT. Skipping sync.', now_utc.strftime('%H:%M'))
+            # Priority: if trigger file exists, run sync immediately (even during quiet hours)
+            elif trigger_path and trigger_path.exists():
                 logging.info('Trigger file detected (%s); running immediate sync', trigger_path)
                 do_sync()
                 try:
