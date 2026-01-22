@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, '.')
 
 
-def python workers/article_generator/git_sync_daemon.py --interval 30sync_to_git_repo(article_ids=None) -> dict:
+def sync_to_git_repo(article_ids=None) -> dict:
     results = {'synced': 0, 'errors': [], 'article_ids': article_ids or []}
     pat = os.getenv('GIT_KE_PASA_PAT')
     if not pat:
