@@ -176,6 +176,23 @@ def _html_to_plain_text(html: str) -> str:
     return text.strip()
 
 
+def _html_to_facebook_text(html: str) -> str:
+    """Convert HTML to Facebook-compatible text with preserved URLs."""
+    if not html:
+        return ""
+    import re
+    # Preserve links in format: text (url)
+    text = re.sub(r'<a href="(.*?)">(.*?)</a>', r'\2 (\1)', html)
+    # Remove bold/italic tags
+    text = re.sub(r'<b>(.*?)</b>', r'\1', text)
+    text = re.sub(r'<i>(.*?)</i>', r'\1', text)
+    # Remove any remaining HTML tags
+    text = re.sub(r'<.*?>', '', text)
+    # Decode HTML entities
+    text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+    return text.strip()
+
+
 def _maybe_save_translation(job: dict, content: str):
     if not content:
         return None
@@ -232,8 +249,9 @@ def publish_content(content: str, channels: list, job_id: str = 'evening_brief',
             results[channel] = None
             logger.error(f"❌ Failed to send to {channel}: {e}")
     try:
-        plain_text = _html_to_plain_text(html_content)
-        fb_result = post_facebook(message=plain_text, image_url=image_url)
+        # Use Facebook-specific function that preserves URLs
+        fb_text = _html_to_facebook_text(html_content)
+        fb_result = post_facebook(message=fb_text, image_url=image_url)
         results['facebook'] = fb_result
     except Exception as e:
         logger.error(f"❌ Error posting to Facebook: {e}")
