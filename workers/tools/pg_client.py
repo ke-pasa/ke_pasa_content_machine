@@ -876,6 +876,8 @@ class PGClient:
         except Exception as e:
             # logger.error(f"Failed to fetch existing IDs: {e}")
             return set()
+    
+    def save_event(self, event: dict):
         """
         Save an event to the public.events table
         
