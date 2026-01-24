@@ -224,17 +224,41 @@ def _maybe_save_translation(job: dict, content: str):
         return None
 
 
-def publish_content(content: str, channels: list, job_id: str = 'evening_brief', image_url: str = None):
-    if not content:
+def publish_content(content_dict: dict, channels: list, job_id: str = 'evening_brief', image_url: str = None):
+    """Publish content to multiple platforms using platform-specific formats.
+    
+    Args:
+        content_dict: Dict with 'telegram', 'facebook', 'reels_script' keys
+        channels: List of Telegram channel IDs
+        job_id: Job identifier
+        image_url: Optional cover image URL
+    """
+    # Handle both old format (string) and new format (dict)
+    if isinstance(content_dict, str):
+        telegram_content = content_dict
+        facebook_content = content_dict
+    else:
+        telegram_content = content_dict.get('telegram', '')
+        facebook_content = content_dict.get('facebook', '')
+        reels_script = content_dict.get('reels_script', '')
+        if reels_script:
+            logger.info(f"📹 Reels script generated:\n{reels_script[:200]}...")
+    
+    if not telegram_content:
         logger.warning("No content to publish")
         return {}
+    
     telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not telegram_token:
         logger.warning("⚠️ TELEGRAM_BOT_TOKEN not set")
     if image_url:
         logger.info(f'🖼️ Using digest cover image: {image_url}')
-    html_content = _markdown_to_telegram_html(content)
+    
+    # Convert telegram markdown to HTML for Telegram API
+    html_content = _markdown_to_telegram_html(telegram_content)
     results = {}
+    
+    # Publish to Telegram channels
     for channel in channels:
         try:
             logger.info(f"Sending digest to {channel}...")
@@ -248,14 +272,16 @@ def publish_content(content: str, channels: list, job_id: str = 'evening_brief',
         except Exception as e:
             results[channel] = None
             logger.error(f"❌ Failed to send to {channel}: {e}")
+    
+    # Publish to Facebook using Facebook-specific content
     try:
-        # Use Facebook-specific function that preserves URLs
-        fb_text = _html_to_facebook_text(html_content)
+        fb_text = facebook_content if facebook_content else _html_to_facebook_text(html_content)
         fb_result = post_facebook(message=fb_text, image_url=image_url)
         results['facebook'] = fb_result
     except Exception as e:
         logger.error(f"❌ Error posting to Facebook: {e}")
         results['facebook'] = None
+    
     return results
 
 
@@ -449,45 +475,59 @@ def generate_digest() -> dict:
         now = datetime.datetime.now()
         date_str = f"{now.day} {months[now.month]} {now.year}"
 
-        system_prompt = """Ты — редактор вечернего Telegram-канала.
+        system_prompt = """Ты — редактор вечернего дайджеста новостей для разных платформ.
 
-Твоя задача — формировать ОДИН короткий Telegram-пост в формате вечернего дайджеста на основе входных новостей.
+Твоя задача — создать контент на основе входных новостей для трёх форматов:
+1. Telegram-пост (Markdown)
+2. Facebook-пост (обычный текст)
+3. Сценарий для Instagram/Facebook Reels на 30 секунд
 
-КРИТИЧЕСКИ ВАЖНО:
-- Ответ должен быть выведен СТРОГО в формате Markdown, совместимом с Telegram.
-- Общая длина поста — не более 700 символов.
-
-Отбор и приоритет:
+Отбор и приоритет новостей:
 - Используй НЕ БОЛЕЕ 5 новостей.
-- Приоритизируй новости в следующем порядке:
-  1) экономика и цены,
-  2) безопасность и контроль,
-  3) всё остальное.
-- Если новостей больше — отбрасывай менее важные.
+- Приоритизируй: 1) экономика и цены, 2) безопасность и контроль, 3) всё остальное.
 
-Ограничение длины:
-- КАЖДАЯ новость (включая встроенную ссылку) должна быть не длиннее 140 символов.
-
-Формат:
+=== ФОРМАТ TELEGRAM ===
+- Общая длина поста — не более 700 символов.
+- Каждая новость — не длиннее 140 символов (включая ссылку).
 - Заголовок: **🌆 Вечерний дайджест. Испания**
-- Каждая новость — один абзац, 1–2 коротких предложения.
-- Пустая строка между новостями.
-- Используй эмодзи только как маркер перед новостью.
-- Не используй категории, подзаголовки и списки.
+- Каждая новость — один абзац, 1–2 коротких предложения, с пустой строкой между новостями.
+- Эмодзи только как маркер перед новостью.
+- Markdown-ссылка внутри текста: [ключевые слова](url)
+- Используй ТОЛЬКО предоставленные URL из JSON.
 
-Ссылки:
-- ОБЯЗАТЕЛЬНО используй предоставленную ссылку (поле url) для каждой новости.
-- Не выводи полные URL.
-- Используй ровно ОДНУ Markdown-ссылку внутри текста новости в формате [текст](url).
-- Ссылка должна быть встроена в 1–3 ключевых слова из текста.
-- Используй ТОЛЬКО предоставленные URL из JSON, не придумывай свои.
+=== ФОРМАТ FACEBOOK ===
+- Заголовок: 🌆 Вечерний дайджест. Испания
+- Каждая новость в формате:
+  * Эмодзи + короткий текст новости (1-2 предложения)
+  * Пустая строка
+  * Полная ссылка на отдельной строке (https://...)
+  * Пустая строка перед следующей новостью
+- Без Markdown, только эмодзи и обычный текст.
+- НЕ используй формат "текст (url)" — выводи ссылку на отдельной строке.
+- Общая длина — не более 1200 символов.
+
+=== СЦЕНАРИЙ ДЛЯ REELS (30 сек) ===
+- Текст для озвучки видео на 30 секунд (для text-to-audio модели).
+- ТОЛЬКО текст, который будет произносить голос, БЕЗ технических описаний и визуала.
+- Структура:
+  * Привлекающее внимание вступление (2-3 секунды)
+  * Краткое изложение 3-4 главных новостей (по 5-7 секунд каждая)
+  * Призыв подписаться на канал (2-3 секунды)
+- Динамичный разговорный стиль, короткие предложения.
+- Без ссылок, без эмодзи, только текст для озвучки.
+- Общая длина текста: 60-80 слов (примерно 30 секунд речи).
 
 Содержание:
 - Не переписывай заголовки буквально.
-- Не добавляй факты, которых нет во входных данных.
-- Без аналитики, выводов и итогов.
+- Только факты из входных данных.
+- Без аналитики и выводов.
 
-Выводи ТОЛЬКО готовый текст Telegram-поста в Markdown."""
+ВЫВОД: Верни ТОЛЬКО валидный JSON:
+{
+  "telegram": "текст в Markdown",
+  "facebook": "текст для Facebook",
+  "reels_script": "сценарий для видео"
+}"""
 
         user_prompt_content = f"""Сформируй вечернюю Telegram-заметку.
 
@@ -510,21 +550,45 @@ def generate_digest() -> dict:
         )
 
         if not response_text:
-            return {"content": "Error: Failed to generate digest text from OpenAI", "image_url": None}
-        promo_line = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
-
+            return {"telegram": "Error: Failed to generate digest text from OpenAI", "facebook": None, "reels_script": None, "image_url": None}
+        
+        # Parse JSON response
         try:
-            final_text = (response_text + promo_line).strip()
-        except Exception:
-            final_text = response_text
+            # Remove markdown code blocks if present
+            cleaned_response = response_text.strip()
+            if cleaned_response.startswith('```'):
+                cleaned_response = cleaned_response.split('\n', 1)[1]
+                cleaned_response = cleaned_response.rsplit('```', 1)[0]
+            
+            parsed = json.loads(cleaned_response)
+            telegram_content = parsed.get('telegram', '')
+            facebook_content = parsed.get('facebook', '')
+            reels_script = parsed.get('reels_script', '')
+        except Exception as e:
+            logger.error(f"Failed to parse JSON response: {e}. Using response as telegram content.")
+            telegram_content = response_text
+            facebook_content = response_text
+            reels_script = ""
+        
+        # Add promo line to telegram and facebook
+        promo_line_tg = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
+        promo_line_fb = "\n\nПодписывайтесь на наш канал: Испания, ке паса (https://t.me/spain_kepasa)"
+        
+        telegram_final = (telegram_content + promo_line_tg).strip()
+        facebook_final = (facebook_content + promo_line_fb).strip() if facebook_content else ""
 
-        # Generate cover image as part of the evening digest
+        # Generate cover image based on telegram content
         try:
-            image_url = _generate_digest_image_for_brief(final_text, job_id="evening_brief")
+            image_url = _generate_digest_image_for_brief(telegram_final, job_id="evening_brief")
         except Exception:
             image_url = None
 
-        return {"content": final_text, "image_url": image_url}
+        return {
+            "telegram": telegram_final,
+            "facebook": facebook_final,
+            "reels_script": reels_script,
+            "image_url": image_url
+        }
 
     except Exception as e:
         logger.error(f"Error generating evening brief: {e}")
@@ -535,26 +599,70 @@ def run_job(job: dict):
     """Full pipeline for evening brief: generate, save, publish, republish."""
     try:
         result = generate_digest()
-        content = result.get('content') if isinstance(result, dict) else result
-        image_url = result.get('image_url') if isinstance(result, dict) else None
-        if not content:
+        
+        # Extract content from result
+        if isinstance(result, dict):
+            telegram_content = result.get('telegram', '')
+            facebook_content = result.get('facebook', '')
+            reels_script = result.get('reels_script', '')
+            image_url = result.get('image_url')
+        else:
+            telegram_content = result
+            facebook_content = result
+            reels_script = ''
+            image_url = None
+        
+        if not telegram_content:
             logger.error("No content generated")
             return None
+        
         # Respect dry-run: generate (and optionally save) but skip publishing
         dry_run = bool(job.get('dry_run', False))
         try:
-            _maybe_save_translation(job, content)
+            # Save telegram content as translation
+            _maybe_save_translation(job, telegram_content)
         except Exception:
             logger.debug('Failed to save translation in run_job')
+        
         if dry_run:
             logger.info("🧪 Dry-run enabled: skipping publish/republish")
-            return {"content": content, "image_url": image_url, "published": False}
+            logger.info("\n" + "="*60)
+            logger.info("📱 TELEGRAM CONTENT:")
+            logger.info("="*60)
+            logger.info(telegram_content)
+            logger.info("\n" + "="*60)
+            logger.info("📘 FACEBOOK CONTENT:")
+            logger.info("="*60)
+            logger.info(facebook_content)
+            logger.info("\n" + "="*60)
+            logger.info("📹 REELS SCRIPT:")
+            logger.info("="*60)
+            logger.info(reels_script)
+            if image_url:
+                logger.info("\n" + "="*60)
+                logger.info(f"🖼️ IMAGE URL: {image_url}")
+                logger.info("="*60)
+            return {
+                "telegram": telegram_content,
+                "facebook": facebook_content,
+                "reels_script": reels_script,
+                "image_url": image_url,
+                "published": False
+            }
 
         channels = job.get('channels', [])
-        publish_results = publish_content(content, channels, job_id=job.get('id', 'evening_brief'), image_url=image_url)
+        content_dict = {
+            'telegram': telegram_content,
+            'facebook': facebook_content,
+            'reels_script': reels_script
+        }
+        publish_results = publish_content(content_dict, channels, job_id=job.get('id', 'evening_brief'), image_url=image_url)
+        
         repub = job.get('republish', [])
         if repub:
-            republish_content(content, repub, original_results=publish_results)
+            # Use telegram content for republishing
+            republish_content(telegram_content, repub, original_results=publish_results)
+        
         return publish_results
     except Exception as e:
         logger.error(f"Error running evening brief job: {e}")
