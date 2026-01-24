@@ -18,7 +18,7 @@ from workers.tools.pg_client import get_pg_client
 logger = logging.getLogger("workers.events_importer.malaga")
 
 # Malaga Open Data CSV URL
-CSV_URL = "https://datosabiertos.malaga.eu/recursos/cultura/agenda/2025.csv"
+CSV_URL = "https://datosabiertos.malaga.eu/recursos/cultura/agenda/2026.csv"
 
 # Category mappings Spanish -> Russian
 CATEGORY_MAPPINGS = {
