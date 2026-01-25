@@ -697,11 +697,13 @@ class PublisherWorker:
             # Convert HTML to Facebook-friendly text
             post_message = self._html_to_plain_text(message)
             
-            # Add article link (clickable on Facebook)
-            slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
-            if slug:
-                article_url = f"https://ke-pasa.es/news/{slug}/"
-                post_message = f"{post_message}\n\nНаш тг канал: https://t.me/spain_kepasa\nСтраница в ФБ: @kepasa.es"
+            # Add social media links
+            # Use Facebook mention format to display page name instead of URL
+            page_id = os.getenv('FACEBOOK_PAGE_ID', '')
+            if page_id:
+                post_message = f"{post_message}\n\nНаш тг канал: https://t.me/spain_kepasa\nНаша страница: @[{page_id}:Испания, ке паса?]"
+            else:
+                post_message = f"{post_message}\n\nНаш тг канал: https://t.me/spain_kepasa\nНаша страница: https://www.facebook.com/kepasa.es"
 
             # Post to Facebook
             res = post_facebook(image_url, post_message)
