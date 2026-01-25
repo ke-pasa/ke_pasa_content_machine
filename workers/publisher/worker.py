@@ -701,7 +701,7 @@ class PublisherWorker:
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
             if slug:
                 article_url = f"https://ke-pasa.es/news/{slug}/"
-                post_message = f"{post_message}\n\n🔗 {article_url}"
+                post_message = f"{post_message}\n\n🔗 {article_url}\nНаш тг канал: https://t.me/spain_kepasa\nСтраница в ФБ: @kepasa.es"
 
             # Post to Facebook
             res = post_facebook(image_url, post_message)
