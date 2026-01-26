@@ -698,7 +698,7 @@ class PublisherWorker:
             post_message = self._html_to_plain_text(message)
             
             # Add social media links
-            post_message = f"{post_message}\n\nНаш тг канал: https://t.me/spain_kepasa\nНаша страница: https://www.facebook.com/kepasa.es"
+            post_message = f"{post_message}\n\nНаш тг канал: https://t.me/spain_kepasa"
 
             # Post to Facebook
             res = post_facebook(image_url, post_message)

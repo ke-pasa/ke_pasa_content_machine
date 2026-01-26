@@ -479,6 +479,8 @@ class ArticleTranslator:
         if isinstance(stage6, dict):
             if tg_preview := stage6.get('tg_preview'):
                 final['tg_preview'] = tg_preview
+            if video_script := stage6.get('video_script'):
+                final['video_script'] = video_script
             tg_flags = stage6.get('flags') or []
             if tg_flags:
                 final['flags'] = list(dict.fromkeys((final.get('flags') or []) + tg_flags))
@@ -749,10 +751,21 @@ class ArticleTranslator:
         if not parsed or not isinstance(parsed, dict):
             return parsed, (text or None)
 
+        # Clean up tg_preview formatting
         if tg := parsed.get('tg_preview'):
             if isinstance(tg, str):
                 tg = re.sub(r'<br\s*/?>', '\n', tg)
                 tg = re.sub(r'\n{3,}', '\n\n', tg)
                 parsed['tg_preview'] = tg
+
+        # Clean up video_script formatting
+        if script := parsed.get('video_script'):
+            if isinstance(script, str):
+                script = script.strip()
+                # Remove any HTML tags that might have slipped in
+                script = re.sub(r'<[^>]+>', '', script)
+                # Clean up extra whitespace
+                script = re.sub(r'\s+', ' ', script)
+                parsed['video_script'] = script
 
         return parsed, (text or None)

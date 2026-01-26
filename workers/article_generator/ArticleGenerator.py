@@ -97,14 +97,27 @@ class ArticleGenerator:
 
         # Extract telegram text from stage6_telegram (store plain text, not dict).
         telegram_text = None
+        video_script = None
         try:
             if isinstance(stage6_telegram, dict):
                 tg = stage6_telegram.get('tg_preview') or stage6_telegram.get('text')
                 telegram_text = tg if isinstance(tg, str) and tg.strip() != '' else None
+                # Extract video script from stage6 result
+                script = stage6_telegram.get('video_script')
+                video_script = script if isinstance(script, str) and script.strip() != '' else None
             elif isinstance(stage6_telegram, str):
                 telegram_text = stage6_telegram.strip() or None
         except Exception:
             telegram_text = None
+            video_script = None
+
+        # Also try to get video script directly from translation result if not in stage6_telegram
+        if not video_script:
+            try:
+                script = tr.get('video_script')
+                video_script = script if isinstance(script, str) and script.strip() != '' else None
+            except Exception:
+                pass
 
         # Build the database payload directly from source and translation result
         save_payload = {
@@ -123,6 +136,8 @@ class ArticleGenerator:
             'slug': slug,
             # Save telegram_final as plain text (the tg_preview) or NULL.
             'telegram_final': telegram_text,
+            # Save video script for 30-second videos
+            'script': video_script,
             'published_at': now,
             'updated_at': now,
         }
@@ -430,6 +445,7 @@ class ArticleGenerator:
                 'telegram_preview': translation_result.get('tg_preview'),
                 'telegram_flags': translation_result.get('tg_flags'),
                 'telegram_final': stage6,
+                'video_script': translation_result.get('video_script'),
                 'status': 'TRANSLATED',
                 'translated_at': datetime.now(timezone.utc).isoformat(),
                 'updated_at': datetime.now(timezone.utc).isoformat(),
