@@ -206,7 +206,7 @@ class VideoGenerator:
             _logger.exception(error_msg)
             return False, error_msg
     
-    def generate_video_with_multiple_videos(self, video_urls: list, audio_path: str, output_path: str, title: str = "") -> Tuple[bool, Optional[str]]:
+    def generate_video_with_multiple_videos(self, video_urls: list, audio_path: str, output_path: str, title: str = "", audio_duration: float = None) -> Tuple[bool, Optional[str]]:
         """
         Generate video with multiple Pexels videos combined with audio and title overlay
         
@@ -215,6 +215,7 @@ class VideoGenerator:
             audio_path: Path to audio file
             output_path: Output video file path
             title: Article title for text overlay
+            audio_duration: Duration of audio (optional, will be calculated from file if not provided)
             
         Returns:
             Tuple of (success: bool, error_message: Optional[str])
@@ -228,9 +229,12 @@ class VideoGenerator:
             # Create output directory
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            # Load audio to get duration
+            # Load audio to get duration (or use provided duration)
             audio_clip = AudioFileClip(audio_path)
-            total_duration = audio_clip.duration
+            if audio_duration is not None:
+                total_duration = audio_duration
+            else:
+                total_duration = audio_clip.duration
             
             # Calculate duration per video
             video_duration = total_duration / len(video_urls)
@@ -241,165 +245,180 @@ class VideoGenerator:
             video_clips = []
             temp_videos = []
             
-            for i, video_url in enumerate(video_urls):
-                try:
-                    # Download video
-                    temp_video = self._download_video(video_url)
-                    if not temp_video:
-                        _logger.warning(f"Failed to download video {i+1}, skipping")
-                        continue
-                    temp_videos.append(temp_video)
-                    
-                    # Create video clip - use original format from Pexels
-                    video_clip = VideoFileClip(temp_video)
-                    
-                    # Videos from Pexels already come in good mobile formats
-                    # No resize needed - avoids PIL.ANTIALIAS compatibility issues
-                    
-                    # Limit individual video length to max 30 seconds
-                    max_individual_length = min(video_duration, 30.0)
-                    
-                    # Trim to required duration
-                    if video_clip.duration > max_individual_length:
-                        video_clip = video_clip.subclip(0, max_individual_length)
-                    elif video_clip.duration < video_duration:
-                        # Loop short videos to fill duration, but don't exceed max length
-                        target_duration = min(video_duration, max_individual_length)
-                        loops_needed = int(target_duration / video_clip.duration) + 1
-                        video_clip = video_clip.loop(duration=target_duration)
-                    
-                    video_clips.append(video_clip)
-                    _logger.info(f"Added video {i+1}/{len(video_urls)}: {temp_video}")
-                    
-                except Exception as e:
-                    _logger.warning(f"Failed to process video {i+1}: {e}")
-                    continue
-            
-            if not video_clips:
-                return False, "No valid videos could be processed"
-            
-            # Concatenate all video clips
-            final_video = concatenate_videoclips(video_clips, method="compose")
-            
-            # Add title text overlay for first 3 seconds - PIL method
-            if title and title.strip():
-                # Use full title and convert to uppercase
-                title_text = title.upper().strip()
-                
-                try:
-                    from PIL import Image, ImageDraw, ImageFont
-                    from moviepy.editor import ImageClip
-                    import numpy as np
-                    
-                    # Create a transparent overlay image - auto-adjust to video size
-                    # Use smaller dimensions that work with any video format
-                    overlay_width = 300  # Universal width for text overlay
-                    overlay_height = 150
-                    img = Image.new('RGBA', (overlay_width, overlay_height), (0, 0, 0, 0))
-                    draw = ImageDraw.Draw(img)
-                    
-                    # Try to use a system font
+            try:
+                for i, video_url in enumerate(video_urls):
                     try:
-                        font = ImageFont.truetype("arial.ttf", 26)  # Even smaller font
-                    except:
-                        font = ImageFont.load_default()
+                        # Download video
+                        temp_video = self._download_video(video_url)
+                        if not temp_video:
+                            _logger.warning(f"Failed to download video {i+1}, skipping")
+                            continue
+                        temp_videos.append(temp_video)
+                        
+                        # Create video clip - use original format from Pexels
+                        video_clip = VideoFileClip(temp_video)
+                        
+                        # Videos from Pexels already come in good mobile formats
+                        # No resize needed - avoids PIL.ANTIALIAS compatibility issues
+                        
+                        # Limit individual video length to max 30 seconds
+                        max_individual_length = min(video_duration, 30.0)
+                        
+                        # Trim to required duration
+                        if video_clip.duration > max_individual_length:
+                            video_clip = video_clip.subclip(0, max_individual_length)
+                        elif video_clip.duration < video_duration:
+                            # Loop short videos to fill duration, but don't exceed max length
+                            target_duration = min(video_duration, max_individual_length)
+                            loops_needed = int(target_duration / video_clip.duration) + 1
+                            video_clip = video_clip.loop(duration=target_duration)
+                        
+                        video_clips.append(video_clip)
+                        _logger.info(f"Added video {i+1}/{len(video_urls)}: {temp_video}")
+                        
+                    except Exception as e:
+                        _logger.warning(f"Failed to process video {i+1}: {e}")
+                        continue
+                
+                if not video_clips:
+                    return False, "No valid videos could be processed"
+                
+                # Concatenate all video clips
+                final_video = concatenate_videoclips(video_clips, method="compose")
+                
+                # Add title text overlay for first 3 seconds - PIL method
+                if title and title.strip():
+                    # Use full title and convert to uppercase
+                    title_text = title.upper().strip()
                     
-                    # Split text into multiple lines if needed
-                    padding = 30  # Fixed padding in pixels
-                    max_width = overlay_width - (padding * 2)  # Both sides
-                    words = title_text.split()
-                    lines = []
-                    current_line = ""
-                    
-                    for word in words:
-                        test_line = current_line + (" " if current_line else "") + word
-                        bbox = draw.textbbox((0, 0), test_line, font=font)
-                        text_width = bbox[2] - bbox[0]
-                        if text_width <= max_width:
-                            current_line = test_line
-                        else:
-                            if current_line:
-                                lines.append(current_line)
-                                current_line = word
+                    try:
+                        from PIL import Image, ImageDraw, ImageFont
+                        from moviepy.editor import ImageClip
+                        import numpy as np
+                        
+                        # Create a transparent overlay image - auto-adjust to video size
+                        # Use smaller dimensions that work with any video format
+                        overlay_width = 300  # Universal width for text overlay
+                        overlay_height = 150
+                        img = Image.new('RGBA', (overlay_width, overlay_height), (0, 0, 0, 0))
+                        draw = ImageDraw.Draw(img)
+                        
+                        # Try to use a system font
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 26)  # Even smaller font
+                        except:
+                            font = ImageFont.load_default()
+                        
+                        # Split text into multiple lines if needed
+                        padding = 30  # Fixed padding in pixels
+                        max_width = overlay_width - (padding * 2)  # Both sides
+                        words = title_text.split()
+                        lines = []
+                        current_line = ""
+                        
+                        for word in words:
+                            test_line = current_line + (" " if current_line else "") + word
+                            bbox = draw.textbbox((0, 0), test_line, font=font)
+                            text_width = bbox[2] - bbox[0]
+                            if text_width <= max_width:
+                                current_line = test_line
                             else:
-                                # If single word is too long, add it anyway
-                                lines.append(word)
-                                current_line = ""
-                    
-                    if current_line:
-                        lines.append(current_line)
-                    
-                    # Calculate text position (centered with padding)
-                    line_height = 35
-                    total_height = len(lines) * line_height
-                    start_y = (overlay_height - total_height) // 2
-                    
-                    for i, line in enumerate(lines):
-                        bbox = draw.textbbox((0, 0), line, font=font)
-                        text_width = bbox[2] - bbox[0]
-                        x = padding + (max_width - text_width) // 2  # Center within padded area
-                        y = start_y + i * line_height
+                                if current_line:
+                                    lines.append(current_line)
+                                    current_line = word
+                                else:
+                                    # If single word is too long, add it anyway
+                                    lines.append(word)
+                                    current_line = ""
                         
-                        # Ensure text doesn't go beyond bounds
-                        if x < padding:
-                            x = padding
-                        if x + text_width > overlay_width - padding:
-                            x = overlay_width - padding - text_width
+                        if current_line:
+                            lines.append(current_line)
                         
-                        # Draw shadow (black, slightly offset)
-                        draw.text((x+2, y+2), line, font=font, fill=(0, 0, 0, 200))
-                        # Draw main text (white)
-                        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+                        # Calculate text position (centered with padding)
+                        line_height = 35
+                        total_height = len(lines) * line_height
+                        start_y = (overlay_height - total_height) // 2
+                        
+                        for i, line in enumerate(lines):
+                            bbox = draw.textbbox((0, 0), line, font=font)
+                            text_width = bbox[2] - bbox[0]
+                            x = padding + (max_width - text_width) // 2  # Center within padded area
+                            y = start_y + i * line_height
+                            
+                            # Ensure text doesn't go beyond bounds
+                            if x < padding:
+                                x = padding
+                            if x + text_width > overlay_width - padding:
+                                x = overlay_width - padding - text_width
+                            
+                            # Draw shadow (black, slightly offset)
+                            draw.text((x+2, y+2), line, font=font, fill=(0, 0, 0, 200))
+                            # Draw main text (white)
+                            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+                        
+                        # Convert PIL image to MoviePy ImageClip
+                        overlay_array = np.array(img)
+                        overlay_clip = ImageClip(overlay_array, duration=3).set_position('center')
+                        
+                        # Composite over video
+                        final_video = CompositeVideoClip([final_video, overlay_clip])
+                        _logger.info(f"Added PIL title overlay ({len(lines)} lines): {title_text}")
+                        
+                    except Exception as e:
+                        _logger.warning(f"Failed to add PIL title overlay: {e}")
+                        # Final fallback - just log the issue
+                        _logger.info(f"Video generated without title: {title_text}")
+                
+                # Set audio
+                final_video = final_video.set_audio(audio_clip)
+                
+                # Write video optimized for social media (1-2MB target)
+                _logger.info(f"Rendering mobile video to {output_path}...")
+                final_video.write_videofile(
+                    output_path,
+                    fps=15,  # Higher FPS for smoother mobile viewing
+                    codec='libx264',
+                    audio_codec='mp3',
+                    preset='fast',  # Good balance of speed/quality
+                    bitrate='400k',  # ~1.5MB for 30s video
+                    audio_bitrate='64k',
+                    remove_temp=True,
+                    verbose=False,
+                    logger=None,
+                    threads=2
+                )
+                
+                # Clean up clips
+                for clip in video_clips:
+                    try:
+                        clip.close()
+                    except:
+                        pass
+                try:
+                    final_video.close()
+                except:
+                    pass
+                try:
+                    audio_clip.close()
+                except:
+                    pass
+                
+                if os.path.exists(output_path):
+                    file_size = os.path.getsize(output_path)
+                    _logger.info(f"Multi-video generation successful: {output_path} ({file_size} bytes)")
+                    return True, None
+                else:
+                    return False, "Video file was not created"
                     
-                    # Convert PIL image to MoviePy ImageClip
-                    overlay_array = np.array(img)
-                    overlay_clip = ImageClip(overlay_array, duration=3).set_position('center')
-                    
-                    # Composite over video
-                    final_video = CompositeVideoClip([final_video, overlay_clip])
-                    _logger.info(f"Added PIL title overlay ({len(lines)} lines): {title_text}")
-                    
-                except Exception as e:
-                    _logger.warning(f"Failed to add PIL title overlay: {e}")
-                    # Final fallback - just log the issue
-                    _logger.info(f"Video generated without title: {title_text}")
-            
-            # Set audio
-            final_video = final_video.set_audio(audio_clip)
-            
-            # Write video optimized for social media (1-2MB target)
-            _logger.info(f"Rendering mobile video to {output_path}...")
-            final_video.write_videofile(
-                output_path,
-                fps=15,  # Higher FPS for smoother mobile viewing
-                codec='libx264',
-                audio_codec='mp3',
-                preset='fast',  # Good balance of speed/quality
-                bitrate='400k',  # ~1.5MB for 30s video
-                audio_bitrate='64k',
-                remove_temp=True,
-                verbose=False,
-                logger=None,
-                threads=2
-            )
-            
-            # Clean up
-            for clip in video_clips:
-                clip.close()
-            final_video.close()
-            audio_clip.close()
-            
-            # Clean up temporary videos
-            for temp_video in temp_videos:
-                if os.path.exists(temp_video):
-                    os.unlink(temp_video)
-            
-            if os.path.exists(output_path):
-                file_size = os.path.getsize(output_path)
-                _logger.info(f"Multi-video generation successful: {output_path} ({file_size} bytes)")
-                return True, None
-            else:
-                return False, "Video file was not created"
+            finally:
+                # Always cleanup temporary videos, even if error occurred
+                for temp_video in temp_videos:
+                    try:
+                        if os.path.exists(temp_video):
+                            os.unlink(temp_video)
+                            _logger.debug(f"Cleaned up temp video: {temp_video}")
+                    except Exception as cleanup_error:
+                        _logger.warning(f"Failed to cleanup temp video {temp_video}: {cleanup_error}")
                 
         except Exception as e:
             error_msg = f"Multi-video generation error: {str(e)}"
