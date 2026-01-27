@@ -23,9 +23,14 @@ RUN sed -i 's/<policy domain="path" rights="none" pattern="@\*"\/>/<!-- <policy 
 
 COPY requirements.txt /app/requirements.txt
 # Install heavy dependencies first with optimizations
-RUN pip install --no-cache-dir --prefer-binary --only-binary=numpy,scipy,Pillow numpy==2.3.5 Pillow==10.4.0
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --prefer-binary --only-binary=numpy,scipy,Pillow,imageio,imageio-ffmpeg numpy==2.3.5 Pillow==10.4.0
+# Install MoviePy separately with specific version 
+RUN pip install --no-cache-dir --prefer-binary --only-binary=:all: imageio imageio-ffmpeg decorator
+# Install MoviePy with binary preference
+RUN pip install --no-cache-dir moviepy==1.0.3
 # Install the rest
-RUN pip install --no-cache-dir --prefer-binary --no-build-isolation -r requirements.txt
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # Try to install telethon (optional dependency - continue if it fails)
 RUN pip install --no-cache-dir --prefer-binary 'telethon>=1.24.0' || echo "Warning: Telethon installation failed, continuing without it"

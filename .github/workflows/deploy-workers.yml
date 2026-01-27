@@ -157,6 +157,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
             ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
           
+          set -e  # Exit immediately if a command exits with a non-zero status
+          
           cd ~/ke-pasa-workers
           
           # Ensure token files exist as files (not directories) before docker compose
@@ -220,36 +222,57 @@ jobs:
           
           # Build base image on server (ARM64)
           echo "Building base image on server..."
-          docker build -f docker/Dockerfile.base -t ke-pasa-workers-base:latest .
+          if ! docker build -f docker/Dockerfile.base -t ke-pasa-workers-base:latest .; then
+            echo "❌ Failed to build base image"
+            exit 1
+          fi
           
           # Build only selected worker images on server
           if [ "${{ env.DEPLOY_RSS }}" == "true" ]; then
             echo "Building RSS worker..."
-            docker build -f docker/Dockerfile.rss -t ke-pasa-rss-worker:latest .
+            if ! docker build -f docker/Dockerfile.rss -t ke-pasa-rss-worker:latest .; then
+              echo "❌ Failed to build RSS worker"
+              exit 1
+            fi
           fi
           
           if [ "${{ env.DEPLOY_CAT }}" == "true" ]; then
             echo "Building Categorization worker..."
-            docker build -f docker/Dockerfile.categorization -t ke-pasa-categorization-worker:latest .
+            if ! docker build -f docker/Dockerfile.categorization -t ke-pasa-categorization-worker:latest .; then
+              echo "❌ Failed to build Categorization worker"
+              exit 1
+            fi
           fi
           
           if [ "${{ env.DEPLOY_ART }}" == "true" ]; then
             echo "Building Article Generator worker..."
-            docker build -f docker/Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .
+            if ! docker build -f docker/Dockerfile.article_generator -t ke-pasa-article-generator-worker:latest .; then
+              echo "❌ Failed to build Article Generator worker"
+              exit 1
+            fi
           fi
           
           if [ "${{ env.DEPLOY_PUB }}" == "true" ]; then
             echo "Building Publisher worker..."
-            docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .
+            if ! docker build -f docker/Dockerfile.publisher -t ke-pasa-publisher-worker:latest .; then
+              echo "❌ Failed to build Publisher worker"
+              exit 1
+            fi
           fi
           if [ "${{ env.DEPLOY_DIGEST }}" == "true" ]; then
             echo "Building Digest worker..."
-            docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .
+            if ! docker build -f docker/Dockerfile.digest -t ke-pasa-digest-worker:latest .; then
+              echo "❌ Failed to build Digest worker"
+              exit 1
+            fi
           fi
 
           if [ "${{ env.DEPLOY_EVENTS }}" == "true" ]; then
             echo "Building Events Importer worker..."
-            docker build -f docker/Dockerfile.events_importer -t ke-pasa-events-importer-worker:latest .
+            if ! docker build -f docker/Dockerfile.events_importer -t ke-pasa-events-importer-worker:latest .; then
+              echo "❌ Failed to build Events Importer worker"
+              exit 1
+            fi
           fi
           
           # Restart only selected workers
