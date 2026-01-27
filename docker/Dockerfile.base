@@ -23,7 +23,7 @@ RUN sed -i 's/<policy domain="path" rights="none" pattern="@\*"\/>/<!-- <policy 
 
 COPY requirements.txt /app/requirements.txt
 # Install heavy dependencies first with optimizations
-RUN pip install --no-cache-dir --prefer-binary --only-binary=numpy,scipy,Pillow numpy==1.26.4 Pillow==10.4.0
+RUN pip install --no-cache-dir --prefer-binary --only-binary=numpy,scipy,Pillow numpy==2.3.5 Pillow==10.4.0
 # Install the rest
 RUN pip install --no-cache-dir --prefer-binary --no-build-isolation -r requirements.txt
 
