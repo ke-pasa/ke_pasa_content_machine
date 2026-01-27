@@ -9,4 +9,7 @@ stdout_logfile=/var/log/supervisor/publisher-worker.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
 startsecs=10
-stopwaitsecs=30
+stopwaitsecs=150
+# Give more time for video generation and processing
+killasgroup=true
+stopasgroup=true

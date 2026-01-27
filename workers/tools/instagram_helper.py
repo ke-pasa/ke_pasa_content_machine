@@ -189,17 +189,19 @@ def _get_valid_access_token() -> str:
 
 def _create_media_container(
     user_id: str,
-    image_url: str,
+    media_url: str,
     caption: str,
-    access_token: str
+    access_token: str,
+    media_type: str = 'IMAGE'
 ) -> Optional[str]:
     """Create Instagram media container (step 1 of publishing).
     
     Args:
         user_id: Instagram Business/Creator account user ID
-        image_url: Publicly accessible image URL
+        media_url: Publicly accessible media URL (image or video)
         caption: Post caption (max 2,200 chars)
         access_token: Valid Instagram access token
+        media_type: 'IMAGE' or 'VIDEO'
     
     Returns:
         Container ID if successful, None otherwise
@@ -209,13 +211,23 @@ def _create_media_container(
         caption = caption[:2197] + '...'
     
     url = f'https://graph.facebook.com/v18.0/{user_id}/media'
-    params = {
-        'image_url': image_url,
-        'caption': caption,
-        'access_token': access_token
-    }
     
-    logger.info(f'📦 Creating Instagram media container...')
+    # Different parameters for image vs video
+    if media_type.upper() == 'VIDEO':
+        params = {
+            'video_url': media_url,
+            'caption': caption,
+            'access_token': access_token,
+            'media_type': 'VIDEO'
+        }
+    else:
+        params = {
+            'image_url': media_url,
+            'caption': caption,
+            'access_token': access_token
+        }
+    
+    logger.info(f'📦 Creating Instagram media container ({media_type})...')
     
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -329,22 +341,24 @@ def _publish_media_container(
 
 
 def post_instagram(
-    image_url: str,
+    media_url: str,
     caption: str,
     user_id: Optional[str] = None,
-    access_token: Optional[str] = None
+    access_token: Optional[str] = None,
+    media_type: str = 'IMAGE'
 ) -> Dict[str, Any]:
-    """Post image with caption to Instagram using Graph API.
+    """Post image or video with caption to Instagram using Graph API.
     
     This is a two-step process:
-    1. Create media container with image URL and caption
+    1. Create media container with media URL and caption
     2. Publish the container
     
     Args:
-        image_url: Publicly accessible image URL
+        media_url: Publicly accessible media URL (image or video)
         caption: Post caption (max 2,200 characters, will be truncated)
         user_id: Instagram user ID (reads from env INSTAGRAM_USER_ID if not provided)
         access_token: Access token (reads from tokens file if not provided)
+        media_type: 'IMAGE' or 'VIDEO'
     
     Returns:
         Dict with post data including 'id' and 'status', or error info
@@ -352,8 +366,8 @@ def post_instagram(
     Raises:
         RuntimeError on failure
     """
-    if not image_url:
-        raise ValueError('image_url is required')
+    if not media_url:
+        raise ValueError('media_url is required')
     
     if not caption:
         caption = ''  # Empty caption is allowed
@@ -372,12 +386,12 @@ def post_instagram(
             logger.error(f'Failed to get Instagram access token: {e}')
             raise
     
-    logger.info(f'🟣 Posting to Instagram: {caption[:50]}...')
+    logger.info(f'🟣 Posting to Instagram ({media_type}): {caption[:50]}...')
     
     # Step 1: Create media container
-    container_id = _create_media_container(user_id, image_url, caption, access_token)
+    container_id = _create_media_container(user_id, media_url, caption, access_token, media_type)
     if not container_id:
-        raise RuntimeError('Failed to create Instagram media container')
+        raise RuntimeError(f'Failed to create Instagram media container for {media_type}')
     
     # Step 2: Wait for media to be ready (Instagram needs time to process)
     logger.info(f'⏳ Waiting for Instagram to process media...')

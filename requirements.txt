@@ -31,7 +31,21 @@ croniter>=1.3.0,<2.0.0
 # OpenAI (for Categorization and Article Generator workers)
 openai>=2.8.1,<3.0.0
 
+# Azure Speech Services (for audio generation)
+azure-cognitiveservices-speech>=1.34.0,<2.0.0
+
+# Video processing (for video generation)
+moviepy>=1.0.3,<2.0.0
+numpy>=1.24.0,<2.0.0
+
 # Telegram (for Publisher worker)
 python-telegram-bot>=20.7,<21.0.0
 # Telethon removed from main requirements - installed separately with error handling
 requests-oauthlib>=1.3.1
+
+# Pexels API for video content
+pexels-api>=1.0.0
+# Alternative: use requests for direct API calls if pexels-api not available
+
+# Azure Storage for video hosting
+azure-storage-blob>=12.19.0,<13.0.0

@@ -469,6 +469,29 @@ class PGClient:
                 pass
             self._put_conn(conn, pooled)
 
+    def fetch_article_ru_by_article_id(self, article_id: str) -> Optional[Dict[str, Any]]:
+        """Get Russian translation data including script for article by original article_id"""
+        try:
+            self._connect()
+        except Exception:
+            return None
+        from psycopg2.extras import RealDictCursor
+        conn, pooled = self._get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute("SELECT * FROM public.articles_ru WHERE article_id = %s LIMIT 1", (article_id,))
+            r = cur.fetchone()
+            if not r:
+                return None
+            
+            return dict(r)
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            self._put_conn(conn, pooled)
+
     def create_topic(self, topic_name: str) -> Optional[int]:
         try:
             self._connect()

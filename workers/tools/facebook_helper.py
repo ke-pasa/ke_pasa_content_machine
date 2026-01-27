@@ -275,18 +275,20 @@ def _get_valid_access_token() -> str:
 
 
 def post_facebook(
-    image_url: str,
+    media_url: str,
     message: str,
     page_id: Optional[str] = None,
-    access_token: Optional[str] = None
+    access_token: Optional[str] = None,
+    media_type: str = 'IMAGE'
 ) -> Dict[str, Any]:
-    """Post image with message to Facebook Page using Graph API.
+    """Post image or video with message to Facebook Page using Graph API.
     
     Args:
-        image_url: Publicly accessible image URL
+        media_url: Publicly accessible media URL (image or video)
         message: Post message/caption (max 63,206 characters)
         page_id: Facebook Page ID (reads from env FACEBOOK_PAGE_ID if not provided)
         access_token: Page access token (reads from tokens file if not provided)
+        media_type: 'IMAGE' or 'VIDEO'
     
     Returns:
         Dict with post data including 'id' and 'post_id'
@@ -294,8 +296,8 @@ def post_facebook(
     Raises:
         RuntimeError on failure
     """
-    if not image_url:
-        raise ValueError('image_url is required')
+    if not media_url:
+        raise ValueError('media_url is required')
     
     if not message:
         message = ''  # Empty message is allowed
@@ -315,13 +317,18 @@ def post_facebook(
             logger.warning(f'Failed to get Facebook access token: {e}; skipping Facebook post')
             return None
     
-    logger.info(f'🔵 Posting to Facebook Page: {message[:50]}...')
+    logger.info(f'🔵 Posting to Facebook Page ({media_type}): {message[:50]}...')
     
-    # Post photo with message to Facebook Page
-    url = f'https://graph.facebook.com/v18.0/{page_id}/photos'
+    # Choose endpoint based on media type
+    if media_type.upper() == 'VIDEO':
+        url = f'https://graph.facebook.com/v18.0/{page_id}/videos'
+        media_param = 'source'  # For videos, use 'source' parameter
+    else:
+        url = f'https://graph.facebook.com/v18.0/{page_id}/photos'
+        media_param = 'url'  # For images, use 'url' parameter
 
-    # Determine whether image_url is a public HTTP URL or a local filesystem path
-    is_http = isinstance(image_url, str) and image_url.lower().startswith(('http://', 'https://'))
+    # Determine whether media_url is a public HTTP URL or a local filesystem path
+    is_http = isinstance(media_url, str) and media_url.lower().startswith(('http://', 'https://'))
 
     
     max_attempts = 3
@@ -329,40 +336,41 @@ def post_facebook(
         try:
             if is_http:
                 # Send by public URL
-                params = {'url': image_url, 'caption': message, 'access_token': access_token}
+                params = {media_param: media_url, 'description': message, 'access_token': access_token}
                 resp = requests.post(url, data=params, timeout=30)
             else:
-                # Treat image_url as local filesystem path and upload binary via 'source'
+                # Treat media_url as local filesystem path and upload binary via 'source'
                 from pathlib import Path
-                p = Path(image_url)
+                p = Path(media_url)
                 if not p.is_absolute():
                     # Resolve relative paths against project root
                     proj_root = Path(__file__).resolve().parent.parent.parent
-                    p = (proj_root / image_url).resolve()
+                    p = (proj_root / media_url).resolve()
 
                 if not p.exists():
-                    raise RuntimeError(f'Local image file not found: {p}')
+                    raise RuntimeError(f'Local media file not found: {p}')
 
-                data = {'caption': message, 'access_token': access_token}
+                data = {'description': message, 'access_token': access_token}
                 with open(p, 'rb') as fh:
                     files = {'source': fh}
                     resp = requests.post(url, data=data, files=files, timeout=120)
             
             if resp.status_code == 200:
                 data = resp.json()
-                photo_id = data.get('id')
+                media_id = data.get('id')
                 post_id = data.get('post_id')
                 
-                if photo_id:
-                    logger.info(f'✅ Successfully posted to Facebook: photo_id={photo_id}, post_id={post_id}')
+                if media_id:
+                    logger.info(f'✅ Successfully posted to Facebook ({media_type}): media_id={media_id}, post_id={post_id}')
                     return {
-                        'id': photo_id,
+                        'id': media_id,
                         'post_id': post_id,
-                        'status': 'published'
+                        'status': 'published',
+                        'media_type': media_type
                     }
                 else:
-                    logger.error(f'No photo ID in response: {data}')
-                    raise RuntimeError(f'No photo ID in Facebook response: {data}')
+                    logger.error(f'No media ID in response: {data}')
+                    raise RuntimeError(f'No media ID in Facebook response: {data}')
             else:
                 status = resp.status_code
                 try:

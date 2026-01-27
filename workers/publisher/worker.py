@@ -25,6 +25,12 @@ from workers.tools.facebook_helper import post_facebook
 from workers.tools.threads_helper import post_threads
 from workers.tools.pg_client import get_pg_client
 from .config import PublisherConfig
+from workers.tools.audio_generator import generate_audio_for_article
+from workers.tools.video_generator import generate_video_for_article, cleanup_temp_video
+from workers.tools.azure_storage_helper import AzureStorageUploader, cleanup_local_video
+from workers.tools.pexels_helper import PexelsHelper
+from workers.tools.video_generator import VideoGenerator
+from workers.tools.audio_generator import AudioGenerator
 from workers.tools.constants import MIN_PUBLISH_SCORE
 from workers.tools.x_helper import _get_valid_access_token
 
@@ -33,14 +39,16 @@ logger = logging.getLogger(__name__)
 class PublisherWorker:
     """Worker for publishing articles to Telegram channels"""
     
-    def __init__(self, config: PublisherConfig = None):
+    def __init__(self, config: PublisherConfig = None, video_only_mode: bool = False):
         """
         Initialize publisher worker
         
         Args:
             config: Worker configuration
+            video_only_mode: If True, only generate videos without publishing
         """
         self.config = config or PublisherConfig.from_env()
+        self.video_only_mode = video_only_mode
         try:
             self.pg = get_pg_client()
         except Exception:
@@ -65,12 +73,13 @@ class PublisherWorker:
         try:
             import zoneinfo
             madrid_tz = zoneinfo.ZoneInfo('Europe/Madrid')
-        except ImportError:
-            # Fallback for Python < 3.9
+            now = datetime.now(madrid_tz)
+        except (ImportError, Exception):
+            # Fallback for Python < 3.9 or missing timezone data
             from datetime import timezone as tz
-            madrid_tz = tz(timedelta(hours=1))  # CET/CEST approximation
+            madrid_tz = tz(timedelta(hours=1))  # CET approximation
+            now = datetime.now(madrid_tz)
         
-        now = datetime.now(madrid_tz)
         hour = now.hour
         # Block posting between 23:00 (inclusive) and 09:00 (exclusive)
         return hour >= 23 or hour < 9
@@ -647,17 +656,106 @@ class PublisherWorker:
             logger.warning(f"⚠️ Failed to post to X: {e}")
             return None, str(e)
 
+    def _generate_social_video(self, article_id: str, script_text: str, title: str) -> tuple:
+        """Generate video for social media posting (shared logic for Instagram and Facebook)
+        
+        Returns: (success: bool, video_path: str, public_url: str, error_msg: str)
+        """
+        try:
+            video_generator = VideoGenerator()
+            audio_generator = AudioGenerator()
+            pexels_helper = PexelsHelper()
+            
+            # Get 3 videos from Pexels
+            video_urls = pexels_helper.get_videos_for_script(script_text, count=3)
+            if len(video_urls) < 3:
+                return False, None, None, f"Only found {len(video_urls)} videos"
+            
+            # Generate audio
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as audio_temp:
+                success, error_msg = audio_generator.generate_audio(script_text, audio_temp.name)
+                if not success:
+                    return False, None, None, f"Audio generation failed: {error_msg}"
+                
+                audio_duration = audio_generator.get_audio_duration_estimate(script_text)
+                
+                # Generate video with title overlay
+                videos_dir = os.path.join(os.getcwd(), "generated_videos")
+                os.makedirs(videos_dir, exist_ok=True)
+                video_output_path = os.path.join(videos_dir, f"{article_id}_social.mp4")
+                
+                try:
+                    success, error_msg = video_generator.generate_video_with_multiple_videos(
+                        video_urls=video_urls,
+                        audio_path=audio_temp.name,
+                        output_path=video_output_path,
+                        audio_duration=audio_duration,
+                        title=title
+                    )
+                    
+                    if not success:
+                        return False, None, None, f"Video generation failed: {error_msg}"
+                    
+                    logger.info(f"🎬 Video generated: {video_output_path}")
+                    
+                    # Upload video to Azure Storage for public access
+                    uploader = AzureStorageUploader()
+                    public_video_url = uploader.upload_video(video_output_path, f"{article_id}_social.mp4")
+                    
+                    if not public_video_url:
+                        return False, video_output_path, None, "Azure Storage upload failed"
+                    
+                    return True, video_output_path, public_video_url, None
+                    
+                finally:
+                    # Cleanup temporary audio file
+                    try:
+                        audio_temp.close()
+                        os.unlink(audio_temp.name)
+                    except:
+                        pass
+                        
+        except Exception as e:
+            return False, None, None, str(e)
+    
     def _post_to_instagram(self, message: str, data: dict) -> tuple:
         """Attempt to post to Instagram if configured. Returns (result, error_str).
         
-        Posts image with caption to Instagram Business/Creator account.
-        Uses the same message as Telegram (telegram_final) but converts HTML to plain text.
+        For high-score articles (>95), generates and posts video instead of image.
+        For regular articles, posts image with caption to Instagram Business/Creator account.
         """
         if post_instagram is None:
             return None, 'instagram_helper_not_installed'
 
         try:
-            # Extract data
+            # Check if this is a high-score article for video generation
+            total_score = data.get('total_score', 0)
+            script_text = data.get('script', '').strip()
+            
+            if total_score > 95 and script_text:
+                logger.info(f"🎬 High-score article ({total_score}) - generating video for Instagram")
+                article_id = data.get('id')
+                title = data.get('title_ru', '')
+                
+                success, video_path, public_url, error_msg = self._generate_social_video(article_id, script_text, title)
+                
+                if success:
+                    caption = self._html_to_plain_text(message)
+                    caption = f"🎬 {caption}\n\nПодробности по ссылке в профиле @kepasa.es"
+                    
+                    try:
+                        res = post_instagram(public_url, caption, media_type='VIDEO')
+                        logger.info(f"🎬🟣 Instagram video post successful: {res.get('id')}")
+                        return res, None
+                    except Exception as e:
+                        logger.warning(f"⚠️ Video posting failed: {e}, falling back to image")
+                        return self._fallback_to_image_instagram(message, data, video_generated=True)
+                else:
+                    logger.warning(f"⚠️ {error_msg}, falling back to image")
+                    return self._fallback_to_image_instagram(message, data)
+            
+            # Standard image posting for regular articles
             image_url = data.get('image_url') or data.get('image')
             if not image_url:
                 logger.warning(f"⚠️ No image_url for Instagram post")
@@ -677,18 +775,79 @@ class PublisherWorker:
             logger.warning(f"⚠️ Failed to post to Instagram: {e}")
             return None, str(e)
 
+    def _fallback_to_image_instagram(self, message: str, data: dict, video_generated: bool = False) -> tuple:
+        """Fallback to regular image posting for Instagram"""
+        try:
+            image_url = data.get('image_url') or data.get('image')
+            if not image_url:
+                return None, 'no_image_url'
+
+            # Convert HTML to plain text for Instagram
+            caption = self._html_to_plain_text(message)
+            
+            # Add video indicator if video was generated
+            if video_generated:
+                caption = f"🎬 {caption}\n\nВидео доступно на нашем канале!"
+            
+            caption = f"{caption}\n\nПодробности по ссылке в профиле @kepasa.es"
+
+            # Post to Instagram
+            res = post_instagram(image_url, caption)
+            logger.info(f"🟣 Instagram image post successful: {res.get('id')}")
+            return res, None
+        except Exception as e:
+            return None, str(e)
+
     def _post_to_facebook(self, message: str, data: dict) -> tuple:
         """Attempt to post to Facebook Page if configured. Returns (result, error_str).
         
-        Posts image with message to Facebook Page.
-        Uses the same message as Telegram (telegram_final) but converts HTML to Facebook formatting.
-        Preserves links and adds article link at the end (clickable).
+        For high-score articles (>95), generates and posts video instead of image.
+        For regular articles, posts image with message to Facebook Page.
         """
         if post_facebook is None:
             return None, 'facebook_helper_not_installed'
 
         try:
-            # Extract data
+            # Check if this is a high-score article for video generation
+            total_score = data.get('total_score', 0)
+            script_text = data.get('script', '').strip()
+            
+            if total_score > 95 and script_text:
+                logger.info(f"🎬 High-score article ({total_score}) - generating video for Facebook")
+                article_id = data.get('id')
+                title = data.get('title_ru', '')
+                
+                # Check if video already exists from Instagram posting
+                videos_dir = os.path.join(os.getcwd(), "generated_videos")
+                video_output_path = os.path.join(videos_dir, f"{article_id}_social.mp4")
+                
+                if os.path.exists(video_output_path):
+                    logger.info(f"🔄 Reusing existing video for Facebook: {video_output_path}")
+                    success, video_path, public_url = True, video_output_path, None
+                else:
+                    success, video_path, public_url, error_msg = self._generate_social_video(article_id, script_text, title)
+                    
+                    if not success:
+                        logger.warning(f"⚠️ {error_msg}, falling back to image")
+                        return self._fallback_to_image_facebook(message, data)
+                
+                # Post video to Facebook using local file path
+                post_message = self._html_to_plain_text(message)
+                post_message = f"🎬 {post_message}\n\nНаш тг канал: https://t.me/spain_kepasa"
+                
+                try:
+                    res = post_facebook(video_path, post_message, media_type='VIDEO')
+                    logger.info(f"🎬🔵 Facebook video post successful: {res.get('post_id')}")
+                    
+                    # Cleanup local video after both platforms posted
+                    cleanup_local_video(video_path)
+                    
+                    return res, None
+                except Exception as e:
+                    logger.warning(f"⚠️ Video posting failed: {e}, falling back to image")
+                    return self._fallback_to_image_facebook(message, data, video_generated=True)
+            
+            # Standard image posting for regular articles
             image_url = data.get('image_url') or data.get('image')
             if not image_url:
                 logger.warning(f"⚠️ No image_url for Facebook post")
@@ -706,6 +865,29 @@ class PublisherWorker:
             return res, None
         except Exception as e:
             logger.warning(f"⚠️ Failed to post to Facebook: {e}")
+            return None, str(e)
+
+    def _fallback_to_image_facebook(self, message: str, data: dict, video_generated: bool = False) -> tuple:
+        """Fallback to regular image posting for Facebook"""
+        try:
+            image_url = data.get('image_url') or data.get('image')
+            if not image_url:
+                return None, 'no_image_url'
+
+            # Convert HTML to Facebook-friendly text
+            post_message = self._html_to_plain_text(message)
+            
+            # Add video indicator if video was generated
+            if video_generated:
+                post_message = f"🎬 {post_message}\n\nВидео доступно на нашем канале!"
+            
+            post_message = f"{post_message}\n\nНаш тг канал: https://t.me/spain_kepasa"
+
+            # Post to Facebook
+            res = post_facebook(image_url, post_message)
+            logger.info(f"🔵 Facebook image post successful: {res.get('post_id')}")
+            return res, None
+        except Exception as e:
             return None, str(e)
 
     def _post_to_threads(self, message: str, data: dict) -> tuple:
@@ -840,65 +1022,119 @@ class PublisherWorker:
                 doc_obj = DocShim(data)
 
                 message = final_preview
+                
+                # Generate video for script if available
+                video_file_path = None
+                script_text = data.get('script')
+                if script_text and script_text.strip() and image:
+                    logger.info(f"🎬 Generating video for article {article_id}")
+                    try:
+                        if self.video_only_mode:
+                            # In video-only mode, save videos permanently
+                            videos_dir = os.path.join(os.getcwd(), "videos")
+                            success, video_path, error_msg = generate_video_for_article(
+                                article_id, script_text, image, 
+                                output_dir=videos_dir, keep_video=True
+                            )
+                        else:
+                            # In normal mode, create temporary videos
+                            success, video_path, error_msg = generate_video_for_article(
+                                article_id, script_text, image
+                            )
+                            
+                        if success:
+                            video_file_path = video_path
+                            logger.info(f"✅ Video generated for {article_id}: {video_path}")
+                            
+                            # In video-only mode, just generate video and skip publication
+                            if self.video_only_mode:
+                                logger.info(f"📹 Video-only mode: Skipping publication for {article_id}")
+                                results['published'] += 1
+                                continue
+                                
+                        else:
+                            logger.warning(f"⚠️ Video generation failed for {article_id}: {error_msg}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Video generation exception for {article_id}: {e}")
+                
+                # In video-only mode, skip publication
+                if self.video_only_mode:
+                    if video_file_path:
+                        logger.info(f"📹 Video-only mode: Video generated for {article_id}")
+                        results['published'] += 1
+                    else:
+                        logger.info(f"📹 Video-only mode: No video generated for {article_id}, skipping")
+                        results['skipped'] += 1
+                    continue
+
                 sent_message, doc_error = self._send_with_fallback(chat_id, image, message, data)
+
+                # Clean up temporary video file (only in normal mode)
+                if video_file_path and not self.video_only_mode:
+                    try:
+                        cleanup_temp_video(video_file_path)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to cleanup video file for {article_id}: {e}")
 
                 self._record_post(article_id, sent_message, chat_id)
                 self._mark_article_published(article_id, sent_message, doc_error)
 
-                # Attempt to post to X (twitter) if enabled
-                try:
-                    x_res, x_err = self._post_to_x(message, data)
-                    logger.debug(f"X post attempt result: res={x_res} err={x_err}")
-                    if x_err:
-                        # Append X error to telegram_publish_error field via direct DB update
-                        try:
-                            conn, pooled = pg._get_conn()
-                            cur = conn.cursor()
+                # Skip social media posting in video-only mode
+                if not self.video_only_mode:
+                    # Attempt to post to X (twitter) if enabled
+                    try:
+                        x_res, x_err = self._post_to_x(message, data)
+                        logger.debug(f"X post attempt result: res={x_res} err={x_err}")
+                        if x_err:
+                            # Append X error to telegram_publish_error field via direct DB update
                             try:
-                                cur.execute("UPDATE public.articles_ru SET telegram_publish_error = %s, updated_at = %s WHERE id = %s",
-                                            (x_err, datetime.now(timezone.utc).isoformat(), article_id))
-                                conn.commit()
-                            finally:
+                                conn, pooled = pg._get_conn()
+                                cur = conn.cursor()
                                 try:
-                                    cur.close()
-                                except Exception:
-                                    pass
-                                pg._put_conn(conn, pooled)
-                        except Exception:
-                            logger.warning(f"⚠️ Failed to record X error for {article_id}")
+                                    cur.execute("UPDATE public.articles_ru SET telegram_publish_error = %s, updated_at = %s WHERE id = %s",
+                                                (x_err, datetime.now(timezone.utc).isoformat(), article_id))
+                                    conn.commit()
+                                finally:
+                                    try:
+                                        cur.close()
+                                    except Exception:
+                                        pass
+                                    pg._put_conn(conn, pooled)
+                            except Exception:
+                                logger.warning(f"⚠️ Failed to record X error for {article_id}")
 
-                except Exception as e:
-                    logger.warning(f"⚠️ Unexpected error while posting to X: {e}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Unexpected error while posting to X: {e}")
 
-                # Attempt to post to Instagram if enabled
-                try:
-                    ig_res, ig_err = self._post_to_instagram(message, data)
-                    logger.debug(f"Instagram post attempt result: res={ig_res} err={ig_err}")
-                    if ig_err:
-                        logger.info(f"ℹ️ Instagram post skipped/failed for {article_id}: {ig_err}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Unexpected error while posting to Instagram: {e}")
+                    # Attempt to post to Instagram if enabled
+                    try:
+                        ig_res, ig_err = self._post_to_instagram(message, data)
+                        logger.debug(f"Instagram post attempt result: res={ig_res} err={ig_err}")
+                        if ig_err:
+                            logger.info(f"ℹ️ Instagram post skipped/failed for {article_id}: {ig_err}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Unexpected error while posting to Instagram: {e}")
 
-                # Attempt to post to Facebook if enabled
-                try:
-                    fb_res, fb_err = self._post_to_facebook(message, data)
-                    logger.debug(f"Facebook post attempt result: res={fb_res} err={fb_err}")
-                    if fb_err:
-                        logger.info(f"ℹ️ Facebook post skipped/failed for {article_id}: {fb_err}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Unexpected error while posting to Facebook: {e}")
+                    # Attempt to post to Facebook if enabled
+                    try:
+                        fb_res, fb_err = self._post_to_facebook(message, data)
+                        logger.debug(f"Facebook post attempt result: res={fb_res} err={fb_err}")
+                        if fb_err:
+                            logger.info(f"ℹ️ Facebook post skipped/failed for {article_id}: {fb_err}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Unexpected error while posting to Facebook: {e}")
 
-                # Attempt to post to Threads if enabled
-                try:
-                    threads_res, threads_err = self._post_to_threads(message, data)
-                    logger.debug(f"Threads post attempt result: res={threads_res} err={threads_err}")
-                    if threads_err:
-                        if '500' in str(threads_err) or 'not connected' in str(threads_err):
-                            logger.warning(f"⚠️ Threads not configured properly for {article_id}. Skipping Threads (Instagram needs to be connected to Threads and have proper permissions)")
-                        else:
-                            logger.info(f"ℹ️ Threads post skipped/failed for {article_id}: {threads_err}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Unexpected error while posting to Threads: {e}")
+                    # Attempt to post to Threads if enabled
+                    try:
+                        threads_res, threads_err = self._post_to_threads(message, data)
+                        logger.debug(f"Threads post attempt result: res={threads_res} err={threads_err}")
+                        if threads_err:
+                            if '500' in str(threads_err) or 'not connected' in str(threads_err):
+                                logger.warning(f"⚠️ Threads not configured properly for {article_id}. Skipping Threads (Instagram needs to be connected to Threads and have proper permissions)")
+                            else:
+                                logger.info(f"ℹ️ Threads post skipped/failed for {article_id}: {threads_err}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Unexpected error while posting to Threads: {e}")
 
                 if sent_message:
                     results['published'] += 1
@@ -931,6 +1167,8 @@ def main():
                        help='Run health check on all integrations instead of publishing')
     parser.add_argument('--force', action='store_true',
                        help='Force publication even during night hours (23:00-09:00)')
+    parser.add_argument('--article_id', type=str,
+                       help='Publish specific article by ID')
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -953,7 +1191,13 @@ def main():
             sys.exit(exit_code)
         else:
             # Normal publication flow
-            result = worker.publish_articles(force=args.force)
+            if args.article_id:
+                # Publish specific article
+                logger.info(f"🎯 Publishing specific article: {args.article_id}")
+                result = worker.publish_specific_article(args.article_id, force=args.force)
+            else:
+                # Normal batch publication
+                result = worker.publish_articles(force=args.force)
             
             logger.info("\n" + "=" * 60)
             logger.info("📊 RESULTS")

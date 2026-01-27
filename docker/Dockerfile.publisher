@@ -2,6 +2,10 @@ FROM ke-pasa-workers-base:latest
 
 COPY workers/publisher /app/workers/publisher
 
+# Create directories for video generation
+RUN mkdir -p /app/generated_videos /app/public/videos && \
+    chmod 755 /app/generated_videos /app/public/videos
+
 RUN pip install --no-cache-dir -r /app/workers/publisher/requirements.txt
 
 COPY deploy/docker/supervisord.conf.publisher /etc/supervisor/conf.d/publisher-worker.conf

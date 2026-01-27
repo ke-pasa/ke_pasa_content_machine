@@ -12,7 +12,14 @@ RUN apt-get update && apt-get install -y \
     supervisor \
     cron \
     git \
+    libasound2-dev \
+    ffmpeg \
+    imagemagick \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Configure ImageMagick policy for video processing
+RUN sed -i 's/<policy domain="path" rights="none" pattern="@\*"\/>/<!-- <policy domain="path" rights="none" pattern="@*"\/> -->/' /etc/ImageMagick-6/policy.xml || true
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
