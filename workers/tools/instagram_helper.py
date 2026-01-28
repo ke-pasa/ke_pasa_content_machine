@@ -399,8 +399,9 @@ def post_instagram(
     
     # Step 2: Wait for media to be ready (Instagram needs time to process)
     logger.info(f'⏳ Waiting for Instagram to process media...')
-    max_wait_time = 30  # seconds
-    poll_interval = 2  # seconds
+    # Videos need significant time - HD videos can take 2-3 minutes to process
+    max_wait_time = 180 if media_type.upper() == 'VIDEO' else 30  # seconds
+    poll_interval = 5  # seconds (check every 5s to reduce API calls)
     waited = 0
     
     while waited < max_wait_time:

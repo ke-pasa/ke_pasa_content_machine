@@ -906,7 +906,7 @@ class PublisherWorker:
             # Convert HTML to Facebook-friendly text
             post_message = self._html_to_plain_text(message)
             
-            # Add video indicator if video was generated
+            # Add video indicator if video was generated (same as Instagram)
             if video_generated:
                 post_message = f"🎬 {post_message}\n\nВидео доступно на нашем канале!"
             

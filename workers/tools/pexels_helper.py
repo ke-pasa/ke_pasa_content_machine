@@ -6,6 +6,7 @@ import os
 import logging
 import requests
 import random
+import json
 from typing import Optional, List, Dict, Tuple
 
 _logger = logging.getLogger('workers.tools.pexels_helper')
@@ -239,46 +240,112 @@ class PexelsHelper:
             return []
             
     def extract_keywords_from_script(self, script_text: str) -> List[str]:
-        """Extract English keywords from script text for video search"""
-        # Use English keywords that work well with Pexels
-        # Based on common news/business themes
+        """Extract English keyword pairs from script text using OpenAI for video search"""
+        try:
+            # Try to use OpenAI to generate relevant keyword pairs
+            keywords = self._generate_keywords_with_openai(script_text)
+            if keywords:
+                _logger.info(f"Generated keywords with OpenAI: {keywords}")
+                return keywords
+        except Exception as e:
+            _logger.warning(f"Failed to generate keywords with OpenAI: {e}, using fallback")
         
+        # Fallback to simple keyword extraction
         script_lower = script_text.lower()
         
-        # Map common themes to English keywords
+        # Map common themes to English keyword pairs
         theme_keywords = {
-            'мошенн': ['scam', 'fraud', 'security'],
-            'сайт': ['website', 'internet', 'technology'], 
-            'деньги': ['money', 'finance', 'business'],
-            'продаж': ['business', 'commerce', 'shopping'],
-            'безопас': ['security', 'safety', 'protection'],
-            'полиц': ['police', 'law', 'justice'],
-            'банк': ['banking', 'finance', 'money'],
-            'компан': ['business', 'office', 'corporate'],
-            'суд': ['court', 'legal', 'justice'],
-            'город': ['city', 'urban', 'street'],
-            'дом': ['house', 'home', 'residential'],
-            'машин': ['car', 'transport', 'traffic'],
-            'работ': ['work', 'office', 'business'],
-            'люди': ['people', 'crowd', 'social']
+            'мошенн': ['fraud security', 'scam alert', 'cyber crime'],
+            'сайт': ['website design', 'internet technology', 'digital network'], 
+            'деньги': ['money business', 'finance banking', 'cash payment'],
+            'продаж': ['business office', 'commerce shopping', 'retail store'],
+            'безопас': ['security camera', 'safety protection', 'police patrol'],
+            'полиц': ['police car', 'law enforcement', 'justice court'],
+            'банк': ['banking finance', 'money business', 'financial office'],
+            'компан': ['business office', 'corporate meeting', 'work team'],
+            'суд': ['court legal', 'justice law', 'judge trial'],
+            'город': ['city street', 'urban architecture', 'downtown building'],
+            'дом': ['house home', 'residential building', 'apartment property'],
+            'машин': ['car traffic', 'vehicle transport', 'road highway'],
+            'работ': ['work office', 'business meeting', 'professional team'],
+            'люди': ['people crowd', 'social gathering', 'group meeting']
         }
         
         keywords = []
         # Find matching themes
-        for theme, eng_words in theme_keywords.items():
+        for theme, eng_pairs in theme_keywords.items():
             if theme in script_lower:
-                keywords.extend(eng_words)
-                break  # Use first match
+                keywords = eng_pairs[:3]
+                break
         
-        # Fallback to general business/news keywords  
+        # Fallback to general business/news keyword pairs
         if not keywords:
-            keywords = ['business', 'office', 'city', 'technology', 'people']
+            keywords = ['business office', 'city street', 'people work']
         
-        # Remove duplicates and limit to 3 keywords
-        unique_keywords = list(dict.fromkeys(keywords))[:3]
-        
-        _logger.info(f"Extracted English keywords: {unique_keywords}")
-        return unique_keywords
+        _logger.info(f"Extracted fallback keywords: {keywords}")
+        return keywords[:3]
+    
+    def _generate_keywords_with_openai(self, script_text: str) -> Optional[List[str]]:
+        """Use OpenAI to generate relevant keyword pairs for Pexels video search"""
+        try:
+            from openai import AzureOpenAI
+            
+            # Initialize Azure OpenAI client
+            client = AzureOpenAI(
+                api_key=os.getenv('AZURE_OPENAI_KEY'),
+                api_version="2024-02-15-preview",
+                azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT')
+            )
+            
+            prompt = f"""Based on this Russian news script, generate 3 pairs of English keywords for searching stock videos on Pexels.
+
+IMPORTANT: The video will be 30 seconds long with 3 segments:
+- First keyword pair: for first 10 seconds (beginning of the story)
+- Second keyword pair: for middle 10 seconds (development of the story)
+- Third keyword pair: for last 10 seconds (conclusion/end of the story)
+
+Each pair should match the content of its corresponding part of the script.
+
+Requirements:
+- Each pair should be exactly 2 words (e.g., "business office", "city street")
+- Keywords should be generic enough to find stock footage on Pexels
+- Focus on visual elements that can be filmed
+- Use common English words that work well for stock video search
+- Return ONLY the 3 keyword pairs, one per line, nothing else
+
+Script:
+{script_text[:800]}
+
+Output format (example):
+fraud alert
+phone scam
+police investigation"""
+
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that generates English keyword pairs for stock video search based on script progression."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=100
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Parse the result - expect 3 lines with keyword pairs
+            keywords = [line.strip() for line in result.split('\n') if line.strip()]
+            
+            # Validate we got 3 keyword pairs
+            if len(keywords) >= 3:
+                return keywords[:3]
+            else:
+                _logger.warning(f"OpenAI returned {len(keywords)} keywords, expected 3")
+                return None
+                
+        except Exception as e:
+            _logger.error(f"OpenAI keyword generation failed: {e}")
+            return None
 
 
 __all__ = ['PexelsHelper']
