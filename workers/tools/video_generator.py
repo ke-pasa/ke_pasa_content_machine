@@ -325,7 +325,7 @@ class VideoGenerator:
                         
                         for font_path in font_paths:
                             try:
-                                font = ImageFont.truetype(font_path, 26)
+                                font = ImageFont.truetype(font_path, 20)
                                 _logger.info(f"Using font: {font_path}")
                                 break
                             except (OSError, IOError):
@@ -337,7 +337,7 @@ class VideoGenerator:
                             _logger.warning("No TrueType font found, using default font")
                         
                         # Split text into multiple lines if needed
-                        padding = 30  # Fixed padding in pixels
+                        padding = 20  # Reduced padding for more text space
                         max_width = overlay_width - (padding * 2)  # Both sides
                         words = title_text.split()
                         lines = []
@@ -362,7 +362,7 @@ class VideoGenerator:
                             lines.append(current_line)
                         
                         # Calculate text position (centered with padding)
-                        line_height = 35
+                        line_height = 24  # Reduced line height for smaller font
                         total_height = len(lines) * line_height
                         start_y = (overlay_height - total_height) // 2
                         

@@ -747,6 +747,10 @@ class PublisherWorker:
                     try:
                         res = post_instagram(public_url, caption, media_type='VIDEO')
                         logger.info(f"🎬🟣 Instagram video post successful: {res.get('id')}")
+                        
+                        # Auto-cleanup: Delete video from Azure Storage after successful posting
+                        self._cleanup_azure_video(public_url, article_id)
+                        
                         return res, None
                     except Exception as e:
                         logger.warning(f"⚠️ Video posting failed: {e}, falling back to image")
@@ -775,6 +779,31 @@ class PublisherWorker:
             logger.warning(f"⚠️ Failed to post to Instagram: {e}")
             return None, str(e)
 
+    def _cleanup_azure_video(self, public_url: str, article_id: str) -> None:
+        """Delete video from Azure Storage after successful posting.
+        
+        Args:
+            public_url: The public Azure Storage URL of the video
+            article_id: Article ID for logging purposes
+        """
+        try:
+            # Extract blob name from public URL
+            # Format: https://{account}.blob.core.windows.net/{container}/{blob_name}
+            if not public_url or 'blob.core.windows.net' not in public_url:
+                return
+            
+            blob_name = public_url.split('/')[-1]
+            
+            # Delete from Azure Storage
+            uploader = AzureStorageUploader()
+            if uploader.delete_video(blob_name):
+                logger.info(f"🧹 Cleaned up Azure video for article {article_id}: {blob_name}")
+            else:
+                logger.warning(f"⚠️ Failed to cleanup Azure video: {blob_name}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Error during Azure cleanup for {article_id}: {e}")
+    
     def _fallback_to_image_instagram(self, message: str, data: dict, video_generated: bool = False) -> tuple:
         """Fallback to regular image posting for Instagram"""
         try:

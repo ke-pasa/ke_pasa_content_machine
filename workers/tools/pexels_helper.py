@@ -5,6 +5,7 @@ Simplified version - only video functionality used by video generator
 import os
 import logging
 import requests
+import random
 from typing import Optional, List, Dict, Tuple
 
 _logger = logging.getLogger('workers.tools.pexels_helper')
@@ -98,50 +99,54 @@ class PexelsHelper:
             for query in queries:
                 success, data, error = self.search_videos(
                     query=query,
-                    per_page=videos_per_query * 2,  # Get extra options
+                    per_page=20,  # Get top 20 results for variety
                     orientation="portrait"  # Good for vertical videos
                 )
                 
                 if success and data and data.get('videos'):
-                    # Take the best videos from this query
-                    videos = data['videos'][:videos_per_query]
+                    # Get random videos from top 20 for variety (instead of always taking first ones)
+                    available_videos = data['videos'][:20]  # Top 20 results
+                    
+                    # Randomly select videos_per_query videos from available
+                    if len(available_videos) <= videos_per_query:
+                        videos = available_videos
+                    else:
+                        videos = random.sample(available_videos, videos_per_query)
+                    
+                    _logger.info(f"Selected {len(videos)} random videos from {len(available_videos)} available for query: {query}")
                     for video in videos:
-                        # Get the best quality available (optimized for speed)
+                        # Get HD quality (optimal balance between quality and file size)
                         video_files = video.get('video_files', [])
                         if video_files:
-                            # Sort by quality - prefer smaller files for speed
-                            sorted_files = sorted(video_files, key=lambda x: (
-                                x.get('width', 0) * x.get('height', 0),  # Smaller resolution first  
-                                x.get('fps', 30)  # Lower FPS first
-                            ))
+                            # Filter for HD quality videos (720p-1080p)
+                            hd_files = [
+                                vf for vf in video_files
+                                if 1280 <= vf.get('width', 0) <= 1920 
+                                and 720 <= vf.get('height', 0) <= 1080
+                            ]
                             
-                            # Find video with lowest resolution for fastest processing
-                            video_url = None
-                            for video_file in sorted_files:
-                                width = video_file.get('width', 0)
-                                height = video_file.get('height', 0) 
-                                fps = video_file.get('fps', 30)
+                            # If no HD files, fall back to all available
+                            candidates = hd_files if hd_files else video_files
+                            
+                            # Sort by quality - prefer Full HD (1080p) over 720p
+                            sorted_files = sorted(candidates, key=lambda x: (
+                                x.get('width', 0) * x.get('height', 0),  # Higher resolution first
+                                x.get('fps', 0)  # Higher FPS first
+                            ), reverse=True)
+                            
+                            # Get the best HD quality video available
+                            if sorted_files:
+                                best_video = sorted_files[0]
+                                video_url = best_video.get('link')
+                                width = best_video.get('width', 0)
+                                height = best_video.get('height', 0)
+                                fps = best_video.get('fps', 30)
+                                quality = best_video.get('quality', 'hd')
                                 
-                                # Prefer videos ≤ 480p (SD) for maximum speed
-                                if width <= 854 and height <= 480:
-                                    video_url = video_file.get('link')
-                                    _logger.info(f"Added SD video ({width}x{height}@{fps}fps)")
-                                    break
-                                # Fallback to 720p
-                                elif width <= 1280 and height <= 720:
-                                    video_url = video_file.get('link')
-                                    _logger.info(f"Added HD video ({width}x{height}@{fps}fps)")
-                                    break
-                                    
-                            # Fallback to smallest available
-                            if not video_url and sorted_files:
-                                video_url = sorted_files[0].get('link')
-                                width = sorted_files[0].get('width', 0)
-                                height = sorted_files[0].get('height', 0)
-                                _logger.info(f"Added fallback video ({width}x{height})")
+                                _logger.info(f"Added HD video: {width}x{height}@{fps}fps ({quality})")
                                 
-                            if video_url:
-                                all_video_urls.append(video_url)
+                                if video_url:
+                                    all_video_urls.append(video_url)
                 else:
                     _logger.warning(f"No videos found for query: {query}")
             
