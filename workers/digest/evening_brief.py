@@ -276,7 +276,7 @@ def publish_content(content_dict: dict, channels: list, job_id: str = 'evening_b
     # Publish to Facebook using Facebook-specific content
     try:
         fb_text = facebook_content if facebook_content else _html_to_facebook_text(html_content)
-        fb_result = post_facebook(message=fb_text, image_url=image_url)
+        fb_result = post_facebook(media_url=image_url, message=fb_text)
         results['facebook'] = fb_result
     except Exception as e:
         logger.error(f"❌ Error posting to Facebook: {e}")
