@@ -115,38 +115,51 @@ class PexelsHelper:
                     
                     _logger.info(f"Selected {len(videos)} random videos from {len(available_videos)} available for query: {query}")
                     for video in videos:
-                        # Get HD quality (optimal balance between quality and file size)
+                        # Get HD quality MAXIMUM (no 4K allowed)
                         video_files = video.get('video_files', [])
                         if video_files:
-                            # Filter for HD quality videos (720p-1080p)
+                            # Filter STRICTLY for HD quality videos (720p-1080p ONLY, exclude 4K)
                             hd_files = [
                                 vf for vf in video_files
                                 if 1280 <= vf.get('width', 0) <= 1920 
                                 and 720 <= vf.get('height', 0) <= 1080
                             ]
                             
-                            # If no HD files, fall back to all available
-                            candidates = hd_files if hd_files else video_files
+                            # If no HD files found, use lower quality (SD) but NOT 4K
+                            if not hd_files:
+                                _logger.warning(f"No HD quality found, using lower quality (excluding 4K)")
+                                # Take anything below Full HD but exclude 4K (over 1920x1080)
+                                lower_quality_files = [
+                                    vf for vf in video_files
+                                    if vf.get('width', 0) <= 1920 and vf.get('height', 0) <= 1080
+                                ]
+                                candidates = lower_quality_files
+                            else:
+                                candidates = hd_files
                             
-                            # Sort by quality - prefer Full HD (1080p) over 720p
+                            # If still no candidates, skip this video
+                            if not candidates:
+                                _logger.warning(f"Only 4K quality available, skipping video")
+                                continue
+                            
+                            # Sort by quality - prefer higher resolution within our limit
                             sorted_files = sorted(candidates, key=lambda x: (
                                 x.get('width', 0) * x.get('height', 0),  # Higher resolution first
                                 x.get('fps', 0)  # Higher FPS first
                             ), reverse=True)
                             
-                            # Get the best HD quality video available
-                            if sorted_files:
-                                best_video = sorted_files[0]
-                                video_url = best_video.get('link')
-                                width = best_video.get('width', 0)
-                                height = best_video.get('height', 0)
-                                fps = best_video.get('fps', 30)
-                                quality = best_video.get('quality', 'hd')
-                                
-                                _logger.info(f"Added HD video: {width}x{height}@{fps}fps ({quality})")
-                                
-                                if video_url:
-                                    all_video_urls.append(video_url)
+                            # Get the best quality video (HD or lower, but never 4K)
+                            best_video = sorted_files[0]
+                            video_url = best_video.get('link')
+                            width = best_video.get('width', 0)
+                            height = best_video.get('height', 0)
+                            fps = best_video.get('fps', 30)
+                            quality = best_video.get('quality', 'hd')
+                            
+                            _logger.info(f"Added HD video: {width}x{height}@{fps}fps ({quality})")
+                            
+                            if video_url:
+                                all_video_urls.append(video_url)
                 else:
                     _logger.warning(f"No videos found for query: {query}")
             
