@@ -1055,7 +1055,26 @@ class PublisherWorker:
                 # Generate video for script if available
                 video_file_path = None
                 script_text = data.get('script')
-                if script_text and script_text.strip() and image:
+                total_score = data.get('total_score', 0)
+                
+                # Check if video is needed: requires high score (>95) or video_only_mode
+                needs_video = script_text and script_text.strip() and image
+                if needs_video and not self.video_only_mode:
+                    # Check score threshold
+                    if total_score <= 95:
+                        logger.info(f"⏭️ Skipping video generation for article {article_id} - total_score {total_score} <= 95")
+                        needs_video = False
+                    else:
+                        # Check if any video platform is configured
+                        has_facebook = bool(os.environ.get('FACEBOOK_PAGE_ID'))
+                        has_instagram = bool(os.environ.get('INSTAGRAM_USER_ID'))
+                        has_x = bool(os.environ.get('X_CLIENT_ID'))
+                        
+                        if not (has_facebook or has_instagram or has_x):
+                            logger.info(f"⏭️ Skipping video generation for article {article_id} - no video platforms configured")
+                            needs_video = False
+                
+                if needs_video:
                     logger.info(f"🎬 Generating video for article {article_id}")
                     try:
                         if self.video_only_mode:

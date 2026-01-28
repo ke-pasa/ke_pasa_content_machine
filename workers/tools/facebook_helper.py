@@ -336,7 +336,7 @@ def post_facebook(
         try:
             if is_http:
                 # Send by public URL
-                params = {media_param: media_url, 'description': message, 'access_token': access_token}
+                params = {media_param: media_url, 'message': message, 'access_token': access_token}
                 resp = requests.post(url, data=params, timeout=30)
             else:
                 # Treat media_url as local filesystem path and upload binary via 'source'
@@ -350,7 +350,7 @@ def post_facebook(
                 if not p.exists():
                     raise RuntimeError(f'Local media file not found: {p}')
 
-                data = {'description': message, 'access_token': access_token}
+                data = {'message': message, 'access_token': access_token}
                 with open(p, 'rb') as fh:
                     files = {'source': fh}
                     resp = requests.post(url, data=data, files=files, timeout=120)
