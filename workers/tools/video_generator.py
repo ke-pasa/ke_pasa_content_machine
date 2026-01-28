@@ -303,11 +303,38 @@ class VideoGenerator:
                         img = Image.new('RGBA', (overlay_width, overlay_height), (0, 0, 0, 0))
                         draw = ImageDraw.Draw(img)
                         
-                        # Try to use a system font
-                        try:
-                            font = ImageFont.truetype("arial.ttf", 26)  # Even smaller font
-                        except:
+                        # Try to use a system font with better fallback
+                        font = None
+                        
+                        # List of fonts to try in order
+                        font_paths = [
+                            # Windows fonts
+                            "arial.ttf",
+                            "Arial.ttf", 
+                            "C:/Windows/Fonts/arial.ttf",
+                            # Linux DejaVu fonts (installed in Docker)
+                            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                            # Ubuntu/Liberation fonts 
+                            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                            # Generic Linux fonts
+                            "/usr/share/fonts/TTF/arial.ttf",
+                            "/System/Library/Fonts/Arial.ttf",  # macOS
+                        ]
+                        
+                        for font_path in font_paths:
+                            try:
+                                font = ImageFont.truetype(font_path, 26)
+                                _logger.info(f"Using font: {font_path}")
+                                break
+                            except (OSError, IOError):
+                                continue
+                        
+                        # If no TrueType font found, use default
+                        if font is None:
                             font = ImageFont.load_default()
+                            _logger.warning("No TrueType font found, using default font")
                         
                         # Split text into multiple lines if needed
                         padding = 30  # Fixed padding in pixels

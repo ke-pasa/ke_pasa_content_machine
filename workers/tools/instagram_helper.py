@@ -201,7 +201,7 @@ def _create_media_container(
         media_url: Publicly accessible media URL (image or video)
         caption: Post caption (max 2,200 chars)
         access_token: Valid Instagram access token
-        media_type: 'IMAGE' or 'VIDEO'
+        media_type: 'IMAGE' or 'VIDEO' (will be converted to REELS for videos) (will be converted to REELS for videos)
     
     Returns:
         Container ID if successful, None otherwise
@@ -218,7 +218,7 @@ def _create_media_container(
             'video_url': media_url,
             'caption': caption,
             'access_token': access_token,
-            'media_type': 'VIDEO'
+            'media_type': 'REELS'  # Changed from VIDEO to REELS per Instagram API update
         }
     else:
         params = {
@@ -227,7 +227,9 @@ def _create_media_container(
             'access_token': access_token
         }
     
-    logger.info(f'📦 Creating Instagram media container ({media_type})...')
+    # Log with the actual media type that will be sent to API
+    display_type = 'REELS' if media_type.upper() == 'VIDEO' else media_type
+    logger.info(f'📦 Creating Instagram media container ({display_type})...')
     
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -358,7 +360,7 @@ def post_instagram(
         caption: Post caption (max 2,200 characters, will be truncated)
         user_id: Instagram user ID (reads from env INSTAGRAM_USER_ID if not provided)
         access_token: Access token (reads from tokens file if not provided)
-        media_type: 'IMAGE' or 'VIDEO'
+        media_type: 'IMAGE' or 'VIDEO' (videos will be posted as REELS)
     
     Returns:
         Dict with post data including 'id' and 'status', or error info
@@ -385,13 +387,15 @@ def post_instagram(
         except Exception as e:
             logger.error(f'Failed to get Instagram access token: {e}')
             raise
-    
-    logger.info(f'🟣 Posting to Instagram ({media_type}): {caption[:50]}...')
+    # Log with the actual media type that will be sent to API  
+    display_type = 'REELS' if media_type.upper() == 'VIDEO' else media_type
+    logger.info(f'🟣 Posting to Instagram ({display_type}): {caption[:50]}...')
     
     # Step 1: Create media container
     container_id = _create_media_container(user_id, media_url, caption, access_token, media_type)
     if not container_id:
-        raise RuntimeError(f'Failed to create Instagram media container for {media_type}')
+        api_type = 'REELS' if media_type.upper() == 'VIDEO' else media_type
+        raise RuntimeError(f'Failed to create Instagram media container for {api_type}')
     
     # Step 2: Wait for media to be ready (Instagram needs time to process)
     logger.info(f'⏳ Waiting for Instagram to process media...')

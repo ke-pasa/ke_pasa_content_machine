@@ -1,4 +1,20 @@
 services:
+  # Test service for debugging fonts
+  test-fonts:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.base
+    image: ke-pasa-workers-base:latest
+    container_name: ke-pasa-test-fonts
+    command: python test_fonts.py
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./test_fonts.py:/app/test_fonts.py
+      - ./logs:/app/logs
+    networks:
+      - ke-pasa-network
+
   # RSS Worker - runs every 8 hours
   rss-worker:
     build:
