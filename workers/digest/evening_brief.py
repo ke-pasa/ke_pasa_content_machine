@@ -372,11 +372,34 @@ def republish_content(content: str, republish_channels: list, original_results: 
                         except Exception as forward_error:
                             logger.error(f"Failed to forward to {target}: {forward_error}")
                             if original_message and original_message.text:
+                                # Step 2: Try sending as regular message with media
                                 try:
-                                    await client.send_message(target, original_message.text, link_preview=False)
+                                    if original_message.media:
+                                        await client.send_message(target, original_message.text, file=original_message.media, link_preview=False)
+                                    else:
+                                        await client.send_message(target, original_message.text, link_preview=False)
                                     logger.info(f"✅ Sent as regular message to {target}")
                                 except Exception as send_error:
-                                    logger.error(f"Failed to send regular message to {target}: {send_error}")
+                                    logger.warning(f"Failed to send regular message to {target}: {send_error}")
+                                    # Step 3: Try sending without media
+                                    try:
+                                        await client.send_message(target, original_message.text, link_preview=False)
+                                        logger.info(f"✅ Sent without media to {target}")
+                                    except Exception as no_media_error:
+                                        logger.warning(f"Failed to send without media to {target}: {no_media_error}")
+                                        # Step 4: Try sending with media but without links
+                                        try:
+                                            import re
+                                            text_no_links = re.sub(r'https?://\S+', '', original_message.text)
+                                            if original_message.media:
+                                                await client.send_message(target, text_no_links, file=original_message.media, link_preview=False)
+                                            else:
+                                                await client.send_message(target, text_no_links, link_preview=False)
+                                            logger.info(f"✅ Sent without links to {target}")
+                                        except Exception as final_error:
+                                            logger.error(f"All send attempts failed for {target}: {final_error}")
+                        # Pause 15 seconds between republish attempts
+                        await asyncio.sleep(15)
                     for target in send_only_targets:
                         try:
                             await client.forward_messages(target, source_msg, source_chat)
@@ -384,11 +407,34 @@ def republish_content(content: str, republish_channels: list, original_results: 
                         except Exception as forward_error:
                             logger.warning(f"Forward to restricted group {target} failed: {forward_error}")
                             if original_message and original_message.text:
+                                # Step 2: Try sending as regular message with media
                                 try:
-                                    await client.send_message(target, original_message.text, link_preview=False)
+                                    if original_message.media:
+                                        await client.send_message(target, original_message.text, file=original_message.media, link_preview=False)
+                                    else:
+                                        await client.send_message(target, original_message.text, link_preview=False)
                                     logger.info(f"✅ Sent message to restricted group {target}")
                                 except Exception as send_error:
-                                    logger.error(f"Cannot send to restricted group {target}: {send_error}")
+                                    logger.warning(f"Failed to send to restricted group {target}: {send_error}")
+                                    # Step 3: Try sending without media
+                                    try:
+                                        await client.send_message(target, original_message.text, link_preview=False)
+                                        logger.info(f"✅ Sent without media to restricted group {target}")
+                                    except Exception as no_media_error:
+                                        logger.warning(f"Failed to send without media to restricted group {target}: {no_media_error}")
+                                        # Step 4: Try sending with media but without links
+                                        try:
+                                            import re
+                                            text_no_links = re.sub(r'https?://\S+', '', original_message.text)
+                                            if original_message.media:
+                                                await client.send_message(target, text_no_links, file=original_message.media, link_preview=False)
+                                            else:
+                                                await client.send_message(target, text_no_links, link_preview=False)
+                                            logger.info(f"✅ Sent without links to restricted group {target}")
+                                        except Exception as final_error:
+                                            logger.error(f"All send attempts failed for restricted group {target}: {final_error}")
+                        # Pause 15 seconds between republish attempts
+                        await asyncio.sleep(15)
                 except Exception as e:
                     logger.error(f"Telethon forward error: {e}")
         asyncio.run(_forward_async())
