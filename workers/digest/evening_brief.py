@@ -9,6 +9,7 @@ from workers.tools.openai_client import get_openai_client, chat_completion
 from workers.article_generator.image_generator import ImageGenerator
 from workers.tools.telegram_helper import send_message, send_photo
 from workers.tools.facebook_helper import post_facebook
+from workers.tools.digest_carousel_generator import DigestCarouselGenerator
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 
@@ -456,7 +457,7 @@ def generate_digest() -> dict:
         cur = conn.cursor()
         
         sql = """
-            SELECT total_score, telegram_final, description_ru, slug 
+            SELECT total_score, telegram_final, description_ru, slug, image_url, title_ru
             FROM articles_ru
             WHERE published_at > now() - INTERVAL '1 day'
               AND status = 'PUBLISHED'
@@ -479,12 +480,15 @@ def generate_digest() -> dict:
 
         # 2. Pack result into JSON
         news_items = []
+        
         for r in rows:
-            # total_score, telegram_final, description_ru, slug
+            # total_score, telegram_final, description_ru, slug, image_url, title_ru
             total_score = float(r[0]) if r[0] is not None else 0
             tg_final = r[1]
             desc = r[2]
             slug = r[3]
+            image_url = r[4]  # image_url from articles_ru
+            title_ru = r[5]   # title_ru from articles_ru
 
             # Normalize telegram_final
             final_text = ""
@@ -503,7 +507,9 @@ def generate_digest() -> dict:
             news_items.append({
                 "total_score": total_score,
                 "text": final_text,
-                "url": article_url
+                "url": article_url,
+                "title_ru": title_ru,  # Pass to OpenAI for carousel titles
+                "image_url": image_url  # Pass to OpenAI - will be returned in carousel_items
             })
 
         news_json = json.dumps(news_items, ensure_ascii=False, indent=2)
@@ -563,6 +569,12 @@ def generate_digest() -> dict:
 - Без ссылок, без эмодзи, только текст для озвучки.
 - Общая длина текста: 60-80 слов (примерно 30 секунд речи).
 
+=== КАРУСЕЛЬ ДЛЯ INSTAGRAM ===
+- Выбери ТОП-5 новостей для карусели (те же, что использовал в digest).
+- Для каждой новости верни: короткий заголовок (title_ru), URL и image_url.
+- Заголовок должен быть коротким (максимум 80-100 символов) и понятным.
+- Используй image_url из входных данных (не придумывай свои).
+
 Содержание:
 - Не переписывай заголовки буквально.
 - Только факты из входных данных.
@@ -572,7 +584,14 @@ def generate_digest() -> dict:
 {
   "telegram": "текст в Markdown",
   "facebook": "текст для Facebook",
-  "reels_script": "сценарий для видео"
+  "reels_script": "сценарий для видео",
+  "carousel_items": [
+    {"title_ru": "Заголовок новости 1", "url": "https://...", "image_url": "https://..."},
+    {"title_ru": "Заголовок новости 2", "url": "https://...", "image_url": "https://..."},
+    {"title_ru": "Заголовок новости 3", "url": "https://...", "image_url": "https://..."},
+    {"title_ru": "Заголовок новости 4", "url": "https://...", "image_url": "https://..."},
+    {"title_ru": "Заголовок новости 5", "url": "https://...", "image_url": "https://..."}
+  ]
 }"""
 
         user_prompt_content = f"""Сформируй вечернюю Telegram-заметку.
@@ -610,11 +629,13 @@ def generate_digest() -> dict:
             telegram_content = parsed.get('telegram', '')
             facebook_content = parsed.get('facebook', '')
             reels_script = parsed.get('reels_script', '')
+            carousel_items = parsed.get('carousel_items', [])
         except Exception as e:
             logger.error(f"Failed to parse JSON response: {e}. Using response as telegram content.")
             telegram_content = response_text
             facebook_content = response_text
             reels_script = ""
+            carousel_items = []
         
         # Add promo line to telegram and facebook
         promo_line_tg = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
@@ -633,12 +654,13 @@ def generate_digest() -> dict:
             "telegram": telegram_final,
             "facebook": facebook_final,
             "reels_script": reels_script,
-            "image_url": image_url
+            "image_url": image_url,
+            "carousel_items": carousel_items
         }
 
     except Exception as e:
         logger.error(f"Error generating evening brief: {e}")
-        return {"content": f"Error: {e}", "image_url": None}
+        return {"content": f"Error: {e}", "image_url": None, "carousel_items": []}
 
 
 def run_job(job: dict):
@@ -652,11 +674,13 @@ def run_job(job: dict):
             facebook_content = result.get('facebook', '')
             reels_script = result.get('reels_script', '')
             image_url = result.get('image_url')
+            carousel_items_from_openai = result.get('carousel_items', [])
         else:
             telegram_content = result
             facebook_content = result
             reels_script = ''
             image_url = None
+            carousel_items_from_openai = []
         
         if not telegram_content:
             logger.error("No content generated")
@@ -703,6 +727,62 @@ def run_job(job: dict):
             'reels_script': reels_script
         }
         publish_results = publish_content(content_dict, channels, job_id=job.get('id', 'evening_brief'), image_url=image_url)
+        
+        # Generate Instagram carousel after publishing
+        try:
+            logger.info("📸 Generating Instagram carousel...")
+            
+            # OpenAI already returned carousel_items with image_url - no enrichment needed!
+            carousel_data = [
+                item for item in carousel_items_from_openai 
+                if item.get('title_ru') and item.get('image_url')
+            ]
+            
+            logger.info(f"Received {len(carousel_data)} carousel items from OpenAI")
+            
+            if len(carousel_data) >= 5 and image_url:
+                # Initialize carousel generator
+                carousel_gen = DigestCarouselGenerator(output_dir="output/instagram_carousel")
+                
+                # Download Telegram image to use as title slide
+                import tempfile
+                import requests
+                from pathlib import Path
+                
+                # Create temp directory for title image
+                temp_dir = Path("output/temp_digest")
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                title_image_path = temp_dir / "telegram_title.jpg"
+                
+                # Download image from URL
+                response = requests.get(image_url, timeout=15)
+                response.raise_for_status()
+                with open(title_image_path, 'wb') as f:
+                    f.write(response.content)
+                
+                logger.info(f"Downloaded title image: {title_image_path}")
+                
+                # Generate carousel slides
+                slides_data = carousel_gen.generate_carousel_slides(
+                    title_image_path=str(title_image_path),
+                    news_items=carousel_data,
+                    digest_title="Испания, вечерний дайджест"
+                )
+                
+                if slides_data:
+                    logger.info(f"✅ Instagram carousel generated: {len(slides_data)} slides")
+                    logger.info(f"Slides saved in: {carousel_gen.output_dir}")
+                    for idx, slide in enumerate(slides_data, 1):
+                        logger.info(f"  {idx}. {Path(slide['path']).name}")
+                        logger.info(f"     Caption: {slide['caption'][:80]}...")
+                else:
+                    logger.warning("Failed to generate carousel slides")
+                    
+            else:
+                logger.warning(f"Cannot generate carousel: found {len(carousel_data)} news items with images (need 5), image_url={bool(image_url)}")
+                
+        except Exception as e:
+            logger.error(f"Failed to generate Instagram carousel: {e}", exc_info=True)
         
         repub = job.get('republish', [])
         if repub:
