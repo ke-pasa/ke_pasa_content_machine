@@ -228,16 +228,6 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         except Exception:
             pass
         return None
-
-    # Map model to Azure deployment if using Azure
-    deployment_model = _map_model_to_deployment(model)
-    
-    # Check if Azure OpenAI is configured
-    is_azure = os.getenv('AZURE_OPENAI_ENDPOINT') is not None
-    
-    if not is_azure:
-        logger.error('Azure OpenAI not configured. Standard OpenAI is not supported.')
-        return None
     
     for attempt in range(1, max_attempts + 1):
         try:
