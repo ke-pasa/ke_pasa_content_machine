@@ -127,13 +127,20 @@ class CategorizationWorker:
         Returns:
             tuple: (embedding_vector, error_message)
         """
-        if not client or not text:
-            return None, "No client or text provided"
+        if not text:
+            return None, "No text provided"
+        
+        # Get embedding client - use separate endpoint if available
+        embedding_client = _get_openai_client('_EMBEDDING') or _get_openai_client()
+        
+        if not embedding_client:
+            return None, "No embedding client available"
+        
         # Try a couple of times on transient failures and be defensive about response shape
         max_attempts = 2
         for attempt in range(max_attempts):
             try:
-                resp = client.embeddings.create(model=self.embedding_model, input=[text])
+                resp = embedding_client.embeddings.create(model=self.embedding_model, input=[text])
                 self._log_embedding_usage(resp)
 
                 # Normalize data extraction for both dict-like and object-like responses

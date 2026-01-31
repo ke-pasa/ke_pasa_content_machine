@@ -94,7 +94,10 @@ def get_openai_client(endpoint_suffix: str = '') -> Optional[object]:
         if 'pavel-mkfzym2a' in azure_endpoint:
             api_version = "2024-05-01-preview"
         elif 'quepasa-resource' in azure_endpoint:
-            api_version = "2024-08-01-preview"  # Stable version for quepasa-resource
+            if 'openai.azure.com' in azure_endpoint:
+                api_version = "2024-08-01-preview"  # Chat completions
+            else:
+                api_version = "2023-05-15"  # Embeddings via cognitiveservices.azure.com
         else:
             api_version = "2024-08-01-preview"  # Default stable version
         
