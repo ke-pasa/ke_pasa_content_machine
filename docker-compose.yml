@@ -121,7 +121,7 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/publisher:/var/log/supervisor 
-      # X tokens с read-write доступом — publisher сам обновляет токены при refresh
+      # X tokens - can be updated during runtime, but not rebuilt into image on deploy
       - ./.x_tokens.json:/app/.x_tokens.json
       # Instagram and Facebook tokens (created automatically from env vars if missing)
       - ./.instagram_tokens.json:/app/.instagram_tokens.json

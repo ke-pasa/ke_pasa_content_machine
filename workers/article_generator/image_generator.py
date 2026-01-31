@@ -6,12 +6,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from PIL import Image
-from openai import OpenAI
 import json
+from workers.tools.openai_client import get_openai_client, chat_completion
 
 
 class ImageGenerator:
-    """Generates images for articles using OpenAI DALL-E when image_url is missing."""
+    """Generates images for articles using Azure DALL-E when image_url is missing."""
     
     def __init__(self, model: str = "gpt-image-1.5", images_dir: Optional[Path] = None):
         """
@@ -25,15 +25,14 @@ class ImageGenerator:
         self.logger = logging.getLogger('workers.article_generator.image_generator')
         self.logger.propagate = True
         
-        # Initialize OpenAI client (Azure or OpenAI)
+        # Initialize Azure OpenAI client for prompt generation
+        self.client = get_openai_client()
+        if not self.client:
+            raise RuntimeError('Azure OpenAI not configured. Please set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY')
+        
+        # Initialize DALL-E client
         azure_dalle_endpoint = os.getenv('AZURE_DALLE_ENDPOINT')
         azure_dalle_key = os.getenv('AZURE_DALLE_KEY')
-        
-        # Always initialize OpenAI client for GPT-4o-mini prompt generation
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise RuntimeError('OPENAI_API_KEY is required for prompt generation')
-        self.client = OpenAI(api_key=api_key)
         
         if azure_dalle_endpoint and azure_dalle_key:
             # Use Azure DALL-E for image generation
@@ -42,9 +41,7 @@ class ImageGenerator:
             self.azure_endpoint = azure_dalle_endpoint
             self.azure_key = azure_dalle_key
         else:
-            # Use OpenAI for image generation
-            self.logger.info('Using OpenAI DALL-E for image generation')
-            self.use_azure = False
+            raise RuntimeError('Azure DALL-E not configured. Please set AZURE_DALLE_ENDPOINT and AZURE_DALLE_KEY')
         
         # Set up images directory
         if images_dir is None:

@@ -61,23 +61,14 @@ def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, t
         if not (endpoint and key and deployment):
             return None
 
-        # Try OpenAI SDK with Azure endpoint (recommended approach)
+        # Use Azure OpenAI SDK
         try:
-            from openai import OpenAI
+            from openai import AzureOpenAI
             
-            # Ensure endpoint ends with /openai/v1 or correct path
-            base_url = endpoint.rstrip('/')
-            if not base_url.endswith('/openai/v1'):
-                if '/openai/' in base_url:
-                    # Already has /openai/something - use as-is
-                    pass
-                else:
-                    # Add /openai/v1
-                    base_url = f"{base_url}/openai/v1"
-            
-            client = OpenAI(
-                base_url=base_url,
-                api_key=key
+            client = AzureOpenAI(
+                azure_endpoint=endpoint,
+                api_key=key,
+                api_version=os.environ.get('AZURE_OPENAI_API_VERSION', '2024-05-01-preview')
             )
             
             messages = [
