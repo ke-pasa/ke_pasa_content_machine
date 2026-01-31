@@ -583,19 +583,10 @@ def generate_digest() -> dict:
 - Только факты из входных данных.
 - Без аналитики и выводов.
 
-ВЫВОД: Верни ТОЛЬКО валидный JSON:
-{
-  "telegram": "текст в Markdown",
-  "facebook": "текст для Facebook",
-  "reels_script": "сценарий для видео",
-  "carousel_items": [
-    {"title_ru": "Заголовок новости 1", "url": "https://...", "image_url": "https://..."},
-    {"title_ru": "Заголовок новости 2", "url": "https://...", "image_url": "https://..."},
-    {"title_ru": "Заголовок новости 3", "url": "https://...", "image_url": "https://..."},
-    {"title_ru": "Заголовок новости 4", "url": "https://...", "image_url": "https://..."},
-    {"title_ru": "Заголовок новости 5", "url": "https://...", "image_url": "https://..."}
-  ]
-}"""
+ВЫВОД: Верни ТОЛЬКО валидный JSON. НЕ используй markdown блоки. НЕ добавляй пояснений. Начни ответ с символа "{" и закончи символом "}".
+
+Пример формата ответа:
+{"telegram": "текст в Markdown", "facebook": "текст для Facebook", "reels_script": "сценарий для видео", "carousel_items": [{"title_ru": "Заголовок новости 1", "url": "https://...", "image_url": "https://..."}]}"""
 
         user_prompt_content = f"""Сформируй вечернюю Telegram-заметку.
 
@@ -621,6 +612,9 @@ def generate_digest() -> dict:
             logger.error("Failed to generate digest text from OpenAI")
             return None
         
+        # Log the raw response to debug carousel issue
+        logger.info(f"Raw OpenAI response: {response_text[:500]}...")
+        
         # Parse JSON response
         try:
             # Remove markdown code blocks if present
@@ -634,6 +628,14 @@ def generate_digest() -> dict:
             facebook_content = parsed.get('facebook', '')
             reels_script = parsed.get('reels_script', '')
             carousel_items = parsed.get('carousel_items', [])
+            
+            # Debug carousel parsing
+            logger.info(f"Parsed carousel_items: {len(carousel_items)} items")
+            if carousel_items:
+                for i, item in enumerate(carousel_items[:3]):  # Log first 3
+                    logger.info(f"  Item {i+1}: title='{item.get('title_ru', '')}', has_image={bool(item.get('image_url'))}")
+            else:
+                logger.warning("No carousel_items found in OpenAI response")
         except Exception as e:
             logger.error(f"Failed to parse JSON response: {e}. Using response as telegram content.")
             telegram_content = response_text
