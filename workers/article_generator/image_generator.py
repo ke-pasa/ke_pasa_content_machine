@@ -160,7 +160,7 @@ ARTICLE:
             
             # Use chat_completion wrapper to handle Azure endpoint routing
             response = chat_completion(
-                client=None,  # Let the wrapper handle client selection
+                client=get_openai_client('_MINI'),  # Use mini endpoint for prompt generation
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -170,8 +170,12 @@ ARTICLE:
                 temperature=0.4
             )
             
-            # Extract prompt from response - now expecting plain text, not JSON
-            response_text = response.choices[0].message.content.strip()
+            # chat_completion returns the content string directly
+            if not response:
+                self.logger.error(f'No response received for {doc_id}')
+                return None
+                
+            response_text = response.strip()
             
             # Log GPT response
             self._save_raw_prompt(doc_id, 'gpt_response', response_text)
