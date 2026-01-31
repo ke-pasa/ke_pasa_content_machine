@@ -209,7 +209,7 @@ ARTICLE:
             
             payload = {
                 "prompt": prompt,
-                "size": "1792x1024",
+                "size": "1024x1024",
                 "quality": "standard",
                 "n": 1
             }
@@ -267,9 +267,9 @@ ARTICLE:
             top = (height - new_height) // 2
             img = img.crop((0, top, width, top + new_height))
         
-        # Resize to standard 16:9 resolution (1280x720 for optimal file size ~80-100kb)
-        img = img.resize((1280, 720), Image.Resampling.LANCZOS)
-        self.logger.info(f'Cropped/resized image to 16:9 (1280x720)')
+        # Resize to standard 16:9 resolution (960x540 for optimal file size ~60-80kb)
+        img = img.resize((960, 540), Image.Resampling.LANCZOS)
+        self.logger.info(f'Cropped/resized image to 16:9 (960x540)')
         return img
     
     def _download_and_save_image(self, image_url: str, doc_id: str) -> Optional[str]:
