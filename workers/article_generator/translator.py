@@ -44,113 +44,6 @@ def _chat_completion(client: Any, model: str, messages: list, max_tokens: int = 
     return _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
 
 
-def _azure_chat_completion_rest(system: str, user: str, max_tokens: int = 800, temperature: float = 1.0) -> Optional[str]:
-    """Call Azure OpenAI using OpenAI SDK with Azure endpoint.
-    Returns content string or None on error or if not configured.
-    Note: gpt-5.2-chat model only supports temperature=1.0 (default).
-    """
-    try:
-        import os
-        endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT')
-        key = os.environ.get('AZURE_OPENAI_KEY')
-        # Deployment name is not sensitive; fall back to default in code if env var not set
-        deployment = os.environ.get('AZURE_OPENAI_DEPLOYMENT') or os.environ.get('AZURE_OPENAI_DEPLOYMENT_NAME')
-        if not deployment:
-            deployment = 'gpt-5.2-chat'
-        
-        if not (endpoint and key and deployment):
-            return None
-
-        # Use Azure OpenAI SDK
-        try:
-            from openai import AzureOpenAI
-            
-            client = AzureOpenAI(
-                azure_endpoint=endpoint,
-                api_key=key,
-                api_version=os.environ.get('AZURE_OPENAI_API_VERSION', '2024-05-01-preview')
-            )
-            
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ]
-            
-            completion = client.chat.completions.create(
-                model=deployment,
-                messages=messages,
-                max_completion_tokens=max_tokens,
-                temperature=temperature,
-                timeout=30
-            )
-            
-            _logger.info(f'Azure SDK response: model={completion.model if completion else None}, '
-                        f'choices={len(completion.choices) if completion and completion.choices else 0}')
-            
-            if completion and completion.choices and len(completion.choices) > 0:
-                content = completion.choices[0].message.content
-                if content:
-                    _logger.info(f'Azure SDK returned content length: {len(content)}')
-                    return content.strip()
-                else:
-                    _logger.warning(f'Azure SDK returned empty content. Finish reason: {completion.choices[0].finish_reason}')
-            else:
-                _logger.warning(f'Azure SDK returned no choices. Full response: {completion}')
-            
-            return None
-            
-        except Exception as e:
-            _logger.error('Azure OpenAI SDK call failed: %s', str(e))
-            # Fall back to direct REST if SDK fails
-            pass
-
-        # Fallback: try direct REST call
-        try:
-            import requests
-            api_version = os.environ.get('AZURE_OPENAI_API_VERSION', '2023-05-15')
-            headers = {"api-key": key, "Content-Type": "application/json"}
-            url = f"{endpoint.rstrip('/')}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
-            payload = {
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}
-                ],
-                "max_completion_tokens": max_tokens,
-                "temperature": temperature,
-            }
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)
-            
-            _logger.info(f'Azure REST response status: {resp.status_code}')
-            
-            if resp.ok:
-                data = resp.json()
-                _logger.info(f'Azure REST response data keys: {list(data.keys()) if data else None}')
-                choice = data.get('choices', [{}])[0]
-                message = choice.get('message', {}) if isinstance(choice.get('message', {}), dict) else {}
-                content = message.get('content') or ''
-                if content:
-                    _logger.info(f'Azure REST returned content length: {len(content)}')
-                    return content.strip()
-                else:
-                    _logger.warning(f'Azure REST returned empty content. Choice: {choice}, Full data: {data}')
-                    return None
-            else:
-                try:
-                    body = resp.text
-                except Exception:
-                    body = '<could not read response body>'
-                _logger.error('Azure REST failed status=%s body=%s', resp.status_code, body[:2000])
-                
-        except Exception:
-            _logger.exception('Azure REST fallback call failed')
-
-        return None
-        
-    except Exception:
-        _logger.exception('Azure helper call failed')
-        return None
-
-
 def _parse_json_from_text(text: str) -> Optional[Dict]:
     if worker_mod := _get_worker_module():
         if hasattr(worker_mod, 'parse_json_from_text'):
@@ -631,14 +524,17 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
 
-        # Stage 4 always uses Azure OpenAI
+        # Stage 4: Use gpt-4o (maps to gpt-5.2-chat in Azure)
         try:
-            system_prompt, user_prompt = _extract_system_user_from_messages(messages)
             _logger.info(f'Stage4 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'system_len={len(system_prompt)}, user_len={len(user_prompt)}')
-            text = _azure_chat_completion_rest(system_prompt, user_prompt, 
-                                               max_tokens=self.stage4_max_tokens, 
-                                               temperature=self.stage4_temperature)
+                        f'messages={len(messages)}, max_tokens={self.stage4_max_tokens}')
+            text = _chat_completion(
+                client=_get_openai_client(),
+                model="gpt-4o",  # Maps to gpt-5.2-chat via endpoint routing
+                messages=messages,
+                max_tokens=self.stage4_max_tokens,
+                temperature=self.stage4_temperature
+            )
             if not text:
                 _logger.error(f'Stage4 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
                              f'Check Azure logs above for details. text={repr(text)}')
@@ -676,15 +572,17 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage5', self.model, messages, len(stage4_json or ''))
 
-        # Stage 5 always uses Azure OpenAI
+        # Stage 5: Use gpt-4o (maps to gpt-5.2-chat in Azure)
         try:
-            system_prompt, user_prompt = _extract_system_user_from_messages(messages)
             _logger.info(f'Stage5 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'system_len={len(system_prompt)}, user_len={len(user_prompt)}')
-            # Note: gpt-5.2-chat only supports temperature=1.0
-            text = _azure_chat_completion_rest(system_prompt, user_prompt, 
-                                               max_tokens=self.stage5_max_tokens, 
-                                               temperature=1.0)
+                        f'messages={len(messages)}, max_tokens={self.stage5_max_tokens}')
+            text = _chat_completion(
+                client=_get_openai_client(),
+                model="gpt-4o",  # Maps to gpt-5.2-chat via endpoint routing
+                messages=messages,
+                max_tokens=self.stage5_max_tokens,
+                temperature=1.0  # gpt-5.2-chat only supports temperature=1.0
+            )
             if not text:
                 _logger.error(f'Stage5 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
                              f'Check Azure logs above for details. text={repr(text)}')
@@ -721,13 +619,17 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage6', self.model, messages, len(stage4_json or ''))
 
-        # Stage 6 always uses Azure OpenAI
+        # Stage 6: Use gpt-4o (maps to gpt-5.2-chat in Azure)
         try:
-            system_prompt, user_prompt = _extract_system_user_from_messages(messages)
             _logger.info(f'Stage6 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'system_len={len(system_prompt)}, user_len={len(user_prompt)}')
-            # Note: gpt-5.2-chat only supports temperature=1.0
-            text = _azure_chat_completion_rest(system_prompt, user_prompt, max_tokens=6000, temperature=1.0)
+                        f'messages={len(messages)}, max_tokens=6000')
+            text = _chat_completion(
+                client=_get_openai_client(),
+                model="gpt-4o",  # Maps to gpt-5.2-chat via endpoint routing
+                messages=messages,
+                max_tokens=6000,
+                temperature=1.0  # gpt-5.2-chat only supports temperature=1.0
+            )
             if not text:
                 _logger.error(f'Stage6 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
                              f'Check Azure logs above for details. text={repr(text)}')
