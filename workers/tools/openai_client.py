@@ -24,30 +24,93 @@ import time
 
 _client = None
 
+# Model to Azure deployment mapping with endpoint selection
+# Format: 'model': ('deployment_name', 'endpoint_suffix')
+# endpoint_suffix: '' for primary, '_MINI' for secondary
+_AZURE_MODEL_MAPPING = {
+    'gpt-4o': ('gpt-5.2-chat', ''),           # Heavy: content translation → pavel-mkfzym2a
+    'gpt-4o-mini': ('gpt-4o-mini', '_MINI'),  # Light: titles, events → quepasa-resource
+    'gpt-4': ('gpt-5.2-chat', ''),
+    'gpt-3.5-turbo': ('gpt-4o-mini', '_MINI')
+}
 
-def get_openai_client() -> Optional[object]:
-    """Return an instantiated OpenAI client or None.
+_clients = {}  # Cache for multiple clients
 
-    Uses the OPENAI_API_KEY environment variable. If the openai package
-    is not installed or the key is missing, returns None.
+
+def _map_model_to_deployment(model: str) -> tuple:
+    """Map OpenAI model name to Azure deployment name and endpoint suffix.
+    
+    Args:
+        model: OpenAI model name (e.g., 'gpt-4o', 'gpt-4o-mini')
+        
+    Returns:
+        Tuple of (deployment_name, endpoint_suffix) or (model, '') if not in mapping
     """
-    global _client
-    if _client is not None:
+    # Check if using Azure OpenAI
+    if os.getenv('AZURE_OPENAI_ENDPOINT'):
+        mapping = _AZURE_MODEL_MAPPING.get(model, (model, ''))
+        return mapping if isinstance(mapping, tuple) else (mapping, '')
+    return (model, '')
+
+
+def get_openai_client(endpoint_suffix: str = '') -> Optional[object]:
+    """Get or create Azure OpenAI client instance.
+    
+    Supports multiple Azure endpoints for different models.
+    
+    Args:
+        endpoint_suffix: Suffix for endpoint env var (e.g., '_MINI' for AZURE_OPENAI_ENDPOINT_MINI)
+    
+    Returns:
+        AzureOpenAI client instance, or None if no valid credentials found.
+    """
+    global _client, _clients
+    
+    # Return cached client for this endpoint
+    if endpoint_suffix in _clients:
+        return _clients[endpoint_suffix]
+    
+    # Return legacy singleton for default endpoint
+    if not endpoint_suffix and _client is not None:
         return _client
 
     try:
-        from openai import OpenAI
+        from openai import AzureOpenAI
     except Exception:
         return None
 
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
+    # Get Azure OpenAI credentials
+    azure_endpoint = os.getenv(f'AZURE_OPENAI_ENDPOINT{endpoint_suffix}')
+    azure_key = os.getenv(f'AZURE_OPENAI_KEY{endpoint_suffix}')
+    
+    if not azure_endpoint or not azure_key:
+        logging.getLogger('workers.tools.openai_client').error(
+            f"Azure OpenAI credentials not found: AZURE_OPENAI_ENDPOINT{endpoint_suffix} or AZURE_OPENAI_KEY{endpoint_suffix}"
+        )
         return None
-
+    
     try:
-        _client = OpenAI(api_key=api_key)
-        return _client
-    except Exception:
+        # Determine API version based on endpoint
+        if 'pavel-mkfzym2a' in azure_endpoint:
+            api_version = "2024-05-01-preview"
+        else:
+            api_version = "2025-01-01-preview"
+        
+        client = AzureOpenAI(
+            azure_endpoint=azure_endpoint,
+            api_key=azure_key,
+            api_version=api_version
+        )
+        logging.getLogger('workers.tools.openai_client').info(f"Using Azure OpenAI ({azure_endpoint})")
+        
+        # Cache this client
+        if endpoint_suffix:
+            _clients[endpoint_suffix] = client
+        else:
+            _client = client
+        return client
+    except Exception as e:
+        logging.getLogger('workers.tools.openai_client').error(f"Azure OpenAI init failed: {e}")
         return None
 
 
@@ -56,10 +119,11 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     reasoning_effort: Optional[str] = 'low') -> Optional[str]:
     """Perform a response generation and return the text content or None on error.
 
-    Uses the modern Responses API (client.responses.create).
+    Uses the modern Responses API (client.responses.create) or Azure chat completions.
+    Automatically selects correct Azure endpoint based on model.
     
     Args:
-        client: OpenAI client instance.
+        client: OpenAI client instance (can be overridden by model mapping).
         model: Model name to use.
         messages: List of message dicts with 'role' and 'content' keys.
         max_tokens: Maximum tokens to generate.
@@ -67,6 +131,17 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         reasoning_effort: Controls reasoning depth. Valid values: 'low', 'medium', 'high'. Default is 'low'.
     """
     logger = logging.getLogger('workers.tools.openai_client')
+    
+    # Map model to deployment and get correct client
+    deployment_model, endpoint_suffix = _map_model_to_deployment(model)
+    
+    # Get the correct client for this model's endpoint
+    if endpoint_suffix or os.getenv('AZURE_OPENAI_ENDPOINT'):
+        client = get_openai_client(endpoint_suffix)
+        if not client:
+            logger.error(f'Failed to get Azure OpenAI client for endpoint suffix: {endpoint_suffix}')
+            return None
+    
     # Basic validation and sanitization of inputs to surface obvious issues early
     try:
         msg_count = len(messages) if messages is not None else 0
@@ -78,7 +153,8 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     except Exception:
         max_tokens = 600
 
-    logger.debug('OpenAI request: model=%s messages=%d max_tokens=%d', model, msg_count, max_tokens)
+    logger.debug('OpenAI request: model=%s deployment=%s endpoint_suffix=%s messages=%d max_tokens=%d', 
+                 model, deployment_model, endpoint_suffix, msg_count, max_tokens)
 
     try:
         snippet_messages = []
@@ -123,30 +199,6 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
 
     max_attempts = 3
 
-    def _extract_content(resp) -> Optional[str]:
-        """Extract content from OpenAI Responses API response."""
-        try:
-            # Log token usage if available
-            try:
-                usage = getattr(resp, 'usage', None)
-                if usage:
-                    prompt_tokens = getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0)
-                    completion_tokens = getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0)
-                    total_tokens = getattr(usage, 'total_tokens', 0) or (prompt_tokens + completion_tokens)
-                    logger.info('OpenAI usage: prompt=%d completion=%d total=%d', 
-                               prompt_tokens, completion_tokens, total_tokens)
-            except Exception:
-                pass
-            
-            content = getattr(resp, 'output_text', None)
-            if content and isinstance(content, str):
-                return content.strip()
-            logger.warning('OpenAI returned empty or missing output_text')
-            return None
-        except Exception as e:
-            logger.exception('Failed to extract content from response: %s', e)
-            return None
-
     def _extract_status(e: Exception) -> Optional[int]:
         """Extract HTTP status code from exception."""
         try:
@@ -177,29 +229,54 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             pass
         return None
 
+    # Map model to Azure deployment if using Azure
+    deployment_model = _map_model_to_deployment(model)
+    
+    # Check if Azure OpenAI is configured
+    is_azure = os.getenv('AZURE_OPENAI_ENDPOINT') is not None
+    
+    if not is_azure:
+        logger.error('Azure OpenAI not configured. Standard OpenAI is not supported.')
+        return None
+    
     for attempt in range(1, max_attempts + 1):
         try:
+            # Azure uses chat.completions API
+            # Check if using newer model that requires max_completion_tokens
+            if deployment_model.startswith('gpt-5') or deployment_model.startswith('o1'):
+                max_tokens_param = 'max_completion_tokens'
+            else:
+                max_tokens_param = 'max_tokens'
+            
             req_kwargs = {
-                'model': model,
-                'input': messages,
-                'max_output_tokens': max_tokens,
+                'model': deployment_model,
+                'messages': messages,
+                max_tokens_param: max_tokens,
                 'stream': False,
             }
             
-            # Only GPT-4o models support temperature
-            if model.startswith('gpt-4') or model.startswith('gpt-3'):
+            # Only certain models support custom temperature
+            # gpt-5 models only support temperature=1 (default)
+            if (model.startswith('gpt-4') or model.startswith('gpt-3')) and not deployment_model.startswith('gpt-5'):
                 req_kwargs['temperature'] = temperature
             
-            # Add reasoning parameter ONLY for o1 models (o1, o1-mini, o1-preview)
-            if model.startswith('o1') and reasoning_effort and reasoning_effort.lower() in ['low', 'medium', 'high']:
-                req_kwargs['reasoning'] = {'effort': reasoning_effort.lower()}
-
-            resp = client.responses.create(**req_kwargs)
-            content = _extract_content(resp)
-            if content is not None:
-                return content
-            # Empty content is treated as non-recoverable
-            logger.warning('OpenAI returned empty content (attempt %d/%d); not retrying', attempt, max_attempts)
+            resp = client.chat.completions.create(**req_kwargs)
+            
+            # Extract content from chat completion response
+            if resp.choices and len(resp.choices) > 0:
+                content = resp.choices[0].message.content
+                if content:
+                    # Log token usage
+                    try:
+                        if resp.usage:
+                            logger.info('Azure OpenAI usage: prompt=%d completion=%d total=%d', 
+                                      resp.usage.prompt_tokens, 
+                                      resp.usage.completion_tokens, 
+                                      resp.usage.total_tokens)
+                    except Exception:
+                        pass
+                    return content.strip()
+            logger.warning('Azure OpenAI returned empty content (attempt %d/%d); not retrying', attempt, max_attempts)
             return None
 
         except Exception as e:

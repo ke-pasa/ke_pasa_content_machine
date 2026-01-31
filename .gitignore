@@ -69,3 +69,6 @@ Scripts/*.exe
 Scripts/*.dll
 Scripts/*.pyd
 Scripts/pip3.13.exe
+Scripts/import_single_article.py
+Scripts/import_bulk_from_rss.py
+output/imported_articles.json

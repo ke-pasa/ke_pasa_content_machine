@@ -88,7 +88,8 @@ The final prompt must describe:
 - artistic style anchors
 """
             try:
-                resp = client.chat.completions.create(
+                image_prompt = chat_completion(
+                    client=client,
                     model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -97,7 +98,9 @@ The final prompt must describe:
                     max_tokens=100,
                     temperature=0.7,
                 )
-                image_prompt = resp.choices[0].message.content.strip()
+                if not image_prompt:
+                    raise Exception("No image prompt generated")
+                image_prompt = image_prompt.strip()
             except Exception as e:
                 logger.warning(f"Failed to generate image prompt: {e}")
                 image_prompt = (
@@ -610,7 +613,7 @@ def generate_digest() -> dict:
         logger.info(f"Generating digest from {len(news_items)} items...")
         response_text = chat_completion(
             client=client,
-            model="gpt-5.1",
+            model="gpt-4o",
             messages=messages
         )
 
