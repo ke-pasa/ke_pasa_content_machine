@@ -613,12 +613,13 @@ def generate_digest() -> dict:
         logger.info(f"Generating digest from {len(news_items)} items...")
         response_text = chat_completion(
             client=client,
-            model="gpt-4o",
+            model="gpt-5.2-chat",  # Прямо Azure deployment для мощной генерации
             messages=messages
         )
 
         if not response_text:
-            return {"telegram": "Error: Failed to generate digest text from OpenAI", "facebook": None, "reels_script": None, "image_url": None}
+            logger.error("Failed to generate digest text from OpenAI")
+            return None
         
         # Parse JSON response
         try:
@@ -663,7 +664,7 @@ def generate_digest() -> dict:
 
     except Exception as e:
         logger.error(f"Error generating evening brief: {e}")
-        return {"content": f"Error: {e}", "image_url": None, "carousel_items": []}
+        return None
 
 
 def run_job(job: dict):

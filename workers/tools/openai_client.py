@@ -31,7 +31,8 @@ _AZURE_MODEL_MAPPING = {
     'gpt-4o': ('gpt-5.2-chat', ''),           # Heavy: content translation → pavel-mkfzym2a
     'gpt-4o-mini': ('gpt-4o-mini', '_MINI'),  # Light: titles, events → quepasa-resource
     'gpt-4': ('gpt-5.2-chat', ''),
-    'gpt-3.5-turbo': ('gpt-4o-mini', '_MINI')
+    'gpt-3.5-turbo': ('gpt-4o-mini', '_MINI'),
+    'gpt-5.2-chat': ('gpt-5.2-chat', ''),    # Direct Azure deployment name
 }
 
 _clients = {}  # Cache for multiple clients
