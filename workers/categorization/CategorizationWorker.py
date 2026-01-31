@@ -30,47 +30,14 @@ def _get_openai_client():
 def _chat_completion(client, model, messages, max_tokens=600, temperature=0):
     """Wrapper that returns (text, usage_dict) tuple."""
     try:
-        # Call responses API directly to get usage info
-        req_kwargs = {
-            'model': model,
-            'input': messages,  # Note: Responses API uses 'input', not 'messages'
-            'max_output_tokens': max_tokens,
-            'stream': False,
-        }
-        
-        # Only GPT-4o models support temperature
-        if model.startswith('gpt-4') or model.startswith('gpt-3'):
-            req_kwargs['temperature'] = temperature
-        
-        resp = client.responses.create(**req_kwargs)
-        
-        # Extract text
-        text = getattr(resp, 'output_text', None)
-        if text and isinstance(text, str):
-            text = text.strip()
-        
-        # Extract usage
-        usage_dict = None
-        try:
-            usage = getattr(resp, 'usage', None)
-            if usage:
-                prompt_tokens = getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0)
-                completion_tokens = getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0)
-                total_tokens = getattr(usage, 'total_tokens', 0) or (prompt_tokens + completion_tokens)
-                usage_dict = {
-                    'prompt_tokens': prompt_tokens,
-                    'completion_tokens': completion_tokens,
-                    'total_tokens': total_tokens
-                }
-        except Exception:
-            pass
-        
-        return (text, usage_dict)
-    except Exception:
-        # Fallback to standard chat_completion
+        # Use chat_completion wrapper which handles Azure routing correctly
         from workers.tools.openai_client import chat_completion as _cc
         text = _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+        # Note: usage info not available through wrapper, but text is returned correctly
         return (text, None)
+    except Exception as e:
+        logging.getLogger('workers.categorization').exception('Chat completion failed: %s', e)
+        return (None, None)
 
 
 def _parse_json_from_text(text: str):

@@ -93,8 +93,10 @@ def get_openai_client(endpoint_suffix: str = '') -> Optional[object]:
         # Determine API version based on endpoint
         if 'pavel-mkfzym2a' in azure_endpoint:
             api_version = "2024-05-01-preview"
+        elif 'quepasa-resource' in azure_endpoint:
+            api_version = "2024-08-01-preview"  # Stable version for quepasa-resource
         else:
-            api_version = "2025-01-01-preview"
+            api_version = "2024-08-01-preview"  # Default stable version
         
         client = AzureOpenAI(
             azure_endpoint=azure_endpoint,
