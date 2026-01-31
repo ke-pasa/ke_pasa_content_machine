@@ -16,15 +16,15 @@ import os
 import json as _json
 
 
-def _get_openai_client():
+def _get_openai_client(endpoint_suffix=''):
     try:
         worker_mod = importlib.import_module('workers.categorization.worker')
         if hasattr(worker_mod, 'get_openai_client'):
-            return worker_mod.get_openai_client()
+            return worker_mod.get_openai_client(endpoint_suffix)
     except Exception:
         pass
     from workers.tools.openai_client import get_openai_client as _go
-    return _go()
+    return _go(endpoint_suffix)
 
 
 def _chat_completion(client, model, messages, max_tokens=600, temperature=0):

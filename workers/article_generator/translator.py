@@ -304,10 +304,10 @@ class ArticleTranslator:
         self,
         client=None,
         model: str = 'gpt-4o-mini',
-        stage1_max_tokens: int = 1200,
-        stage2_max_tokens: int = 1200,
-        stage3_max_tokens: int = 1200,
-        stage4_max_tokens: int = 4000,
+        stage1_max_tokens: int = 1500,
+        stage2_max_tokens: int = 2000,
+        stage3_max_tokens: int = 1500,
+        stage4_max_tokens: int = 6000,
         stage1_temperature: float = 0.2,
         stage2_temperature: float = 0.4,
         stage3_temperature: float = 1.0,
@@ -324,10 +324,10 @@ class ArticleTranslator:
         # Stage 4 uses same temperature as stage 3
         self.stage4_temperature = stage3_temperature
         # Stage 5 generates full markdown with frontmatter - needs more tokens
-        self.stage5_max_tokens = 6000
+        self.stage5_max_tokens = 8000
         # Stage 5 should run deterministically for publish formatting
         self.stage5_temperature = 0.2
-        self.stage6_max_tokens = stage3_max_tokens
+        self.stage6_max_tokens = 2000
         self.stage6_temperature = stage3_temperature
         # Token tracking
         self._total_prompt_tokens = 0

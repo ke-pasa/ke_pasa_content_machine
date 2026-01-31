@@ -157,7 +157,10 @@ ARTICLE:
             self._save_raw_prompt(doc_id, 'system_prompt', system_prompt)
             self._save_raw_prompt(doc_id, 'user_prompt', user_prompt)
             
-            response = self.client.chat.completions.create(
+            
+            # Use chat_completion wrapper to handle Azure endpoint routing
+            response = chat_completion(
+                client=None,  # Let the wrapper handle client selection
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
