@@ -55,6 +55,8 @@ jobs:
           # Azure OpenAI / Cognitive Services
           AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT || '' }}
           AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY || '' }}
+          AZURE_OPENAI_ENDPOINT_MINI=${{ secrets.AZURE_OPENAI_ENDPOINT_MINI || '' }}
+          AZURE_OPENAI_KEY_MINI=${{ secrets.AZURE_OPENAI_KEY_MINI || '' }}
           
           # Azure DALL-E 3 for image generation
           AZURE_DALLE_ENDPOINT=${{ secrets.AZURE_DALLE_ENDPOINT || '' }}
