@@ -790,10 +790,11 @@ def run_job(job: dict):
         except Exception as e:
             logger.error(f"Failed to generate Instagram carousel: {e}", exc_info=True)
         
-        repub = job.get('republish', [])
-        if repub:
-            # Use telegram content for republishing
-            republish_content(telegram_content, repub, original_results=publish_results)
+        # ВРЕМЕННО ЗАБЛОКИРОВАНО: репосты в другие группы
+        # repub = job.get('republish', [])
+        # if repub:
+        #     # Use telegram content for republishing
+        #     republish_content(telegram_content, repub, original_results=publish_results)
         
         return publish_results
     except Exception as e:
