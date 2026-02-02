@@ -89,13 +89,10 @@ def send_photo(chat_id: str, photo_url: str, caption: Optional[str] = None, toke
     if not token:
         raise RuntimeError('No TELEGRAM_BOT_TOKEN provided')
 
-    # sanitize caption before sending
     if caption:
         caption = caption.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
         caption = _normalize_newlines(caption)
 
-    # If the photo_url looks like a public HTTP(S) URL, send by URL (existing behavior).
-    # Otherwise, if it's a local file path, upload the file via multipart/form-data.
     try:
         from pathlib import Path
         # Determine if this is a URL

@@ -540,13 +540,14 @@ def generate_digest() -> dict:
 - Приоритизируй: 1) экономика и цены, 2) безопасность и контроль, 3) всё остальное.
 
 === ФОРМАТ TELEGRAM ===
-- Общая длина поста — не более 700 символов.
-- Каждая новость — не длиннее 140 символов (включая ссылку).
+- КРИТИЧНО: Общая длина поста — СТРОГО не более 700 символов
+- Каждая новость — не длиннее 120 символов (включая эмодзи и ссылку).
 - Заголовок: **🌆 Вечерний дайджест. Испания**
 - Каждая новость — один абзац, 1–2 коротких предложения, с пустой строкой между новостями.
 - Эмодзи только как маркер перед новостью.
 - Markdown-ссылка внутри текста: [ключевые слова](url)
 - Используй ТОЛЬКО предоставленные URL из JSON.
+- Проверь итоговую длину: если превышает 700 символов — сократи новости или убери одну.
 
 === ФОРМАТ FACEBOOK ===
 - Заголовок: 🌆 Вечерний дайджест. Испания
@@ -856,6 +857,11 @@ def run_job(job: dict):
 
                         # Upload slides to Azure Storage
                         from workers.tools.azure_storage_helper import AzureStorageUploader
+                        
+                        # Check if Azure credentials are available
+                        if not os.environ.get('AZURE_STORAGE_ACCOUNT_KEY'):
+                            logger.warning("⚠️ AZURE_STORAGE_ACCOUNT_KEY not set, skipping Instagram upload")
+                            return
                         
                         uploader = AzureStorageUploader()
                         carousel_items = []
