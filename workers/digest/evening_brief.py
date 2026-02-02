@@ -583,10 +583,39 @@ def generate_digest() -> dict:
 - Только факты из входных данных.
 - Без аналитики и выводов.
 
-ВЫВОД: Верни ТОЛЬКО валидный JSON. НЕ используй markdown блоки. НЕ добавляй пояснений. Начни ответ с символа "{" и закончи символом "}".
+КРИТИЧЕСКИ ВАЖНО - ФОРМАТ ОТВЕТА:
 
-Пример формата ответа:
-{"telegram": "текст в Markdown", "facebook": "текст для Facebook", "reels_script": "сценарий для видео", "carousel_items": [{"title_ru": "Заголовок новости 1", "url": "https://...", "image_url": "https://..."}]}"""
+Ты ОБЯЗАН вернуть РОВНО 4 блока, разделённых строкой ===SECTION===
+
+НЕ пиши ничего кроме этих 4 блоков!
+НЕ добавляй пояснения или комментарии!
+
+СТРУКТУРА ОТВЕТА (каждый блок отделён ===SECTION===):
+
+БЛОК 1: Telegram контент в Markdown
+===SECTION===
+БЛОК 2: Facebook контент в обычном тексте
+===SECTION===
+БЛОК 3: Reels сценарий
+===SECTION===
+БЛОК 4: CSV данные карусели (формат: заголовок;url;image_url)
+
+ПОЛНЫЙ ПРИМЕР ОТВЕТА:
+**🌆 Вечерний дайджест. Испания**
+
+💶 Экономика выросла. [Подробнее](https://ke-pasa.es/news/economia)
+===SECTION===
+🌆 Вечерний дайджест. Испания
+
+💶 Экономика выросла
+
+https://ke-pasa.es/news/economia
+===SECTION===
+Добрый вечер! Сегодня в Испании...
+===SECTION===
+Экономика Испании превысила $2 трлн;https://ke-pasa.es/news/economika-ispanii-prevysila-dva-trilliona-dollarov/;https://ke-pasa.es/images/news/digest1.jpg
+Жилищный кризис требует срочных мер;https://ke-pasa.es/news/caixabank-srochnye-mery-zhilishchny-deficit-ispania/;https://ke-pasa.es/images/news/digest2.jpg
+Штрафы за нелегальное жильё до €600 тыс;https://ke-pasa.es/news/andalusia-shtraf-600-tys-evro-za-nezakonnuyu-arendu/;https://ke-pasa.es/images/news/digest3.jpg"""
 
         user_prompt_content = f"""Сформируй вечернюю Telegram-заметку.
 
@@ -605,7 +634,8 @@ def generate_digest() -> dict:
         response_text = chat_completion(
             client=client,
             model="gpt-5.2-chat",  # Прямо Azure deployment для мощной генерации
-            messages=messages
+            messages=messages,
+            temperature=0.3  # Lower temperature for more consistent JSON
         )
 
         if not response_text:
@@ -615,33 +645,64 @@ def generate_digest() -> dict:
         # Log the raw response to debug carousel issue
         logger.info(f"Raw OpenAI response: {response_text[:500]}...")
         
-        # Parse JSON response
-        try:
-            # Remove markdown code blocks if present
-            cleaned_response = response_text.strip()
-            if cleaned_response.startswith('```'):
-                cleaned_response = cleaned_response.split('\n', 1)[1]
-                cleaned_response = cleaned_response.rsplit('```', 1)[0]
+        # Извлекаем карусель напрямую из Markdown ссылок
+        import re
+        carousel_items = []
+        
+        # Создаем словарь URL -> news_item для быстрого поиска
+        url_to_news = {item['url']: item for item in news_items if item.get('url')}
+        
+        # Ищем ссылки в двух форматах: [текст](url) или просто https://ke-pasa.es/...
+        link_pattern_markdown = r'\[([^\]]+)\]\((https://ke-pasa\.es/[^\)]+)\)'
+        link_pattern_plain = r'https://ke-pasa\.es/news/([a-z0-9\-]+)/?'
+        
+        markdown_matches = re.findall(link_pattern_markdown, response_text)
+        plain_url_matches = re.findall(link_pattern_plain, response_text)
+        
+        logger.info(f"Found {len(markdown_matches)} markdown links and {len(plain_url_matches)} plain URLs")
+        
+        # Сначала добавляем markdown ссылки (используем ПОЛНЫЙ заголовок из БД)
+        for title, url in markdown_matches[:10]:
+            url = url.strip().rstrip('/')
+            # Нормализуем URL для поиска
+            if not url.endswith('/'):
+                url = url + '/'
             
-            parsed = json.loads(cleaned_response)
-            telegram_content = parsed.get('telegram', '')
-            facebook_content = parsed.get('facebook', '')
-            reels_script = parsed.get('reels_script', '')
-            carousel_items = parsed.get('carousel_items', [])
+            # Находим соответствующую новость из БД
+            news_item = url_to_news.get(url)
+            if news_item and news_item.get('image_url'):
+                # Используем ПОЛНЫЙ title_ru из БД, а не короткий анкор из markdown
+                carousel_items.append({
+                    'title_ru': news_item['title_ru'],
+                    'url': url,
+                    'image_url': news_item['image_url']
+                })
+        
+        # Затем добавляем plain URLs (берем заголовок из БД)
+        for slug in plain_url_matches[:10]:
+            url = f"https://ke-pasa.es/news/{slug}/"
+            if any(item['url'] == url for item in carousel_items):
+                continue  # Уже добавлено
             
-            # Debug carousel parsing
-            logger.info(f"Parsed carousel_items: {len(carousel_items)} items")
-            if carousel_items:
-                for i, item in enumerate(carousel_items[:3]):  # Log first 3
-                    logger.info(f"  Item {i+1}: title='{item.get('title_ru', '')}', has_image={bool(item.get('image_url'))}")
-            else:
-                logger.warning("No carousel_items found in OpenAI response")
-        except Exception as e:
-            logger.error(f"Failed to parse JSON response: {e}. Using response as telegram content.")
-            telegram_content = response_text
-            facebook_content = response_text
-            reels_script = ""
-            carousel_items = []
+            news_item = url_to_news.get(url)
+            if news_item and news_item.get('image_url'):
+                # Используем title_ru из БД вместо slug
+                title = news_item.get('title_ru', slug.replace('-', ' ').title())
+                carousel_items.append({
+                    'title_ru': title,
+                    'url': url,
+                    'image_url': news_item['image_url']
+                })
+        
+        logger.info(f"Extracted {len(carousel_items)} carousel items total")
+        if carousel_items:
+            for i, item in enumerate(carousel_items[:3]):
+                logger.info(f"  Item {i+1}: title='{item['title_ru'][:50]}', url={item['url']}")
+        
+        # Используем весь ответ как контент
+        telegram_content = response_text
+        facebook_content = response_text
+        reels_script = ""
         
         # Add promo line to telegram and facebook
         promo_line_tg = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
@@ -694,6 +755,8 @@ def run_job(job: dict):
         
         # Respect dry-run: generate (and optionally save) but skip publishing
         dry_run = bool(job.get('dry_run', False))
+        carousel_only = bool(job.get('carousel_only', False))
+        
         try:
             # Save telegram content as translation
             _maybe_save_translation(job, telegram_content)
@@ -725,14 +788,19 @@ def run_job(job: dict):
                 "image_url": image_url,
                 "published": False
             }
-
-        channels = job.get('channels', [])
-        content_dict = {
-            'telegram': telegram_content,
-            'facebook': facebook_content,
-            'reels_script': reels_script
-        }
-        publish_results = publish_content(content_dict, channels, job_id=job.get('id', 'evening_brief'), image_url=image_url)
+        
+        # CAROUSEL-ONLY MODE: Skip Telegram/Facebook, only generate carousel
+        if carousel_only:
+            logger.info("📸 CAROUSEL-ONLY MODE: Skipping Telegram/Facebook, will generate carousel only")
+            publish_results = {}  # Empty results, no publishing
+        else:
+            channels = job.get('channels', [])
+            content_dict = {
+                'telegram': telegram_content,
+                'facebook': facebook_content,
+                'reels_script': reels_script
+            }
+            publish_results = publish_content(content_dict, channels, job_id=job.get('id', 'evening_brief'), image_url=image_url)
         
         # Generate Instagram carousel after publishing
         try:
@@ -750,23 +818,18 @@ def run_job(job: dict):
                 # Initialize carousel generator
                 carousel_gen = DigestCarouselGenerator(output_dir="output/instagram_carousel")
                 
-                # Download Telegram image to use as title slide
-                import tempfile
-                import requests
+                # Use local title image path directly (no download needed)
                 from pathlib import Path
+                title_image_path = Path(image_url)
                 
-                # Create temp directory for title image
-                temp_dir = Path("output/temp_digest")
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                title_image_path = temp_dir / "telegram_title.jpg"
+                if not title_image_path.exists():
+                    logger.error(f"Title image not found: {title_image_path}")
+                    return
                 
-                # Download image from URL
-                response = requests.get(image_url, timeout=15)
-                response.raise_for_status()
-                with open(title_image_path, 'wb') as f:
-                    f.write(response.content)
+                logger.info(f"Using title image: {title_image_path}")
                 
-                logger.info(f"Downloaded title image: {title_image_path}")
+                # Store facebook_content for Instagram caption
+                instagram_caption = facebook_content if facebook_content else "🌆 Вечерний дайджест. Испания\n\n📱 Подписывайтесь: @spain_kepasa"
                 
                 # Generate carousel slides
                 slides_data = carousel_gen.generate_carousel_slides(
@@ -781,6 +844,131 @@ def run_job(job: dict):
                     for idx, slide in enumerate(slides_data, 1):
                         logger.info(f"  {idx}. {Path(slide['path']).name}")
                         logger.info(f"     Caption: {slide['caption'][:80]}...")
+                    
+                    # Publish to Instagram (in all modes)
+                    try:
+                        from workers.tools.instagram_helper import _get_valid_access_token, _create_media_container, _publish_media_container
+                        import os
+                        import time
+                        import requests
+
+                        # Get Instagram credentials
+                        user_id = os.environ.get('INSTAGRAM_USER_ID')
+                        access_token = _get_valid_access_token()
+
+                        # Upload slides to Azure Storage
+                        from workers.tools.azure_storage_helper import AzureStorageUploader
+                        
+                        uploader = AzureStorageUploader()
+                        carousel_items = []
+                        
+                        for slide in slides_data:
+                            local_path = slide['path']
+
+                            # Generate unique filename with timestamp
+                            timestamp = int(time.time())
+                            filename = f"carousel_{timestamp}_{Path(local_path).name}"
+                            
+                            # Upload to Azure Storage for public HTTPS access
+                            try:
+                                azure_url = uploader.upload_image(local_path, filename)
+                                
+                                if azure_url:
+                                    carousel_items.append({
+                                        'image_url': azure_url,
+                                        'caption': slide['caption']
+                                    })
+                                    logger.info(f"✓ Uploaded slide to Azure: {filename} -> {azure_url}")
+                                    
+                                    # Delete local file after successful upload
+                                    try:
+                                        import os
+                                        if os.path.exists(local_path):
+                                            os.remove(local_path)
+                                            logger.info(f"🧹 Deleted local file: {local_path}")
+                                    except Exception as del_e:
+                                        logger.warning(f"Failed to delete local file {local_path}: {del_e}")
+                                else:
+                                    logger.error(f"❌ Failed to upload slide {filename} to Azure")
+                                    
+                                time.sleep(0.1)  # Small delay between uploads
+                            except Exception as e:
+                                logger.error(f"Failed to upload slide {filename}: {e}")
+                        
+                        if not carousel_items:
+                            logger.warning("No carousel items available for Instagram")
+                            return
+                        
+                        logger.info(f"📸 Publishing Instagram carousel with {len(carousel_items)} slides")
+                        
+                        # Step 1: Create media containers for each slide
+                        container_ids = []
+                        for idx, item in enumerate(carousel_items, 1):
+                            img_url = item['image_url']
+                            caption = item['caption']
+                            logger.info(f"  Creating container {idx}/{len(carousel_items)}: {caption[:50]}...")
+                            container_id = _create_media_container(
+                                user_id=user_id,
+                                media_url=img_url,
+                                caption="",  # Captions don't work on individual slides in CAROUSEL
+                                access_token=access_token,
+                                media_type='IMAGE'
+                            )
+                            if container_id:
+                                container_ids.append(container_id)
+                                time.sleep(1)  # Rate limiting
+                        
+                        if not container_ids:
+                            logger.error("Failed to create any carousel item containers")
+                            return
+                        
+                        logger.info(f"✓ Created {len(container_ids)} carousel item containers")
+                        
+                        # Step 2: Create carousel album container with general caption
+                        logger.info("📦 Creating carousel album container...")
+                        carousel_url = f'https://graph.facebook.com/v18.0/{user_id}/media'
+                        
+                        # Main carousel caption (use same text as Facebook)
+                        main_caption = instagram_caption
+                        
+                        carousel_params = {
+                            'media_type': 'CAROUSEL',
+                            'caption': main_caption,
+                            'children': ','.join(container_ids),
+                            'access_token': access_token
+                        }
+                        
+                        carousel_resp = requests.post(carousel_url, params=carousel_params, timeout=30)
+                        if carousel_resp.status_code != 200:
+                            logger.error(f"Failed to create carousel album: {carousel_resp.status_code} {carousel_resp.text}")
+                            return
+                        
+                        carousel_container_id = carousel_resp.json().get('id')
+                        logger.info(f"✅ Carousel album container created: {carousel_container_id}")
+                        
+                        # Step 3: Wait for processing
+                        logger.info("⏳ Waiting for Instagram to process carousel...")
+                        time.sleep(10)
+                        
+                        # Step 4: Publish carousel
+                        logger.info(f"🚀 Publishing carousel...")
+                        result = _publish_media_container(user_id, carousel_container_id, access_token)
+                        
+                        if result and result.get('id'):
+                            logger.info(f"✅ Instagram carousel published: {result.get('id')}")
+                            
+                            # Cleanup old carousel images from Azure Storage (older than 7 days)
+                            try:
+                                deleted = uploader.cleanup_old_carousels(days_old=7)
+                                if deleted > 0:
+                                    logger.info(f"🧹 Cleaned up {deleted} old carousel images from Azure")
+                            except Exception as cleanup_e:
+                                logger.warning(f"Failed to cleanup old carousels: {cleanup_e}")
+                        else:
+                            logger.warning(f"⚠️ Instagram carousel publish failed: {result}")
+                            
+                    except Exception as ig_e:
+                        logger.error(f"Failed to publish to Instagram: {ig_e}", exc_info=True)
                 else:
                     logger.warning("Failed to generate carousel slides")
                     

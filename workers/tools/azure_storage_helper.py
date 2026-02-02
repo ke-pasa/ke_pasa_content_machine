@@ -99,6 +99,69 @@ class AzureStorageUploader:
             logger.error(f"❌ Failed to upload video to Azure Storage: {e}")
             return None
             
+    def upload_image(self, image_path: str, custom_filename: Optional[str] = None) -> Optional[str]:
+        """
+        Upload image to Azure Storage and return public URL.
+        
+        Args:
+            image_path: Local path to image file
+            custom_filename: Custom filename (optional, generates unique if not provided)
+            
+        Returns:
+            Public URL of uploaded image, or None on failure
+        """
+        try:
+            if not os.path.exists(image_path):
+                logger.error(f"Image file not found: {image_path}")
+                return None
+                
+            # Generate unique filename if not provided
+            if custom_filename:
+                blob_name = custom_filename
+            else:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                unique_id = str(uuid.uuid4())[:8]
+                original_name = Path(image_path).name
+                blob_name = f"{timestamp}_{unique_id}_{original_name}"
+                
+            logger.info(f"📤 Uploading image to Azure Storage: {blob_name}")
+            
+            # Get blob client
+            blob_client = self.blob_service_client.get_blob_client(
+                container=self.container_name, 
+                blob=blob_name
+            )
+            
+            # Detect content type based on file extension
+            ext = Path(image_path).suffix.lower()
+            content_type_map = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp'
+            }
+            content_type = content_type_map.get(ext, 'image/jpeg')
+            content_settings = ContentSettings(content_type=content_type)
+            
+            # Upload file
+            with open(image_path, 'rb') as data:
+                blob_client.upload_blob(
+                    data, 
+                    overwrite=True,
+                    content_settings=content_settings
+                )
+                
+            # Generate public URL
+            public_url = f"https://{self.account_name}.blob.core.windows.net/{self.container_name}/{blob_name}"
+            
+            logger.info(f"✅ Image uploaded successfully: {blob_name}")
+            return public_url
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to upload image to Azure Storage: {e}")
+            return None
+            
     def delete_video(self, blob_name: str) -> bool:
         """
         Delete video from Azure Storage.
@@ -140,6 +203,47 @@ class AzureStorageUploader:
         except Exception as e:
             logger.error(f"❌ Failed to list videos from Azure Storage: {e}")
             return []
+            
+    def cleanup_old_carousels(self, days_old: int = 7) -> int:
+        """
+        Delete carousel images older than specified days.
+        
+        Args:
+            days_old: Delete files older than this many days (default: 7)
+            
+        Returns:
+            Number of files deleted
+        """
+        try:
+            from datetime import datetime, timedelta, timezone
+            
+            container_client = self.blob_service_client.get_container_client(self.container_name)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
+            deleted_count = 0
+            
+            # List all carousel images
+            blobs = container_client.list_blobs(name_starts_with='carousel_')
+            
+            for blob in blobs:
+                if blob.last_modified < cutoff_date:
+                    try:
+                        blob_client = self.blob_service_client.get_blob_client(
+                            container=self.container_name,
+                            blob=blob.name
+                        )
+                        blob_client.delete_blob()
+                        deleted_count += 1
+                        logger.info(f"🗑️ Deleted old carousel: {blob.name}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to delete {blob.name}: {e}")
+                        
+            if deleted_count > 0:
+                logger.info(f"✅ Cleaned up {deleted_count} old carousel images")
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to cleanup old carousels: {e}")
+            return 0
 
 
 def upload_video_to_azure(video_path: str, custom_filename: Optional[str] = None) -> Optional[str]:

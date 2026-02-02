@@ -3,6 +3,7 @@ Instagram Carousel Generator for Evening Digest
 Creates 6-slide carousel: 1 title slide + 5 news slides
 """
 import os
+import sys
 import logging
 import requests
 from typing import List, Dict, Optional
@@ -10,6 +11,46 @@ from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 
 _logger = logging.getLogger('workers.tools.digest_carousel_generator')
+
+
+def _get_font_path(font_name: str, size: int) -> ImageFont.FreeTypeFont:
+    """
+    Get font in a cross-platform way
+    
+    Args:
+        font_name: Font name (e.g., 'arial', 'arialbd')
+        size: Font size
+        
+    Returns:
+        ImageFont object
+    """
+    font_paths = []
+    
+    if sys.platform == 'win32':
+        # Windows
+        font_paths = [
+            f"C:\\Windows\\Fonts\\{font_name}.ttf",
+            f"{font_name}.ttf"
+        ]
+    else:
+        # Linux/Unix
+        font_paths = [
+            f"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # DejaVu (common on Linux)
+            f"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Liberation
+            f"/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf",  # MS fonts if installed
+            f"/System/Library/Fonts/Helvetica.ttc",  # macOS
+            f"{font_name}.ttf"  # Try relative
+        ]
+    
+    for path in font_paths:
+        try:
+            return ImageFont.truetype(path, size)
+        except:
+            continue
+    
+    # Fallback to default
+    _logger.warning(f"Font '{font_name}' not found, using default")
+    return ImageFont.load_default()
 
 
 class DigestCarouselGenerator:
@@ -133,16 +174,8 @@ class DigestCarouselGenerator:
             # Draw title text at bottom
             draw = ImageDraw.Draw(img)
             
-            # Try to load font (fallback to default if not available)
-            try:
-                font = ImageFont.truetype("arial.ttf", 60)
-            except:
-                try:
-                    # Try common Windows font path
-                    font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 60)
-                except:
-                    _logger.warning("Arial font not found, using default")
-                    font = ImageFont.load_default()
+            # Load font using cross-platform helper
+            font = _get_font_path("arial", 60)
             
             # Calculate text position (centered at bottom)
             bbox = draw.textbbox((0, 0), title_text, font=font)
@@ -207,14 +240,7 @@ class DigestCarouselGenerator:
             draw = ImageDraw.Draw(img)
             
             # Load font for number
-            try:
-                font_number = ImageFont.truetype("arialbd.ttf", 90)  # Bold for number
-            except:
-                try:
-                    font_number = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 90)
-                except:
-                    _logger.warning("Font not found, using default")
-                    font_number = ImageFont.load_default()
+            font_number = _get_font_path("arialbd", 90)
             
             # Draw slide number in top-left corner
             number_text = f"#{slide_number}"
@@ -229,7 +255,62 @@ class DigestCarouselGenerator:
             # Number main text
             draw.text((50, 50), number_text, fill='white', font=font_number)
             
-            # Note: Title goes to Instagram caption, not on the image
+            # Add title text at the bottom
+            if title:
+                try:
+                    # Load font for title
+                    font_title = _get_font_path("arialbd", 40)
+                    
+                    # Wrap title text to multiple lines
+                    max_width = self.slide_size[0] - 100  # 50px margin on each side
+                    wrapped_lines = []
+                    words = title.split()
+                    current_line = []
+                    
+                    for word in words:
+                        test_line = ' '.join(current_line + [word])
+                        bbox = draw.textbbox((0, 0), test_line, font=font_title)
+                        if bbox[2] - bbox[0] <= max_width:
+                            current_line.append(word)
+                        else:
+                            if current_line:
+                                wrapped_lines.append(' '.join(current_line))
+                                current_line = [word]
+                            else:
+                                wrapped_lines.append(word)
+                    
+                    if current_line:
+                        wrapped_lines.append(' '.join(current_line))
+                    
+                    # Limit to 4 lines max
+                    wrapped_lines = wrapped_lines[:4]
+                    
+                    # Calculate total height
+                    line_height = 50
+                    total_height = len(wrapped_lines) * line_height
+                    start_y = self.slide_size[1] - total_height - 80  # 80px from bottom
+                    
+                    # Draw each line with outline
+                    for i, line in enumerate(wrapped_lines):
+                        y = start_y + (i * line_height)
+                        
+                        # Center the text
+                        bbox = draw.textbbox((0, 0), line, font=font_title)
+                        text_width = bbox[2] - bbox[0]
+                        x = (self.slide_size[0] - text_width) // 2
+                        
+                        # Black outline for readability
+                        for offset_x in [-2, 0, 2]:
+                            for offset_y in [-2, 0, 2]:
+                                if offset_x != 0 or offset_y != 0:
+                                    draw.text((x + offset_x, y + offset_y), 
+                                            line, fill='black', font=font_title)
+                        
+                        # White main text
+                        draw.text((x, y), line, fill='white', font=font_title)
+                        
+                except Exception as title_e:
+                    _logger.warning(f"Failed to add title text: {title_e}")
             
             return img
             

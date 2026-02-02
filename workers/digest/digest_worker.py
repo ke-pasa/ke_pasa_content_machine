@@ -86,7 +86,7 @@ class DigestWorker:
             logger.exception(f"Error executing module {script_module}")
         return None
 
-    def run_immediate(self, job_id, target_channel=None):
+    def run_immediate(self, job_id, target_channel=None, carousel_only=False):
         logger.info(f"🚀 Manual run for job: {job_id}")
         config = self.load_config()
         job = next((j for j in config.get('jobs', []) if j['id'] == job_id), None)
@@ -94,9 +94,10 @@ class DigestWorker:
         if not job:
             logger.error(f"Job {job_id} not found in config")
             return
-        # Inject dry-run flag and delegate to the digest module
+        # Inject dry-run and carousel_only flags and delegate to the digest module
         try:
             job['dry_run'] = bool(self.dry_run)
+            job['carousel_only'] = bool(carousel_only)
         except Exception:
             pass
         self.execute_job(job)
@@ -158,6 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--run-now", help="ID of job to run immediately")
     parser.add_argument("--target-channel", help="Override target channel for immediate run")
     parser.add_argument("--dry-run", action="store_true", help="Generate content only; skip publish/republish")
+    parser.add_argument("--carousel-only", action="store_true", help="Generate and publish carousel only; skip Telegram/Facebook")
     
     args = parser.parse_args()
     
@@ -165,6 +167,6 @@ if __name__ == "__main__":
     worker.dry_run = bool(args.dry_run)
     
     if args.run_now:
-        worker.run_immediate(args.run_now, args.target_channel)
+        worker.run_immediate(args.run_now, args.target_channel, carousel_only=args.carousel_only)
     else:
         worker.run_daemon()
