@@ -485,7 +485,6 @@ def generate_digest() -> dict:
         news_items = []
         
         for r in rows:
-            # total_score, telegram_final, description_ru, slug, image_url, title_ru
             total_score = float(r[0]) if r[0] is not None else 0
             tg_final = r[1]
             desc = r[2]
@@ -500,7 +499,6 @@ def generate_digest() -> dict:
             elif isinstance(tg_final, str):
                 final_text = tg_final
             
-            # Fallback to description if telegram_final is empty (unlikely for published)
             if not final_text:
                 final_text = desc
 

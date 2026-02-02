@@ -206,7 +206,146 @@ class VideoGenerator:
             _logger.exception(error_msg)
             return False, error_msg
     
-    def generate_video_with_multiple_videos(self, video_urls: list, audio_path: str, output_path: str, title: str = "", audio_duration: float = None) -> Tuple[bool, Optional[str]]:
+    def _create_subtitles(self, script_text: str, duration: float, video_size: tuple) -> list:
+        """
+        Create subtitle clips from script text with timing
+        
+        Args:
+            script_text: Full script text to convert to subtitles
+            duration: Total video duration
+            video_size: (width, height) of video
+            
+        Returns:
+            List of TextClip objects with timing
+        """
+        try:
+            from moviepy.editor import TextClip
+            import re
+            
+            # Split text into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', script_text.strip())
+            sentences = [s.strip() for s in sentences if s.strip()]
+            
+            if not sentences:
+                return []
+            
+            # Calculate duration per sentence
+            time_per_sentence = duration / len(sentences)
+            
+            subtitle_clips = []
+            
+            for i, sentence in enumerate(sentences):
+                start_time = i * time_per_sentence
+                
+                # Create subtitle clip with PIL-based rendering
+                try:
+                    from PIL import Image, ImageDraw, ImageFont
+                    from moviepy.editor import ImageClip
+                    import numpy as np
+                    
+                    # Create subtitle background
+                    sub_width = min(video_size[0] - 40, 600)  # Max 600px width
+                    sub_height = 80
+                    img = Image.new('RGBA', (sub_width, sub_height), (0, 0, 0, 180))
+                    draw = ImageDraw.Draw(img)
+                    
+                    # Load font
+                    font = self._get_font(28)
+                    
+                    # Word wrap
+                    words = sentence.split()
+                    lines = []
+                    current_line = ""
+                    max_width = sub_width - 20
+                    
+                    for word in words:
+                        test_line = current_line + (" " if current_line else "") + word
+                        bbox = draw.textbbox((0, 0), test_line, font=font)
+                        if bbox[2] - bbox[0] <= max_width:
+                            current_line = test_line
+                        else:
+                            if current_line:
+                                lines.append(current_line)
+                                current_line = word
+                            else:
+                                lines.append(word)
+                                current_line = ""
+                    if current_line:
+                        lines.append(current_line)
+                    
+                    # Draw text lines
+                    line_height = 30
+                    start_y = (sub_height - len(lines) * line_height) // 2
+                    
+                    for j, line in enumerate(lines[:2]):  # Max 2 lines
+                        bbox = draw.textbbox((0, 0), line, font=font)
+                        text_width = bbox[2] - bbox[0]
+                        x = (sub_width - text_width) // 2
+                        y = start_y + j * line_height
+                        
+                        # Shadow
+                        draw.text((x+1, y+1), line, font=font, fill=(0, 0, 0, 255))
+                        # Main text
+                        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+                    
+                    # Convert to clip
+                    overlay_array = np.array(img)
+                    subtitle_clip = ImageClip(overlay_array, duration=time_per_sentence)
+                    subtitle_clip = subtitle_clip.set_start(start_time)
+                    subtitle_clip = subtitle_clip.set_position(('center', 'bottom'))
+                    
+                    subtitle_clips.append(subtitle_clip)
+                    
+                except Exception as e:
+                    _logger.warning(f"Failed to create subtitle for sentence {i}: {e}")
+                    continue
+            
+            _logger.info(f"Created {len(subtitle_clips)} subtitle clips")
+            return subtitle_clips
+            
+        except Exception as e:
+            _logger.warning(f"Failed to create subtitles: {e}")
+            return []
+    
+    def _get_font(self, size: int):
+        """Get font for text rendering (cross-platform)"""
+        try:
+            from PIL import ImageFont
+            import sys
+            
+            font_paths = []
+            
+            if sys.platform == 'win32':
+                font_paths = [
+                    "C:\\Windows\\Fonts\\BebasNeue-Regular.ttf",
+                    "C:\\Windows\\Fonts\\Bebas.ttf",
+                    "BebasNeue-Regular.ttf",
+                    "Bebas.ttf",
+                    "bebas-neue.ttf"
+                ]
+            else:
+                font_paths = [
+                    "/usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf",
+                    "/usr/share/fonts/truetype/bebas/Bebas.ttf",
+                    "/usr/local/share/fonts/BebasNeue-Regular.ttf",
+                    "BebasNeue-Regular.ttf",
+                    "Bebas.ttf",
+                ]
+            
+            for path in font_paths:
+                try:
+                    return ImageFont.truetype(path, size)
+                except:
+                    continue
+            
+            _logger.warning("Bebas font not found, using default")
+            return ImageFont.load_default()
+            
+        except:
+            from PIL import ImageFont
+            return ImageFont.load_default()
+
+    def generate_video_with_multiple_videos(self, video_urls: list, audio_path: str, output_path: str, title: str = "", audio_duration: float = None, script_text: str = None, add_subtitles: bool = False) -> Tuple[bool, Optional[str]]:
         """
         Generate video with multiple Pexels videos combined with audio and title overlay
         
@@ -216,6 +355,8 @@ class VideoGenerator:
             output_path: Output video file path
             title: Article title for text overlay
             audio_duration: Duration of audio (optional, will be calculated from file if not provided)
+            script_text: Script text for subtitles (optional)
+            add_subtitles: Whether to add subtitles from script_text
             
         Returns:
             Tuple of (success: bool, error_message: Optional[str])
@@ -303,40 +444,9 @@ class VideoGenerator:
                         img = Image.new('RGBA', (overlay_width, overlay_height), (0, 0, 0, 0))
                         draw = ImageDraw.Draw(img)
                         
-                        # Try to use a system font with better fallback
-                        font = None
+                        # Load font using helper method
+                        font = self._get_font(20)
                         
-                        # List of fonts to try in order
-                        font_paths = [
-                            # Windows fonts
-                            "arial.ttf",
-                            "Arial.ttf", 
-                            "C:/Windows/Fonts/arial.ttf",
-                            # Linux DejaVu fonts (installed in Docker)
-                            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                            # Ubuntu/Liberation fonts 
-                            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-                            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-                            # Generic Linux fonts
-                            "/usr/share/fonts/TTF/arial.ttf",
-                            "/System/Library/Fonts/Arial.ttf",  # macOS
-                        ]
-                        
-                        for font_path in font_paths:
-                            try:
-                                font = ImageFont.truetype(font_path, 20)
-                                _logger.info(f"Using font: {font_path}")
-                                break
-                            except (OSError, IOError):
-                                continue
-                        
-                        # If no TrueType font found, use default
-                        if font is None:
-                            font = ImageFont.load_default()
-                            _logger.warning("No TrueType font found, using default font")
-                        
-                        # Split text into multiple lines if needed
                         padding = 20  # Reduced padding for more text space
                         max_width = overlay_width - (padding * 2)  # Both sides
                         words = title_text.split()
@@ -354,47 +464,55 @@ class VideoGenerator:
                                     lines.append(current_line)
                                     current_line = word
                                 else:
-                                    # If single word is too long, add it anyway
                                     lines.append(word)
                                     current_line = ""
-                        
+
                         if current_line:
                             lines.append(current_line)
-                        
-                        # Calculate text position (centered with padding)
+
                         line_height = 24  # Reduced line height for smaller font
                         total_height = len(lines) * line_height
                         start_y = (overlay_height - total_height) // 2
-                        
+
                         for i, line in enumerate(lines):
                             bbox = draw.textbbox((0, 0), line, font=font)
                             text_width = bbox[2] - bbox[0]
                             x = padding + (max_width - text_width) // 2  # Center within padded area
                             y = start_y + i * line_height
-                            
+
                             # Ensure text doesn't go beyond bounds
                             if x < padding:
                                 x = padding
                             if x + text_width > overlay_width - padding:
                                 x = overlay_width - padding - text_width
-                            
+
                             # Draw shadow (black, slightly offset)
                             draw.text((x+2, y+2), line, font=font, fill=(0, 0, 0, 200))
                             # Draw main text (white)
                             draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
-                        
+
                         # Convert PIL image to MoviePy ImageClip
                         overlay_array = np.array(img)
                         overlay_clip = ImageClip(overlay_array, duration=3).set_position('center')
-                        
+
                         # Composite over video
                         final_video = CompositeVideoClip([final_video, overlay_clip])
                         _logger.info(f"Added PIL title overlay ({len(lines)} lines): {title_text}")
-                        
+
                     except Exception as e:
                         _logger.warning(f"Failed to add PIL title overlay: {e}")
                         # Final fallback - just log the issue
                         _logger.info(f"Video generated without title: {title_text}")
+                
+                # Add subtitles if requested
+                if add_subtitles and script_text:
+                    try:
+                        subtitle_clips = self._create_subtitles(script_text, total_duration, (final_video.w, final_video.h))
+                        if subtitle_clips:
+                            final_video = CompositeVideoClip([final_video] + subtitle_clips)
+                            _logger.info(f"Added {len(subtitle_clips)} subtitle clips")
+                    except Exception as e:
+                        _logger.warning(f"Failed to add subtitles: {e}")
                 
                 # Set audio
                 final_video = final_video.set_audio(audio_clip)
