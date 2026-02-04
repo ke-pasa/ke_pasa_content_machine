@@ -1111,11 +1111,11 @@ class ArticleGenerator:
                 
                 article_id = article.get('id')
                 
-                # Skip if already processed in this session
-                if article_id in processed_in_session:
-                    self.logger.info(f'⏭️  Article {article_id} already processed in this session. Waiting 60 seconds...')
-                    time.sleep(60)
-                    continue
+                # Skip if already processed in this session - but allow reprocessing
+                # if article_id in processed_in_session:
+                #     self.logger.info(f'⏭️  Article {article_id} already processed in this session. Waiting 60 seconds...')
+                #     time.sleep(60)
+                #     continue
                 
                 total_score = self._get_total_score(article)
                 
