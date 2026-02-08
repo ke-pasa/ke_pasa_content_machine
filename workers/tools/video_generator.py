@@ -312,36 +312,37 @@ class VideoGenerator:
         try:
             from PIL import ImageFont
             import sys
-            
-            font_paths = []
-            
+            # Try common bundled/system TTFs first (DejaVu is included with many PIL installs)
+            candidates = [
+                "DejaVuSans.ttf",
+                "DejaVuSans.ttf",
+            ]
+
             if sys.platform == 'win32':
-                font_paths = [
+                candidates += [
+                    "C:\\Windows\\Fonts\\Arial.ttf",
                     "C:\\Windows\\Fonts\\BebasNeue-Regular.ttf",
                     "C:\\Windows\\Fonts\\Bebas.ttf",
-                    "BebasNeue-Regular.ttf",
-                    "Bebas.ttf",
-                    "bebas-neue.ttf"
                 ]
             else:
-                font_paths = [
+                candidates += [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
                     "/usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf",
-                    "/usr/share/fonts/truetype/bebas/Bebas.ttf",
-                    "/usr/local/share/fonts/BebasNeue-Regular.ttf",
-                    "BebasNeue-Regular.ttf",
-                    "Bebas.ttf",
                 ]
-            
-            for path in font_paths:
+
+            candidates += ["Arial.ttf", "BebasNeue-Regular.ttf", "Bebas.ttf"]
+
+            for path in candidates:
                 try:
                     return ImageFont.truetype(path, size)
-                except:
+                except Exception:
                     continue
-            
-            _logger.warning("Bebas font not found, using default")
+
+            _logger.warning("No TTF font found, falling back to default bitmap font")
             return ImageFont.load_default()
-            
-        except:
+
+        except Exception:
             from PIL import ImageFont
             return ImageFont.load_default()
 
