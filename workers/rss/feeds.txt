@@ -41,3 +41,4 @@ https://feeds.weblogssl.com/xataka2
 https://feeds.weblogssl.com/genbeta
 https://www.elespanol.com/rss/
 https://www.elcorreo.com/rss/2.0/portada/
+https://www.ft.com/europe?format=rss
