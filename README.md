@@ -23,10 +23,17 @@ Publisher Worker автоматически публикует статьи на
 |-----------|----------------|-------------|
 | **Telegram** | HTML (bold, italic, links) | Основная платформа, полный текст |
 | **X (Twitter)** | `description_ru` + ссылка | Краткое описание, до 280 символов |
-| **Instagram** | `telegram_final` → plain text | "Подробности по ссылке в профиле @kepasa.es" |
+| **Instagram** | Изображение 4:5 + plain text | **Авто-обработка**: 1080×1350px, title overlay (Bebas Neue 50pt) |
 | **Facebook** | `telegram_final` → plain text | Полный текст с кликабельной ссылкой |
 | **Threads** | `description_ru` + ссылка | Формат как X, использует Facebook credentials |
 | **Сайт** | Полная статья | ke-pasa.es |
+
+> **Instagram Image Processing:** Изображения автоматически обрабатываются перед публикацией:
+> - Формат: 4:5 (1080×1350px) - оптимален для Instagram feed
+> - Title overlay: заголовок накладывается поверх с шрифтом Bebas Neue (50pt, bold)
+> - Градиент: полупрозрачный фон для читаемости текста
+> - High-score статьи (>95): публикуются как видео (REELS)
+> - Подробнее: [docs/instagram_image_setup.md](docs/instagram_image_setup.md)
 
 ### Credentials для социальных сетей
 

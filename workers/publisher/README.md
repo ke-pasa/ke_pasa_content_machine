@@ -4,7 +4,24 @@ Worker for automated article publication to Telegram channels.
 
 ## 📋 Description
 
-Publisher Worker handles scheduled publication of generated articles to Telegram. Manages publication timing, retry logic, and ensures no duplicate publications.
+Publisher Worker handles scheduled publication of generated articles to multiple platforms:
+- **Telegram** (primary channel)
+- **Instagram** (with automatic image formatting)
+- **X (Twitter)**
+- **Facebook**
+- **Threads**
+
+### Instagram Image Processing
+
+Regular articles posted to Instagram are automatically processed:
+- **Format**: Resized to 4:5 (1080×1350px) - optimal for Instagram feed
+- **Title Overlay**: Title added at bottom with Bebas Neue font (size 50, bold)
+- **Gradient Background**: Semi-transparent overlay for text readability
+- **Auto-upload**: Processed images uploaded to Azure Storage
+
+High-score articles (score > 95 with script) generate video posts (REELS) instead.
+
+See [Instagram Image Setup](../../docs/instagram_image_setup.md) for details.
 
 ## 🚀 Usage
 

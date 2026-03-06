@@ -23,7 +23,14 @@ RUN apt-get clean && \
     fonts-dejavu-core \
     fonts-liberation \
     fontconfig \
+    wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Bebas Neue font for Instagram image processing
+RUN mkdir -p /usr/share/fonts/truetype/bebas-neue && \
+    wget -q https://github.com/dharmatype/Bebas-Neue/raw/master/fonts/BebasNeue-Regular.ttf \
+    -O /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf && \
+    chmod 644 /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf
 
 # Update font cache
 RUN fc-cache -fv

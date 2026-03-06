@@ -24,6 +24,7 @@ from workers.tools.instagram_helper import post_instagram
 from workers.tools.facebook_helper import post_facebook
 from workers.tools.threads_helper import post_threads
 from workers.tools.pg_client import get_pg_client
+from workers.tools.instagram_image_processor import process_image_for_instagram, cleanup_temp_image
 from .config import PublisherConfig
 from workers.tools.audio_generator import generate_audio_for_article
 from workers.tools.video_generator import generate_video_for_article, cleanup_temp_video
@@ -765,14 +766,45 @@ class PublisherWorker:
                 logger.warning(f"⚠️ No image_url for Instagram post")
                 return None, 'no_image_url'
 
+            # Get title for overlay
+            title = data.get('title_ru', '')
+            article_id = data.get('id')
+            
+            # Process image: resize to 4:5 (1080x1350) and add title overlay
+            processed_image_path = None
+            final_image_url = image_url  # Fallback to original if processing fails
+            
+            try:
+                logger.info(f"🎨 Processing image for Instagram (4:5 format with title overlay)...")
+                processed_image_path = process_image_for_instagram(image_url, title)
+                
+                if processed_image_path:
+                    # Upload processed image to Azure Storage
+                    uploader = AzureStorageUploader()
+                    public_url = uploader.upload_image(processed_image_path)
+                    
+                    if public_url:
+                        final_image_url = public_url
+                        logger.info(f"✅ Processed image uploaded to Azure: {public_url}")
+                    else:
+                        logger.warning("⚠️ Failed to upload processed image, using original")
+                else:
+                    logger.warning("⚠️ Image processing failed, using original image")
+            except Exception as e:
+                logger.warning(f"⚠️ Error processing image: {e}, using original")
+            finally:
+                # Clean up temporary processed image
+                if processed_image_path:
+                    cleanup_temp_image(processed_image_path)
+
             # Convert HTML to plain text for Instagram
             caption = self._html_to_plain_text(message)
             
             # Instagram doesn't support clickable links in posts
             caption = f"{caption}\n\nПодробности по ссылке в профиле @kepasa.es"
 
-            # Post to Instagram
-            res = post_instagram(image_url, caption)
+            # Post to Instagram with processed image
+            res = post_instagram(final_image_url, caption)
             logger.info(f"🟣 Instagram post successful: {res.get('id')}")
             return res, None
         except Exception as e:
@@ -811,6 +843,37 @@ class PublisherWorker:
             if not image_url:
                 return None, 'no_image_url'
 
+            # Get title for overlay
+            title = data.get('title_ru', '')
+            article_id = data.get('id')
+            
+            # Process image: resize to 4:5 (1080x1350) and add title overlay
+            processed_image_path = None
+            final_image_url = image_url  # Fallback to original if processing fails
+            
+            try:
+                logger.info(f"🎨 Processing fallback image for Instagram (4:5 format with title overlay)...")
+                processed_image_path = process_image_for_instagram(image_url, title)
+                
+                if processed_image_path:
+                    # Upload processed image to Azure Storage
+                    uploader = AzureStorageUploader()
+                    public_url = uploader.upload_image(processed_image_path)
+                    
+                    if public_url:
+                        final_image_url = public_url
+                        logger.info(f"✅ Processed fallback image uploaded to Azure: {public_url}")
+                    else:
+                        logger.warning("⚠️ Failed to upload processed fallback image, using original")
+                else:
+                    logger.warning("⚠️ Fallback image processing failed, using original image")
+            except Exception as e:
+                logger.warning(f"⚠️ Error processing fallback image: {e}, using original")
+            finally:
+                # Clean up temporary processed image
+                if processed_image_path:
+                    cleanup_temp_image(processed_image_path)
+
             # Convert HTML to plain text for Instagram
             caption = self._html_to_plain_text(message)
             
@@ -820,8 +883,8 @@ class PublisherWorker:
             
             caption = f"{caption}\n\nПодробности по ссылке в профиле @kepasa.es"
 
-            # Post to Instagram
-            res = post_instagram(image_url, caption)
+            # Post to Instagram with processed image
+            res = post_instagram(final_image_url, caption)
             logger.info(f"🟣 Instagram image post successful: {res.get('id')}")
             return res, None
         except Exception as e:
@@ -1238,14 +1301,7 @@ def main():
             exit_code = 0 if result['overall_status'] == 'healthy' else 1
             sys.exit(exit_code)
         else:
-            # Normal publication flow
-            if args.article_id:
-                # Publish specific article
-                logger.info(f"🎯 Publishing specific article: {args.article_id}")
-                result = worker.publish_specific_article(args.article_id, force=args.force)
-            else:
-                # Normal batch publication
-                result = worker.publish_articles(force=args.force)
+            result = worker.publish_articles(force=args.force)
             
             logger.info("\n" + "=" * 60)
             logger.info("📊 RESULTS")
