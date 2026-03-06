@@ -1146,6 +1146,13 @@ class PublisherWorker:
 
                 message = final_preview
                 
+                # Remove any bare URLs from the message (legacy from old prompts)
+                # This removes standalone https://ke-pasa.es/news/... links without anchor text
+                import re
+                message = re.sub(r'\n\nhttps://ke-pasa\.es/news/[^\s<]+/?', '', message)
+                message = re.sub(r'\nhttps://ke-pasa\.es/news/[^\s<]+/?', '', message)
+                message = message.strip()
+                
                 # Add article link with UTM parameters for Telegram
                 slug = data.get('slug') or article_id
                 article_url = self._build_article_url(slug, 'telegram')
