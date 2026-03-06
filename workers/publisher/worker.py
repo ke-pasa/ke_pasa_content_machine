@@ -1146,11 +1146,12 @@ class PublisherWorker:
 
                 message = final_preview
                 
-                # Remove any bare URLs from the message (legacy from old prompts)
-                # This removes standalone https://ke-pasa.es/news/... links without anchor text
                 import re
-                message = re.sub(r'\n\nhttps://ke-pasa\.es/news/[^\s<]+/?', '', message)
-                message = re.sub(r'\nhttps://ke-pasa\.es/news/[^\s<]+/?', '', message)
+                # Remove bare URLs (not inside href attributes)
+                # Match: optional newlines + URL + optional newlines
+                message = re.sub(r'(?<!["\'>])\s*https://ke-pasa\.es/news/[^\s<)\]]+/?', '', message)
+                # Clean up multiple consecutive newlines
+                message = re.sub(r'\n{3,}', '\n\n', message)
                 message = message.strip()
                 
                 # Add article link with UTM parameters for Telegram
