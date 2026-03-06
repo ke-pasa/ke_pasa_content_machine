@@ -119,6 +119,29 @@ class PublisherWorker:
         
         return text
 
+    def _build_article_url(self, slug: str, platform: str) -> str:
+        """Build article URL with UTM parameters for analytics tracking.
+        
+        Args:
+            slug: Article slug
+            platform: Social media platform ('telegram', 'x', 'instagram', 'facebook', 'threads')
+            
+        Returns:
+            Full URL with UTM parameters for Google Analytics tracking
+        """
+        if not slug:
+            return ""
+        
+        base_url = f"https://ke-pasa.es/news/{slug}/"
+        
+        # UTM parameters for Google Analytics
+        # utm_source: which platform the traffic is coming from
+        # utm_medium: type of referral (social media)
+        # utm_campaign: can be used to track specific campaigns
+        utm_params = f"?utm_source={platform}&utm_medium=social&utm_campaign=article_share"
+        
+        return base_url + utm_params
+
     def check_integrations_health(self) -> Dict:
         """
         Check health of all social media integrations
@@ -638,8 +661,8 @@ class PublisherWorker:
             description = data.get('description_ru') or data.get('content_ru') or ''
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
 
-            # Build URL
-            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            # Build URL with UTM parameters for analytics tracking
+            article_url = self._build_article_url(slug, 'x')
 
             # Format: Description\n\n<URL> (one blank line between)
             parts = []
@@ -1011,8 +1034,8 @@ class PublisherWorker:
             description = data.get('description_ru') or data.get('content_ru') or ''
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
             
-            # Build URL
-            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            # Build URL with UTM parameters for analytics tracking
+            article_url = self._build_article_url(slug, 'threads')
             
             # Format: Description\n\n<URL> (same as X)
             parts = []
@@ -1122,6 +1145,13 @@ class PublisherWorker:
                 doc_obj = DocShim(data)
 
                 message = final_preview
+                
+                # Add article link with UTM parameters for Telegram
+                slug = data.get('slug') or article_id
+                article_url = self._build_article_url(slug, 'telegram')
+                if article_url:
+                    # Add link at the end of the message for Telegram (supports HTML links)
+                    message = f"{message}\n\n<a href=\"{article_url}\">Читать полностью</a>"
                 
                 # Generate video for script if available
                 video_file_path = None

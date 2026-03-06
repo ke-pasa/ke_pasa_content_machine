@@ -15,6 +15,29 @@ from telethon.tl.types import Channel, Chat
 
 logger = logging.getLogger(__name__)
 
+def _build_article_url(slug: str, source: str = 'evening_digest') -> str:
+    """Build article URL with UTM parameters for analytics tracking.
+    
+    Args:
+        slug: Article slug
+        source: Content source identifier (e.g., 'evening_digest', 'weekly_digest')
+        
+    Returns:
+        Full URL with UTM parameters for Google Analytics tracking
+    """
+    if not slug:
+        return ""
+    
+    base_url = f"https://ke-pasa.es/news/{slug}/"
+    
+    # UTM parameters for Google Analytics
+    # utm_source: specific digest type
+    # utm_medium: content type (digest)
+    # utm_campaign: digest distribution
+    utm_params = f"?utm_source={source}&utm_medium=digest&utm_campaign=content_digest"
+    
+    return base_url + utm_params
+
 def _generate_digest_image_for_brief(content: str, job_id: str = "evening_brief") -> str:
     """Generate a cover image for the evening brief and return local file path or URL.
 
@@ -502,8 +525,8 @@ def generate_digest() -> dict:
             if not final_text:
                 final_text = desc
 
-            # Generate article URL from slug
-            article_url = f"https://ke-pasa.es/news/{slug}/" if slug else ""
+            # Generate article URL from slug with UTM parameters for analytics tracking
+            article_url = _build_article_url(slug, 'evening_digest')
 
             news_items.append({
                 "total_score": total_score,
@@ -679,11 +702,16 @@ https://ke-pasa.es/news/economia
         
         # Затем добавляем plain URLs (берем заголовок из БД)
         for slug in plain_url_matches[:10]:
-            url = f"https://ke-pasa.es/news/{slug}/"
+            url = _build_article_url(slug, 'evening_digest')
             if any(item['url'] == url for item in carousel_items):
                 continue  # Уже добавлено
             
-            news_item = url_to_news.get(url)
+            # Also check without UTM params to avoid duplicates
+            url_without_utm = f"https://ke-pasa.es/news/{slug}/"
+            if any(item['url'].startswith(url_without_utm) for item in carousel_items):
+                continue
+            
+            news_item = url_to_news.get(url_without_utm)
             if news_item and news_item.get('image_url'):
                 # Используем title_ru из БД вместо slug
                 title = news_item.get('title_ru', slug.replace('-', ' ').title())
