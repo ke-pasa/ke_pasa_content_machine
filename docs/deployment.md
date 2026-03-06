@@ -60,6 +60,24 @@ Add the following secrets in your GitHub repository (**Settings** → **Secrets 
 | `DEPLOY_SERVER_PORT` | SSH port | `22` |
 | `RSS_PARALLEL_FEEDS` | Number of parallel RSS feeds | `6` |
 | `RSS_PURGE_DAYS` | Days to keep old articles | `7` |
+| `X_CLIENT_ID` | X (Twitter) OAuth 2.0 Client ID | - |
+| `X_CLIENT_SECRET` | X (Twitter) OAuth 2.0 Client Secret | - |
+| `X_TOKENS_BASE64` | X (Twitter) tokens file (base64 encoded) | - |
+| `INSTAGRAM_USER_ID` | Instagram Business User ID | - |
+| `INSTAGRAM_ACCESS_TOKEN` | Instagram Business Access Token | - |
+| `THREADS_USER_ID` | Threads User ID (separate from Instagram) | - |
+| `THREADS_ACCESS_TOKEN` | Threads API Access Token | - |
+| `FACEBOOK_APP_ID` | Facebook App ID | - |
+| `FACEBOOK_APP_SECRET` | Facebook App Secret | - |
+| `FACEBOOK_PAGE_ID` | Facebook Page ID | - |
+| `FACEBOOK_PAGE_ACCESS_TOKEN` | Facebook Page Access Token | - |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | - |
+| `AZURE_OPENAI_KEY` | Azure OpenAI API key | - |
+| `AZURE_DALLE_ENDPOINT` | Azure DALL-E endpoint URL | - |
+| `AZURE_DALLE_KEY` | Azure DALL-E API key | - |
+| `PEXELS_API_KEY` | Pexels API key for images | - |
+
+**Note:** Threads requires Instagram Business/Creator account. `THREADS_USER_ID` is often different from `INSTAGRAM_USER_ID` even for the same account. Use `tools/get_threads_user_id.py` to discover your Threads User ID.
 
 ### Setup SSH Key
 

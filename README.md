@@ -49,12 +49,14 @@ Publisher Worker автоматически публикует статьи на
 **Meta Platforms (Facebook/Instagram/Threads):**
 - `FACEBOOK_APP_ID` - используется для всех Meta платформ
 - `FACEBOOK_APP_SECRET` - используется для всех Meta платформ
-- `FACEBOOK_PAGE_ID` - Facebook Page
-- `FACEBOOK_PAGE_ACCESS_TOKEN` - long-lived token для всех Meta платформ
-- `INSTAGRAM_USER_ID` - используется для Instagram и Threads
-- `INSTAGRAM_ACCESS_TOKEN` - используется для Instagram
+- `FACEBOOK_PAGE_ID` - Facebook Page ID
+- `FACEBOOK_PAGE_ACCESS_TOKEN` - long-lived token для Facebook
+- `INSTAGRAM_USER_ID` - Instagram Business User ID
+- `INSTAGRAM_ACCESS_TOKEN` - Instagram Business Access Token
+- `THREADS_USER_ID` - Threads User ID (отличается от Instagram ID)
+- `THREADS_ACCESS_TOKEN` - Threads API Access Token
 
-> **Note:** Threads использует те же credentials что и Facebook/Instagram (Meta ecosystem). Отдельные THREADS_* переменные не нужны.
+> **Note:** Threads требует отдельный User ID, который отличается от Instagram User ID даже для одного и того же аккаунта. Используйте `tools/get_threads_user_id.py` для получения вашего Threads User ID.
 
 ### Health Check
 

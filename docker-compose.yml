@@ -123,6 +123,9 @@ services:
       - INSTAGRAM_SHORT_TOKEN=${INSTAGRAM_SHORT_TOKEN:-}
       - INSTAGRAM_APP_SECRET=${INSTAGRAM_APP_SECRET:-}
       - INSTAGRAM_EXPIRES_IN=${INSTAGRAM_EXPIRES_IN:-5184000}
+      # Threads configuration (uses Instagram credentials but separate User ID)
+      - THREADS_USER_ID=${THREADS_USER_ID:-}
+      - THREADS_ACCESS_TOKEN=${THREADS_ACCESS_TOKEN:-}
       # Facebook configuration  
       - FACEBOOK_APP_ID=${FACEBOOK_APP_ID}
       - FACEBOOK_APP_SECRET=${FACEBOOK_APP_SECRET:-}
@@ -189,6 +192,9 @@ services:
       - INSTAGRAM_SHORT_TOKEN=${INSTAGRAM_SHORT_TOKEN:-}
       - INSTAGRAM_APP_SECRET=${INSTAGRAM_APP_SECRET:-}
       - INSTAGRAM_EXPIRES_IN=${INSTAGRAM_EXPIRES_IN:-5184000}
+      # Threads configuration (uses Instagram credentials but separate User ID)
+      - THREADS_USER_ID=${THREADS_USER_ID:-}
+      - THREADS_ACCESS_TOKEN=${THREADS_ACCESS_TOKEN:-}
       # Azure Storage for Instagram carousel hosting
       - AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME}
       - AZURE_STORAGE_ACCOUNT_KEY=${AZURE_STORAGE_ACCOUNT_KEY}

@@ -319,17 +319,19 @@ class PublisherWorker:
             if post_threads is None:
                 raise ValueError("Threads helper not installed")
             
-            # Threads uses Facebook credentials
+            # Threads uses Instagram credentials (requires threads_basic, threads_content_publish permissions)
             app_id = os.getenv('FACEBOOK_APP_ID')
-            user_id = os.getenv('INSTAGRAM_USER_ID')
-            access_token = os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN')
+            # Threads can use separate User ID or fall back to Instagram User ID
+            user_id = os.getenv('THREADS_USER_ID') or os.getenv('INSTAGRAM_USER_ID')
+            # Threads can use separate token or fall back to Instagram token
+            access_token = os.getenv('THREADS_ACCESS_TOKEN') or os.getenv('INSTAGRAM_ACCESS_TOKEN')
             
             if not app_id:
                 raise ValueError("FACEBOOK_APP_ID not configured (required for Threads)")
             if not user_id:
-                raise ValueError("INSTAGRAM_USER_ID not configured (required for Threads)")
+                raise ValueError("THREADS_USER_ID or INSTAGRAM_USER_ID not configured (required for Threads)")
             if not access_token:
-                raise ValueError("FACEBOOK_PAGE_ACCESS_TOKEN not configured (required for Threads)")
+                raise ValueError("THREADS_ACCESS_TOKEN or INSTAGRAM_ACCESS_TOKEN not configured (required for Threads)")
             
             # Test API call - get user profile
             import requests
@@ -343,9 +345,9 @@ class PublisherWorker:
                     'status': 'healthy',
                     'username': user_info.get('username'),
                     'user_id': user_id,
-                    'note': 'Uses Facebook credentials'
+                    'note': 'Uses Instagram credentials'
                 }
-                logger.info(f"✅ Threads: OK (user: @{user_info.get('username')}, using Facebook credentials)")
+                logger.info(f"✅ Threads: OK (user: @{user_info.get('username')}, using Instagram credentials)")
             else:
                 raise Exception(f"API returned {response.status_code}: {response.text}")
                 
@@ -1016,7 +1018,7 @@ class PublisherWorker:
     def _post_to_threads(self, message: str, data: dict) -> tuple:
         """Attempt to post to Threads if configured. Returns (result, error_str).
         
-        Posts image with text to Threads (Instagram's text-based app).
+        Posts to Threads (Instagram's text-based app).
         Uses the same format as X (Twitter): description_ru + article link.
         Simple and clean format without HTML.
         """
@@ -1024,13 +1026,7 @@ class PublisherWorker:
             return None, 'threads_helper_not_installed'
 
         try:
-            # Extract data
-            image_url = data.get('image_url') or data.get('image')
-            if not image_url:
-                logger.warning(f"⚠️ No image_url for Threads post")
-                return None, 'no_image_url'
-
-            # Use same format as X (Twitter): description + link
+            # Use same format as X (Twitter): Description\n\n<URL>
             description = data.get('description_ru') or data.get('content_ru') or ''
             slug = data.get('slug') or data.get('id') or data.get('article_id') or ''
             
@@ -1045,9 +1041,20 @@ class PublisherWorker:
                 parts.append(article_url)
             
             post_text = '\n\n'.join([p for p in parts if p])
+            
+            logger.info(f"🧵 Threads post text ({len(post_text)} chars): {post_text[:200]}...")
 
-            # Post to Threads
-            res = post_threads(image_url, post_text)
+            # Extract image URL (optional for Threads)
+            image_url = data.get('image_url') or data.get('image')
+
+            # Post to Threads (supports both image and text-only posts)
+            if image_url:
+                logger.info(f"🧵 Posting to Threads with image: {image_url}")
+                res = post_threads(image_url=image_url, text=post_text)
+            else:
+                logger.info(f"🧵 Posting to Threads (text-only)")
+                res = post_threads(image_url=None, text=post_text)
+                
             logger.info(f"🧵 Threads post successful: {res.get('id')}")
             return res, None
         except Exception as e:
