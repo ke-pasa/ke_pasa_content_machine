@@ -726,6 +726,8 @@ class PublisherWorker:
         For high-score articles (>95), generates and posts video instead of image.
         For regular articles, posts image with caption to Instagram Business/Creator account.
         """
+        logger.info(f"📥 Instagram message input ({len(message) if message else 0} chars): {message[:200] if message else 'EMPTY'}...")
+        
         if post_instagram is None:
             return None, 'instagram_helper_not_installed'
 
@@ -802,6 +804,8 @@ class PublisherWorker:
             
             # Instagram doesn't support clickable links in posts
             caption = f"{caption}\n\nПодробности по ссылке в профиле @kepasa.es"
+            
+            logger.info(f"📝 Instagram caption ({len(caption)} chars): {caption[:200]}...")
 
             # Post to Instagram with processed image
             res = post_instagram(final_image_url, caption)
@@ -838,6 +842,8 @@ class PublisherWorker:
     
     def _fallback_to_image_instagram(self, message: str, data: dict, video_generated: bool = False) -> tuple:
         """Fallback to regular image posting for Instagram"""
+        logger.info(f"📥 Instagram fallback message input ({len(message) if message else 0} chars): {message[:200] if message else 'EMPTY'}...")
+        
         try:
             image_url = data.get('image_url') or data.get('image')
             if not image_url:
@@ -882,6 +888,8 @@ class PublisherWorker:
                 caption = f"🎬 {caption}\n\nВидео доступно на нашем канале!"
             
             caption = f"{caption}\n\nПодробности по ссылке в профиле @kepasa.es"
+            
+            logger.info(f"📝 Instagram fallback caption ({len(caption)} chars): {caption[:200]}...")
 
             # Post to Instagram with processed image
             res = post_instagram(final_image_url, caption)

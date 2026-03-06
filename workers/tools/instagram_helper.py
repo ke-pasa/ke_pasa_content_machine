@@ -230,6 +230,7 @@ def _create_media_container(
     # Log with the actual media type that will be sent to API
     display_type = 'REELS' if media_type.upper() == 'VIDEO' else media_type
     logger.info(f'📦 Creating Instagram media container ({display_type})...')
+    logger.info(f'📦 Caption being sent to API ({len(caption)} chars): {caption[:150]}...')
     
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -368,6 +369,8 @@ def post_instagram(
     Raises:
         RuntimeError on failure
     """
+    logger.info(f"📸 post_instagram called - caption length: {len(caption) if caption else 0}, caption: {caption[:100] if caption else 'EMPTY'}...")
+    
     if not media_url:
         raise ValueError('media_url is required')
     

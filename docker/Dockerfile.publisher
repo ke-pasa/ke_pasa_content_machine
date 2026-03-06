@@ -1,6 +1,7 @@
 FROM ke-pasa-workers-base:latest
 
 COPY workers/publisher /app/workers/publisher
+COPY workers/tools /app/workers/tools
 
 # Create directories for video generation
 RUN mkdir -p /app/generated_videos /app/public/videos && \
