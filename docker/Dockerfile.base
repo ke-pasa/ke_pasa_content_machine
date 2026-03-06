@@ -24,16 +24,15 @@ RUN apt-get clean && \
     fonts-liberation \
     fontconfig \
     wget \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Bebas Neue font for Instagram image processing
 RUN mkdir -p /usr/share/fonts/truetype/bebas-neue && \
-    wget -q https://github.com/dharmatype/Bebas-Neue/raw/master/fonts/BebasNeue-Regular.ttf \
-    -O /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf && \
-    chmod 644 /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf
-
-# Update font cache
-RUN fc-cache -fv
+    curl -fsSL https://github.com/dharmatype/Bebas-Neue/raw/master/fonts/BebasNeue-Regular.ttf \
+         -o /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf && \
+    chmod 644 /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf && \
+    fc-cache -fv
 
 # Configure ImageMagick policy for video processing
 RUN sed -i 's/<policy domain="path" rights="none" pattern="@\*"\/>/<!-- <policy domain="path" rights="none" pattern="@*"\/> -->/' /etc/ImageMagick-6/policy.xml || true
