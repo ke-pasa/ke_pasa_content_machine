@@ -27,14 +27,15 @@ RUN apt-get clean && \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Bebas Neue font for Instagram image processing (optional - fallback to Arial if fails)
-RUN mkdir -p /usr/share/fonts/truetype/bebas-neue && \
-    (curl -fsSL https://github.com/dharmatype/Bebas-Neue/releases/download/v2.000/BebasNeue-Regular.ttf \
-         -o /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf || \
-     curl -fsSL https://fonts.gstatic.com/s/bebasneue/v14/JTUSjIg69CK48gW7PXooxW5rygbi49c.ttf \
-         -o /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf || \
-     echo "Warning: Bebas Neue font installation failed, will use fallback fonts") && \
-    chmod 644 /usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf 2>/dev/null || true && \
+# Install Oswald font for Instagram image processing (supports Cyrillic)
+# Oswald is similar to Bebas Neue but includes Cyrillic characters
+RUN mkdir -p /usr/share/fonts/truetype/oswald && \
+    (curl -fsSL https://github.com/googlefonts/OswaldFont/raw/master/fonts/ttf/Oswald-Bold.ttf \
+         -o /usr/share/fonts/truetype/oswald/Oswald-Bold.ttf || \
+     curl -fsSL https://fonts.gstatic.com/s/oswald/v53/TK3_WkUHHAIjg75cFRf3bXL8LICs1_FvsUtiZTaR.ttf \
+         -o /usr/share/fonts/truetype/oswald/Oswald-Bold.ttf || \
+     echo "Warning: Oswald font installation failed, will use DejaVu Sans Bold as fallback") && \
+    chmod 644 /usr/share/fonts/truetype/oswald/Oswald-Bold.ttf 2>/dev/null || true && \
     fc-cache -fv
 
 # Configure ImageMagick policy for video processing

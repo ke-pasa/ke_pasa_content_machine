@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 def _get_bebas_font(size: int) -> ImageFont.FreeTypeFont:
     """
-    Get Bebas Neue font in a cross-platform way
+    Get bold condensed font for Instagram titles (similar to Bebas Neue style)
+    Uses Oswald Bold (supports Cyrillic) as primary choice
     
     Args:
         size: Font size
@@ -31,21 +32,20 @@ def _get_bebas_font(size: int) -> ImageFont.FreeTypeFont:
     
     if sys.platform == 'win32':
         # Windows - check common font locations
+        # Priority: fonts with Cyrillic support
         font_paths = [
-            "C:\\Windows\\Fonts\\BebasNeue-Regular.ttf",
-            "C:\\Windows\\Fonts\\bebas-neue-bold.ttf",
-            "C:\\Windows\\Fonts\\BebasNeue.ttf",
-            "C:\\Windows\\Fonts\\BEBAS.ttf",
-            "C:\\Windows\\Fonts\\arialbd.ttf",  # Fallback to Arial Bold
+            "C:\\Windows\\Fonts\\Oswald-Bold.ttf",  # Oswald Bold - similar to Bebas Neue, supports Cyrillic
+            "C:\\Windows\\Fonts\\arialbd.ttf",  # Arial Bold - supports Cyrillic
+            "C:\\Windows\\Fonts\\BebasNeue-Regular.ttf",  # Bebas Neue - no Cyrillic (fallback)
         ]
     else:
         # Linux/Unix
+        # Priority: Oswald > DejaVu Sans Bold > Liberation Sans Bold
         font_paths = [
-            "/usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf",  # Docker installed
-            "/usr/share/fonts/truetype/bebas-neue/BebasNeue.ttf",
-            "/usr/share/fonts/BebasNeue-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Fallback
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Fallback
+            "/usr/share/fonts/truetype/oswald/Oswald-Bold.ttf",  # Oswald Bold - similar to Bebas Neue, supports Cyrillic
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # DejaVu - supports Cyrillic
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Liberation - supports Cyrillic
+            "/usr/share/fonts/truetype/bebas-neue/BebasNeue-Regular.ttf",  # Bebas Neue - no Cyrillic (fallback)
         ]
     
     for path in font_paths:
