@@ -23,19 +23,46 @@ import logging
 import time
 
 _client = None
+_openai_client = None  # Client for standard OpenAI API
 
 # Model to Azure deployment mapping with endpoint selection
 # Format: 'model': ('deployment_name', 'endpoint_suffix')
 # endpoint_suffix: '' for primary, '_MINI' for secondary
 _AZURE_MODEL_MAPPING = {
     'gpt-4o': ('gpt-5.2-chat', ''),           # Heavy: content translation → pavel-mkfzym2a
-    'gpt-4o-mini': ('gpt-4o-mini', '_MINI'),  # Light: titles, events → quepasa-resource
+    'gpt-4o-mini': ('gpt-4o-mini', '_MINI'),  # Light: titles, events → quepasa-resource (or OpenAI)
     'gpt-4': ('gpt-5.2-chat', ''),
     'gpt-3.5-turbo': ('gpt-4o-mini', '_MINI'),
     'gpt-5.2-chat': ('gpt-5.2-chat', ''),    # Direct Azure deployment name
+    'gpt-5.4-mini': ('gpt-5.4-mini', '_MINI'),  # Stage 6, digest generation → quepasa-resource
 }
 
 _clients = {}  # Cache for multiple clients
+
+
+def _get_openai_api_client() -> Optional[object]:
+    """Get or create OpenAI API client (uses OPENAI_API_KEY).
+    
+    Returns:
+        OpenAI client instance, or None if OPENAI_API_KEY not configured.
+    """
+    global _openai_client
+    
+    if _openai_client is not None:
+        return _openai_client
+    
+    try:
+        from openai import OpenAI
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return None
+        
+        _openai_client = OpenAI(api_key=api_key)
+        logging.getLogger('workers.tools.openai_client').info('Using OpenAI API (OPENAI_API_KEY)')
+        return _openai_client
+    except Exception as e:
+        logging.getLogger('workers.tools.openai_client').error(f"OpenAI API client init failed: {e}")
+        return None
 
 
 def _map_model_to_deployment(model: str) -> tuple:
@@ -125,7 +152,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     reasoning_effort: Optional[str] = 'low') -> Optional[str]:
     """Perform a response generation and return the text content or None on error.
 
-    Uses the modern Responses API (client.responses.create) or Azure chat completions.
+    Uses OpenAI API for gpt-4o-mini (if OPENAI_API_KEY configured), otherwise uses Azure.
     Automatically selects correct Azure endpoint based on model.
     
     Args:
@@ -138,15 +165,30 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     """
     logger = logging.getLogger('workers.tools.openai_client')
     
-    # Map model to deployment and get correct client
-    deployment_model, endpoint_suffix = _map_model_to_deployment(model)
+    # For gpt-4o-mini, prefer OpenAI API if key is configured
+    if model == 'gpt-4o-mini' and os.getenv('OPENAI_API_KEY'):
+        client = _get_openai_api_client()
+        if client:
+            deployment_model = model  # Use model name directly for OpenAI
+            is_openai_api = True
+            endpoint_suffix = ''
+        else:
+            logger.warning('OPENAI_API_KEY set but failed to init OpenAI client; falling back to Azure')
+            is_openai_api = False
+    else:
+        is_openai_api = False
     
-    # Get the correct client for this model's endpoint
-    if endpoint_suffix or os.getenv('AZURE_OPENAI_ENDPOINT'):
-        client = get_openai_client(endpoint_suffix)
-        if not client:
-            logger.error(f'Failed to get Azure OpenAI client for endpoint suffix: {endpoint_suffix}')
-            return None
+    # If not using OpenAI API, use Azure
+    if not is_openai_api:
+        # Map model to deployment and get correct client
+        deployment_model, endpoint_suffix = _map_model_to_deployment(model)
+        
+        # Get the correct client for this model's endpoint
+        if endpoint_suffix or os.getenv('AZURE_OPENAI_ENDPOINT'):
+            client = get_openai_client(endpoint_suffix)
+            if not client:
+                logger.error(f'Failed to get Azure OpenAI client for endpoint suffix: {endpoint_suffix}')
+                return None
     
     # Basic validation and sanitization of inputs to surface obvious issues early
     try:
@@ -237,24 +279,33 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     
     for attempt in range(1, max_attempts + 1):
         try:
-            # Azure uses chat.completions API
-            # Check if using newer model that requires max_completion_tokens
-            if deployment_model.startswith('gpt-5') or deployment_model.startswith('o1'):
-                max_tokens_param = 'max_completion_tokens'
+            if is_openai_api:
+                # OpenAI API uses max_tokens directly
+                req_kwargs = {
+                    'model': deployment_model,
+                    'messages': messages,
+                    'max_tokens': max_tokens,
+                    'temperature': temperature,
+                }
             else:
-                max_tokens_param = 'max_tokens'
-            
-            req_kwargs = {
-                'model': deployment_model,
-                'messages': messages,
-                max_tokens_param: max_tokens,
-                'stream': False,
-            }
-            
-            # Only certain models support custom temperature
-            # gpt-5 models only support temperature=1 (default)
-            if (model.startswith('gpt-4') or model.startswith('gpt-3')) and not deployment_model.startswith('gpt-5'):
-                req_kwargs['temperature'] = temperature
+                # Azure uses chat.completions API
+                # Check if using newer model that requires max_completion_tokens
+                if deployment_model.startswith('gpt-5') or deployment_model.startswith('o1'):
+                    max_tokens_param = 'max_completion_tokens'
+                else:
+                    max_tokens_param = 'max_tokens'
+                
+                req_kwargs = {
+                    'model': deployment_model,
+                    'messages': messages,
+                    max_tokens_param: max_tokens,
+                    'stream': False,
+                }
+                
+                # Only certain models support custom temperature
+                # gpt-5 models only support temperature=1 (default)
+                if (model.startswith('gpt-4') or model.startswith('gpt-3')) and not deployment_model.startswith('gpt-5'):
+                    req_kwargs['temperature'] = temperature
             
             resp = client.chat.completions.create(**req_kwargs)
             
@@ -265,14 +316,17 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     # Log token usage
                     try:
                         if resp.usage:
-                            logger.info('Azure OpenAI usage: prompt=%d completion=%d total=%d', 
+                            provider = 'OpenAI' if is_openai_api else 'Azure'
+                            logger.info('%s usage: prompt=%d completion=%d total=%d', 
+                                      provider,
                                       resp.usage.prompt_tokens, 
                                       resp.usage.completion_tokens, 
                                       resp.usage.total_tokens)
                     except Exception:
                         pass
                     return content.strip()
-            logger.warning('Azure OpenAI returned empty content (attempt %d/%d); not retrying', attempt, max_attempts)
+            provider = 'OpenAI' if is_openai_api else 'Azure'
+            logger.warning('%s returned empty content (attempt %d/%d); not retrying', provider, attempt, max_attempts)
             return None
 
         except Exception as e:

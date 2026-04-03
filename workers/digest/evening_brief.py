@@ -655,7 +655,7 @@ https://ke-pasa.es/news/economia
         logger.info(f"Generating digest from {len(news_items)} items...")
         response_text = chat_completion(
             client=client,
-            model="gpt-5.2-chat",  # Прямо Azure deployment для мощной генерации
+            model="gpt-5.4-mini",  # Maps to gpt-5.4-mini on quepasa
             messages=messages,
             temperature=0.3  # Lower temperature for more consistent JSON
         )

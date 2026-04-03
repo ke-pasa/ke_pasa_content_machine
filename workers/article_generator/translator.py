@@ -619,16 +619,16 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage6', self.model, messages, len(stage4_json or ''))
 
-        # Stage 6: Use gpt-4o (maps to gpt-5.2-chat in Azure)
+        # Stage 6: Use gpt-5.4-mini (maps to gpt-5.4-mini on quepasa via endpoint routing)
         try:
             _logger.info(f'Stage6 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
                         f'messages={len(messages)}, max_tokens=6000')
             text = _chat_completion(
                 client=_get_openai_client(),
-                model="gpt-4o",  # Maps to gpt-5.2-chat via endpoint routing
+                model="gpt-5.4-mini",  # Maps to gpt-5.4-mini via endpoint routing
                 messages=messages,
                 max_tokens=6000,
-                temperature=1.0  # gpt-5.2-chat only supports temperature=1.0
+                temperature=1.0
             )
             if not text:
                 _logger.error(f'Stage6 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
