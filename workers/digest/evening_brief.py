@@ -726,10 +726,11 @@ https://ke-pasa.es/news/economia
             for i, item in enumerate(carousel_items[:3]):
                 logger.info(f"  Item {i+1}: title='{item['title_ru'][:50]}', url={item['url']}")
         
-        # Используем весь ответ как контент
-        telegram_content = response_text
-        facebook_content = response_text
-        reels_script = ""
+        # Parse sections separated by ===SECTION===
+        sections = response_text.split('===SECTION===')
+        telegram_content = sections[0].strip() if len(sections) > 0 else response_text
+        facebook_content = sections[1].strip() if len(sections) > 1 else telegram_content
+        reels_script = sections[2].strip() if len(sections) > 2 else ""
         
         # Add promo line to telegram and facebook
         promo_line_tg = "\n\nПодписывайтесь на наш канал: [Испания, ке паса](https://t.me/spain_kepasa)"
