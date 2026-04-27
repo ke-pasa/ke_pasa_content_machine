@@ -483,7 +483,7 @@ class CategorizationWorker:
                         s.get('region_score'),
                         s.get('source_score'),
                         s.get('editorial_value'),
-                        s.get('expat_relevance_bonus'),
+                        s.get('expat_bonus') or s.get('expat_relevance_bonus'),
                         s.get('urgency_score')
                     ]
                 total_sum = 0
@@ -507,7 +507,6 @@ class CategorizationWorker:
             'rating': interest_result.get('rating') or interest_result.get('recommendation'),
             'short_note': interest_result.get('short_analysis') or interest_result.get('short_note'),
             'category': interest_result.get('category'),
-            'comment': interest_result.get('comment') or interest_result.get('commentary'),
             'newsletter': interest_result.get('newsletter'),
         }
 
@@ -579,7 +578,7 @@ class CategorizationWorker:
                         rating = fields.get('rating')
                         short_note = fields.get('short_note')
                         category_field = fields.get('category')
-                        comment_field = fields.get('comment')
+
                         newsletter_field = fields.get('newsletter')
 
                         status_field = 'CATEGORIZED'
@@ -615,7 +614,7 @@ class CategorizationWorker:
                             'rating': rating,
                             'short_note': short_note,
                             'category': category_field,
-                            'comment': comment_field,
+
                             'newsletter': newsletter_field,
                             'topic_id': topic_id_val,
                             'categorized_at': datetime.now(timezone.utc).isoformat(),
@@ -903,7 +902,7 @@ class CategorizationWorker:
             rating = fields.get('rating')
             short_note = fields.get('short_note')
             category_field = fields.get('category')
-            comment_field = fields.get('comment')
+
             publish_on_site = interest_result.get('publish_on_site') if isinstance(interest_result, dict) else None
             publish_on_social = interest_result.get('publish_on_social') if isinstance(interest_result, dict) else None
             newsletter_field = fields.get('newsletter')
@@ -951,7 +950,7 @@ class CategorizationWorker:
                 'rating': rating,
                 'short_note': short_note,
                 'category': category_field,
-                'comment': comment_field,
+
                 'publish_on_site': publish_on_site,
                 'publish_on_social': publish_on_social,
                 'newsletter': newsletter_field,
