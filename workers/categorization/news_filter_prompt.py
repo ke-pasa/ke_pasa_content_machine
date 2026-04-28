@@ -15,9 +15,11 @@ PUBLISH IF any of these apply:
 
 SKIP IF:
 - Political noise with no real-life consequence.
+- Ongoing political debates, negotiations, or votes with no decided outcome yet.
 - Routine local crime with no broader significance.
 - Unverified rumors or clickbait.
 - Sports results with no wider impact.
+- Corporate press releases, product launches, or business announcements without broad economic impact.
 """
 
 NEWS_FILTER_USER_PROMPT = """
