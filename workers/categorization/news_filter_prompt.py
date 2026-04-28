@@ -37,7 +37,7 @@ SCORING METRICS
    5 — Local outlets or niche experts.
 
 3) editorial_value (0–80) — VALUE ASSESSMENT
-   * 62-80 (TOP): Systemic changes affecting daily life (laws, taxes, housing, costs, safety) OR stories that dominate public conversation.
+   * 62-80 (TOP): Systemic changes affecting daily life (laws, taxes, housing, costs, safety) OR major events or crises that drive national debate due to their scale or consequence.
    * 42-61 (HIGH INTEREST): Notable developments in economy, health, tech, education, work, culture, or sport that a middle-class family would care about.
    * 20-41 (PASSIVE): Minor local events, background statistics, soft lifestyle content.
    * 0-19 (NOISE): Political bickering without real-life impact, routine minor crime.
