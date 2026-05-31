@@ -62,7 +62,7 @@ def get_openai_client(endpoint_suffix: str = '') -> Optional[object]:
 
 def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     max_tokens: int = 6000,
-                    reasoning_effort: Optional[str] = 'low',
+                    reasoning_effort: Optional[str] = None,
                     **_kwargs) -> Optional[str]:
     """Perform a chat completion and return the text content or None on error.
 
@@ -71,7 +71,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         model: Model name to use. Azure-specific deployment names are aliased to OpenAI equivalents.
         messages: List of message dicts with 'role' and 'content' keys.
         max_tokens: Maximum tokens to generate.
-        reasoning_effort: Unused, kept for backward compatibility.
+        reasoning_effort: Reasoning effort level (none/low/medium/high/xhigh). None = model default.
     """
     logger = logging.getLogger('workers.tools.openai_client')
 
@@ -175,6 +175,8 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 'messages': messages,
                 'max_completion_tokens': max_tokens,
             }
+            if reasoning_effort is not None:
+                req_kwargs['reasoning_effort'] = reasoning_effort
 
             resp = client.chat.completions.create(**req_kwargs)
 

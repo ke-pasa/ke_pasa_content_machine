@@ -258,6 +258,7 @@ def translate_event_single(event: Dict[str, Any]) -> Dict[str, Any]:
                 {"role": "user", "content": user_msg}
             ],
             max_tokens=1000,
+            reasoning_effort='low',
         )
         
         if not response_text:

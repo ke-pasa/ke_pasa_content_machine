@@ -27,12 +27,12 @@ def _get_openai_client(endpoint_suffix=''):
     return _go(endpoint_suffix)
 
 
-def _chat_completion(client, model, messages, max_tokens=600):
+def _chat_completion(client, model, messages, max_tokens=600, reasoning_effort='low'):
     """Wrapper that returns (text, usage_dict) tuple."""
     try:
         # Use chat_completion wrapper which handles Azure routing correctly
         from workers.tools.openai_client import chat_completion as _cc
-        text = _cc(client, model, messages, max_tokens=max_tokens)
+        text = _cc(client, model, messages, max_tokens=max_tokens, reasoning_effort=reasoning_effort)
         # Note: usage info not available through wrapper, but text is returned correctly
         return (text, None)
     except Exception as e:

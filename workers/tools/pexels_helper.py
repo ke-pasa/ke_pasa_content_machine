@@ -328,6 +328,7 @@ police investigation"""
                 ],
 
                 max_tokens=100,
+                reasoning_effort='low',
             )
 
             if not result:
