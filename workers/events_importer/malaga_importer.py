@@ -218,7 +218,7 @@ def parse_csv(content: str) -> List[Dict[str, Any]]:
 
 def translate_event_single(event: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Translate a single event from Spanish to Russian using OpenAI gpt-4o-mini.
+    Translate a single event from Spanish to Russian using OpenAI gpt-5.4-mini.
     
     Args:
         event: Event dictionary
@@ -252,13 +252,12 @@ def translate_event_single(event: Dict[str, Any]) -> Dict[str, Any]:
         
         response_text = chat_completion(
             client=client,
-            model="gpt-4o-mini",
+            model="gpt-5.4-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg}
             ],
             max_tokens=1000,
-            temperature=0.0
         )
         
         if not response_text:

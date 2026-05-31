@@ -27,12 +27,12 @@ def _get_openai_client(endpoint_suffix=''):
     return _go(endpoint_suffix)
 
 
-def _chat_completion(client, model, messages, max_tokens=600, temperature=0):
+def _chat_completion(client, model, messages, max_tokens=600):
     """Wrapper that returns (text, usage_dict) tuple."""
     try:
         # Use chat_completion wrapper which handles Azure routing correctly
         from workers.tools.openai_client import chat_completion as _cc
-        text = _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+        text = _cc(client, model, messages, max_tokens=max_tokens)
         # Note: usage info not available through wrapper, but text is returned correctly
         return (text, None)
     except Exception as e:
@@ -409,7 +409,7 @@ class CategorizationWorker:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            result = _chat_completion(client, model, messages, max_tokens=1200, temperature=0)
+            result = _chat_completion(client, model, messages, max_tokens=1200)
 
             # Handle tuple return (text, usage) or just text
             if isinstance(result, tuple):
@@ -541,7 +541,7 @@ class CategorizationWorker:
                 if not docs:
                     break
 
-                model = 'gpt-4o-mini'
+                model = 'gpt-5.4-mini'
                 client = _get_openai_client()
 
                 chunk_results = {'processed': 0, 'errors': []}
@@ -888,7 +888,7 @@ class CategorizationWorker:
             region_hint = data.get('region_hint', '') or ''
             
             client = _get_openai_client()
-            model = 'gpt-4o-mini'
+            model = 'gpt-5.4-mini'
 
             # Call LLM for categorization
             interest_result = self._call_llm_categorization(

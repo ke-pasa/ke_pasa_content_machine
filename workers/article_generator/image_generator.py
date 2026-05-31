@@ -11,37 +11,23 @@ from workers.tools.openai_client import get_openai_client, chat_completion
 
 
 class ImageGenerator:
-    """Generates images for articles using Azure DALL-E when image_url is missing."""
-    
-    def __init__(self, model: str = "gpt-image-1.5", images_dir: Optional[Path] = None):
+    """Generates images for articles using OpenAI DALL-E when image_url is missing."""
+
+    def __init__(self, model: str = "dall-e-3", images_dir: Optional[Path] = None):
         """
         Initialize image generator.
-        
+
         Args:
-            model: Image model to use (gpt-image-1.5, dall-e-2, or dall-e-3)
+            model: Image model to use (dall-e-3, dall-e-2, or gpt-image-1)
             images_dir: Directory to save generated images (default: project_root/images)
         """
         self.model = model
         self.logger = logging.getLogger('workers.article_generator.image_generator')
         self.logger.propagate = True
-        
-        # Initialize Azure OpenAI client for prompt generation
+
         self.client = get_openai_client()
         if not self.client:
-            raise RuntimeError('Azure OpenAI not configured. Please set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY')
-        
-        # Initialize DALL-E client
-        azure_dalle_endpoint = os.getenv('AZURE_DALLE_ENDPOINT')
-        azure_dalle_key = os.getenv('AZURE_DALLE_KEY')
-        
-        if azure_dalle_endpoint and azure_dalle_key:
-            # Use Azure DALL-E for image generation
-            self.logger.info('Using Azure DALL-E endpoint for image generation')
-            self.use_azure = True
-            self.azure_endpoint = azure_dalle_endpoint
-            self.azure_key = azure_dalle_key
-        else:
-            raise RuntimeError('Azure DALL-E not configured. Please set AZURE_DALLE_ENDPOINT and AZURE_DALLE_KEY')
+            raise RuntimeError('OpenAI not configured. Please set OPENAI_API_KEY')
         
         # Set up images directory
         if images_dir is None:
@@ -158,16 +144,14 @@ ARTICLE:
             self._save_raw_prompt(doc_id, 'user_prompt', user_prompt)
             
             
-            # Use chat_completion wrapper to handle Azure endpoint routing
             response = chat_completion(
-                client=get_openai_client('_MINI'),  # Use mini endpoint for prompt generation
-                model="gpt-4o-mini",
+                client=get_openai_client(),
+                model="gpt-5.4-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 max_tokens=400,
-                temperature=0.4
             )
             
             # chat_completion returns the content string directly
@@ -195,51 +179,52 @@ ARTICLE:
             self.logger.error(f'Failed to create AI prompt: {e}')
             return None
     
-    def _generate_with_azure_dalle(self, prompt: str) -> Optional[str]:
+    def _generate_image(self, prompt: str) -> Optional[str]:
         """
-        Generate image using Azure DALL-E REST API.
-        
+        Generate image using OpenAI DALL-E SDK.
+
         Args:
             prompt: Image generation prompt
-            
+
         Returns:
             Image URL or None if failed
         """
         try:
-            headers = {
-                "api-key": self.azure_key,
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "prompt": prompt,
-                "size": "1024x1024",
-                "quality": "standard",
-                "n": 1
-            }
-            
-            self.logger.info(f'Calling Azure DALL-E: {self.azure_endpoint[:80]}...')
-            response = requests.post(
-                self.azure_endpoint,
-                json=payload,
-                headers=headers,
-                timeout=120  # Image generation can take time
-            )
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # Azure returns data in same format as OpenAI
-            if data.get('data') and len(data['data']) > 0:
-                image_url = data['data'][0].get('url')
-                self.logger.info(f'✅ Successfully generated image via Azure DALL-E')
+            self.logger.info(f'Calling OpenAI image generation with model={self.model}')
+            if self.model == "dall-e-3":
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    size="1792x1024",
+                    quality="standard",
+                    n=1,
+                )
+            elif self.model == "dall-e-2":
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    size="1024x1024",
+                    n=1,
+                )
+            else:
+                response = self.client.images.generate(
+                    model=self.model,
+                    prompt=prompt,
+                    size="auto",
+                    quality="low",
+                    n=1,
+                )
+
+            if response.data and len(response.data) > 0:
+                image_url = response.data[0].url
+                self.logger.info('Successfully generated image via OpenAI')
                 return image_url
-            
-            self.logger.warning('Azure DALL-E returned no image data')
+
+            self.logger.warning('OpenAI image generation returned no data')
             return None
-            
+
         except Exception as e:
-            self.logger.exception(f'Azure DALL-E call failed: {e}')
+            self.logger.exception(f'OpenAI image generation failed: {e}')
             return None
     
     def _crop_to_16_9(self, img: Image.Image) -> Image.Image:
@@ -360,51 +345,10 @@ ARTICLE:
             # Log final prompt that will be sent to DALL-E
             self._save_raw_prompt(doc_id, 'dalle_prompt', image_prompt)
             
-            # Generate image using DALL-E (supports dall-e-2, dall-e-3, gpt-image-1.5)
             self.logger.info(f'Generating image with {self.model} for {doc_id}...')
-            
-            # Use Azure REST API if configured
-            if self.use_azure:
-                image_url = self._generate_with_azure_dalle(image_prompt)
-                if not image_url:
-                    return None
-            else:
-                # Use OpenAI SDK
-                # Configure parameters based on model
-                if self.model == "dall-e-3":
-                    # DALL-E 3 supports: 1024x1024, 1792x1024, 1024x1792
-                    # quality: "standard" or "hd"
-                    response = self.client.images.generate(
-                        model=self.model,
-                        prompt=image_prompt,
-                        size="1792x1024",  # Wide format (16:9 similar)
-                        quality="standard",
-                        n=1,
-                    )
-                elif self.model == "dall-e-2":
-                    # DALL-E 2 supports: 256x256, 512x512, 1024x1024
-                    response = self.client.images.generate(
-                        model=self.model,
-                        prompt=image_prompt,
-                        size="1024x1024",
-                        n=1,
-                    )
-                else:
-                    # GPT Image 1.5 or other models - use auto sizing
-                    response = self.client.images.generate(
-                        model=self.model,
-                        prompt=image_prompt,
-                        size="auto",
-                        quality="low",
-                        n=1,
-                    )
-                
-                if not (response.data and len(response.data) > 0):
-                    self.logger.warning(f'No image data returned for {doc_id}')
-                    return None
-                
-                image_url = response.data[0].url
-                self.logger.info(f'✅ Successfully generated image via OpenAI')
+            image_url = self._generate_image(image_prompt)
+            if not image_url:
+                return None
             
             if not save_locally:
                 self.logger.info(f'Skipping local persistence for {doc_id}, returning provider URL')

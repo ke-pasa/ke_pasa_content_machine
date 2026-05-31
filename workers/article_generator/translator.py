@@ -36,12 +36,12 @@ def _get_openai_client():
     return _go()
 
 
-def _chat_completion(client: Any, model: str, messages: list, max_tokens: int = 6000, temperature: float = 0) -> Optional[str]:
+def _chat_completion(client: Any, model: str, messages: list, max_tokens: int = 6000) -> Optional[str]:
     if worker_mod := _get_worker_module():
         if hasattr(worker_mod, 'chat_completion'):
-            return worker_mod.chat_completion(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+            return worker_mod.chat_completion(client, model, messages, max_tokens=max_tokens)
     from workers.tools.openai_client import chat_completion as _cc
-    return _cc(client, model, messages, max_tokens=max_tokens, temperature=temperature)
+    return _cc(client, model, messages, max_tokens=max_tokens)
 
 
 def _parse_json_from_text(text: str) -> Optional[Dict]:
@@ -196,14 +196,11 @@ class ArticleTranslator:
     def __init__(
         self,
         client=None,
-        model: str = 'gpt-4o-mini',
+        model: str = 'gpt-5.4-mini',
         stage1_max_tokens: int = 1500,
         stage2_max_tokens: int = 2000,
         stage3_max_tokens: int = 1500,
         stage4_max_tokens: int = 6000,
-        stage1_temperature: float = 0.2,
-        stage2_temperature: float = 0.4,
-        stage3_temperature: float = 1.0,
     ) -> None:
         self.client = client if client is not None else _get_openai_client()
         self.model = model
@@ -211,17 +208,9 @@ class ArticleTranslator:
         self.stage2_max_tokens = stage2_max_tokens
         self.stage3_max_tokens = stage3_max_tokens
         self.stage4_max_tokens = stage4_max_tokens
-        self.stage1_temperature = stage1_temperature
-        self.stage2_temperature = stage2_temperature
-        self.stage3_temperature = stage3_temperature
-        # Stage 4 uses same temperature as stage 3
-        self.stage4_temperature = stage3_temperature
         # Stage 5 generates full markdown with frontmatter - needs more tokens
         self.stage5_max_tokens = 8000
-        # Stage 5 should run deterministically for publish formatting
-        self.stage5_temperature = 0.2
         self.stage6_max_tokens = 2000
-        self.stage6_temperature = stage3_temperature
         # Token tracking
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
@@ -443,7 +432,6 @@ class ArticleTranslator:
                 self.model,
                 messages,
                 max_tokens=self.stage1_max_tokens,
-                temperature=self.stage1_temperature,
             )
         except Exception as e:
             _logger.exception(f'Stage1 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
@@ -468,7 +456,6 @@ class ArticleTranslator:
                 self.model,
                 messages,
                 max_tokens=self.stage2_max_tokens,
-                temperature=self.stage2_temperature,
             )
         except Exception as e:
             _logger.exception(f'Stage2 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
@@ -498,7 +485,6 @@ class ArticleTranslator:
                 self.model,
                 messages,
                 max_tokens=self.stage3_max_tokens,
-                temperature=self.stage3_temperature,
             )
         except Exception as e:
             _logger.exception(f'Stage3 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
@@ -524,24 +510,21 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
 
-        # Stage 4: Use gpt-4o (maps to gpt-5.2-chat in Azure)
         try:
-            _logger.info(f'Stage4 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
+            _logger.info(f'Stage4 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
                         f'messages={len(messages)}, max_tokens={self.stage4_max_tokens}')
             text = _chat_completion(
                 client=_get_openai_client(),
-                model="gpt-4o",  # Maps to gpt-5.2-chat via endpoint routing
+                model="gpt-5.4-mini",
                 messages=messages,
                 max_tokens=self.stage4_max_tokens,
-                temperature=self.stage4_temperature
             )
             if not text:
-                _logger.error(f'Stage4 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
-                             f'Check Azure logs above for details. text={repr(text)}')
+                _logger.error(f'Stage4 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
                 return None, None
-            _logger.info(f'Stage4 Azure success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
+            _logger.info(f'Stage4 success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
         except Exception as e:
-            _logger.exception(f'Stage4 Azure exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
+            _logger.exception(f'Stage4 exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
             return None, None
 
         parsed = _parse_stage_response(text, 'stage4', metadata.get('doc_id', 'unknown'))
@@ -572,24 +555,21 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage5', self.model, messages, len(stage4_json or ''))
 
-        # Stage 5: Use gpt-4o (maps to gpt-5.2-chat in Azure)
         try:
-            _logger.info(f'Stage5 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
+            _logger.info(f'Stage5 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
                         f'messages={len(messages)}, max_tokens={self.stage5_max_tokens}')
             text = _chat_completion(
                 client=_get_openai_client(),
-                model="gpt-4o",  # Maps to gpt-5.2-chat via endpoint routing
+                model="gpt-5.4-mini",
                 messages=messages,
                 max_tokens=self.stage5_max_tokens,
-                temperature=1.0  # gpt-5.2-chat only supports temperature=1.0
             )
             if not text:
-                _logger.error(f'Stage5 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
-                             f'Check Azure logs above for details. text={repr(text)}')
+                _logger.error(f'Stage5 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
                 return None, None
-            _logger.info(f'Stage5 Azure success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
+            _logger.info(f'Stage5 success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
         except Exception as e:
-            _logger.exception(f'Stage5 Azure exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
+            _logger.exception(f'Stage5 exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
             return None, None
             
         result = {'publish_md': text.strip()}
@@ -619,24 +599,21 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage6', self.model, messages, len(stage4_json or ''))
 
-        # Stage 6: Use gpt-5.4-mini (maps to gpt-5.4-mini on quepasa via endpoint routing)
         try:
-            _logger.info(f'Stage6 calling Azure for doc_id={metadata.get("doc_id", "unknown")}, '
+            _logger.info(f'Stage6 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
                         f'messages={len(messages)}, max_tokens=6000')
             text = _chat_completion(
                 client=_get_openai_client(),
-                model="gpt-5.4-mini",  # Maps to gpt-5.4-mini via endpoint routing
+                model="gpt-5.4-mini",
                 messages=messages,
                 max_tokens=6000,
-                temperature=1.0
             )
             if not text:
-                _logger.error(f'Stage6 Azure returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. '
-                             f'Check Azure logs above for details. text={repr(text)}')
+                _logger.error(f'Stage6 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
                 return None, None
-            _logger.info(f'Stage6 Azure success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
+            _logger.info(f'Stage6 success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
         except Exception as e:
-            _logger.exception(f'Stage6 Azure exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
+            _logger.exception(f'Stage6 exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
             return None, None
 
         parsed = _parse_stage_response(text, 'stage6', metadata.get('doc_id', 'unknown'))

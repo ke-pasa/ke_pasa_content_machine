@@ -1414,7 +1414,7 @@ class RSSParser:
 
         For each pending URL:
         - attempt to fetch full text using get_full_text
-        - ask OpenAI `gpt-4o-mini` to split the article into JSON: {title, description, body}
+        - ask OpenAI `gpt-5.4-mini` to split the article into JSON: {title, description, body}
         - save the article via `save_article` (status 'FORCED')
         - mark force_publish_links.status = 'done' or 'failed'
         """
@@ -1485,13 +1485,12 @@ class RSSParser:
                             # Call OpenAI with strict JSON response format
                             try:
                                 response = client.chat.completions.create(
-                                    model='gpt-4o-mini',
+                                    model='gpt-5.4-mini',
                                     messages=[
                                         {"role": "system", "content": system},
                                         {"role": "user", "content": user}
                                     ],
-                                    max_tokens=1200,
-                                    temperature=0,
+                                    max_completion_tokens=1200,
                                     response_format={"type": "json_object"}
                                 )
                                 # Extract text from response

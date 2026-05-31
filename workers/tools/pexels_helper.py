@@ -288,15 +288,13 @@ class PexelsHelper:
     def _generate_keywords_with_openai(self, script_text: str) -> Optional[List[str]]:
         """Use OpenAI to generate relevant keyword pairs for Pexels video search"""
         try:
-            from openai import AzureOpenAI
-            
-            # Initialize Azure OpenAI client
-            client = AzureOpenAI(
-                api_key=os.getenv('AZURE_OPENAI_KEY'),
-                api_version="2024-02-15-preview",
-                azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT')
-            )
-            
+            from workers.tools.openai_client import get_openai_client, chat_completion
+
+            client = get_openai_client()
+            if not client:
+                _logger.warning("OpenAI client not available for keyword generation")
+                return None
+
             prompt = f"""Based on this Russian news script, generate 3 pairs of English keywords for searching stock videos on Pexels.
 
 IMPORTANT: The video will be 30 seconds long with 3 segments:
@@ -321,28 +319,30 @@ fraud alert
 phone scam
 police investigation"""
 
-            response = client.chat.completions.create(
-                model="gpt-4",
+            result = chat_completion(
+                client=client,
+                model="gpt-5.4-mini",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that generates English keyword pairs for stock video search based on script progression."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
-                max_tokens=100
+
+                max_tokens=100,
             )
-            
-            result = response.choices[0].message.content.strip()
-            
+
+            if not result:
+                _logger.warning("OpenAI returned no result for keyword generation")
+                return None
+
             # Parse the result - expect 3 lines with keyword pairs
             keywords = [line.strip() for line in result.split('\n') if line.strip()]
-            
-            # Validate we got 3 keyword pairs
+
             if len(keywords) >= 3:
                 return keywords[:3]
             else:
                 _logger.warning(f"OpenAI returned {len(keywords)} keywords, expected 3")
                 return None
-                
+
         except Exception as e:
             _logger.error(f"OpenAI keyword generation failed: {e}")
             return None

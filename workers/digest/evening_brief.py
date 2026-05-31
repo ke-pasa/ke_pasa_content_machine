@@ -113,13 +113,12 @@ The final prompt must describe:
             try:
                 image_prompt = chat_completion(
                     client=client,
-                    model="gpt-4o-mini",
+                    model="gpt-5.4-mini",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Digest preview:\n{first_lines}\n\nGenerate image prompt:"},
                     ],
                     max_tokens=100,
-                    temperature=0.7,
                 )
                 if not image_prompt:
                     raise Exception("No image prompt generated")
@@ -655,9 +654,8 @@ https://ke-pasa.es/news/economia
         logger.info(f"Generating digest from {len(news_items)} items...")
         response_text = chat_completion(
             client=client,
-            model="gpt-5.4-mini",  # Maps to gpt-5.4-mini on quepasa
+            model="gpt-5.4",
             messages=messages,
-            temperature=0.3  # Lower temperature for more consistent JSON
         )
 
         if not response_text:
