@@ -36,12 +36,30 @@ def _get_openai_client():
     return _go()
 
 
-def _chat_completion(client: Any, model: str, messages: list, max_tokens: int = 6000) -> Optional[str]:
+def _chat_completion(
+    client: Any,
+    model: str,
+    messages: list,
+    max_tokens: int = 6000,
+    reasoning_effort: Optional[str] = None,
+) -> Optional[str]:
     if worker_mod := _get_worker_module():
         if hasattr(worker_mod, 'chat_completion'):
-            return worker_mod.chat_completion(client, model, messages, max_tokens=max_tokens)
+            return worker_mod.chat_completion(
+                client,
+                model,
+                messages,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
     from workers.tools.openai_client import chat_completion as _cc
-    return _cc(client, model, messages, max_tokens=max_tokens)
+    return _cc(
+        client,
+        model,
+        messages,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+    )
 
 
 def _parse_json_from_text(text: str) -> Optional[Dict]:
@@ -432,6 +450,7 @@ class ArticleTranslator:
                 self.model,
                 messages,
                 max_tokens=self.stage1_max_tokens,
+                reasoning_effort='low',
             )
         except Exception as e:
             _logger.exception(f'Stage1 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
@@ -456,6 +475,7 @@ class ArticleTranslator:
                 self.model,
                 messages,
                 max_tokens=self.stage2_max_tokens,
+                reasoning_effort='low',
             )
         except Exception as e:
             _logger.exception(f'Stage2 chat_completion failed for {metadata.get("doc_id", "unknown")}: {e}')
@@ -563,6 +583,7 @@ class ArticleTranslator:
                 model="gpt-5.4-mini",
                 messages=messages,
                 max_tokens=self.stage5_max_tokens,
+                reasoning_effort='low',
             )
             if not text:
                 _logger.error(f'Stage5 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
@@ -607,6 +628,7 @@ class ArticleTranslator:
                 model="gpt-5.4-mini",
                 messages=messages,
                 max_tokens=6000,
+                reasoning_effort='low',
             )
             if not text:
                 _logger.error(f'Stage6 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
