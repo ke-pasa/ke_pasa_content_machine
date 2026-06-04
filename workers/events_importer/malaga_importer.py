@@ -8,11 +8,11 @@ import csv
 import io
 import json
 import logging
+import os
 import requests
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-from workers.tools.openai_client import get_openai_client, chat_completion, parse_json_from_text
 from workers.tools.pg_client import get_pg_client
 
 logger = logging.getLogger("workers.events_importer.malaga")
@@ -31,6 +31,13 @@ CATEGORY_MAPPINGS = {
     "Deportes - Eventos deportivos": "Спорт",
     "Espectaculos - Musical": "Музыкальное представление"
 }
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def parse_spanish_datetime(date_str: str) -> Optional[datetime]:
@@ -226,7 +233,13 @@ def translate_event_single(event: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Translated event dictionary (or original if failed)
     """
+    if not _env_flag('ENABLE_EVENT_AI_TRANSLATION', default=False):
+        logger.debug("AI event translation disabled; keeping original event text")
+        return event
+
     try:
+        from workers.tools.openai_client import get_openai_client, chat_completion, parse_json_from_text
+
         client = get_openai_client()
         if not client:
             return event
@@ -325,11 +338,15 @@ def fetch_malaga_events() -> List[Dict[str, Any]]:
         events_to_process.append(ev)
         
     logger.info(f"⚠️ Creating {len(events_to_process)} NEW events (Skipped {skipped_count} existing)")
+
+    translate_events = _env_flag('ENABLE_EVENT_AI_TRANSLATION', default=False)
+    if not translate_events:
+        logger.info("⏭️ AI event translation disabled; saving Malaga events in original language")
     
     for i, ev in enumerate(events_to_process):
         try:
-            # 1. Translate
-            translated_ev = translate_event_single(ev)
+            # 1. Translate only when explicitly enabled.
+            translated_ev = translate_event_single(ev) if translate_events else ev
             
             # 2. Save immediately
             res = pg.save_event(translated_ev)

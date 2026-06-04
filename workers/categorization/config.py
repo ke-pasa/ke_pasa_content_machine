@@ -18,7 +18,7 @@ class CategorizationConfig:
     
     # Update all articles or only new ones
     update_all: bool = os.getenv('CATEGORIZATION_UPDATE_ALL', 'false').lower() == 'true'
-    
+
     @classmethod
     def from_env(cls) -> 'CategorizationConfig':
         """Creates configuration from environment variables"""

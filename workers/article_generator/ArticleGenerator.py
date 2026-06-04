@@ -35,9 +35,9 @@ class ArticleGenerator:
             raise RuntimeError('Postgres client is required for ArticleGenerator')
         self.instance_id = str(uuid.uuid4())[:8]
         self.translator = translator or ArticleTranslator(
-            stage1_max_tokens=1200,
-            stage2_max_tokens=1200,
-            stage3_max_tokens=1200
+            stage1_max_tokens=1800,
+            stage2_max_tokens=2500,
+            stage3_max_tokens=3500
         )
         
         # Initialize image generator (always enabled)
@@ -699,13 +699,13 @@ class ArticleGenerator:
                 self.logger.warning(f'⚠️ Failed to insert additional images into markdown: {e}')
         
         # locate YAML frontmatter
-        fm_start = md.find('---')
+        fm_start = 0 if md.startswith('---\n') else -1
         fm_end = -1
         if fm_start != -1:
             fm_end = md.find('\n---', fm_start+3)
             if fm_end != -1:
-                fm_block = md[fm_start:fm_end]
-                rest = md[fm_end+1:]
+                fm_block = md[fm_start + 4:fm_end]
+                rest = md[fm_end + 4:]
             else:
                 fm_block = ''
                 rest = md
@@ -810,7 +810,7 @@ class ArticleGenerator:
                     fm_text = fm_text + f'\nscore: {score_str}'
             except Exception:
                 pass
-            new_md = '---' + fm_text + '\n---' + rest
+            new_md = '---\n' + fm_text + '\n---' + rest
         else:
             esc_title2 = title_val.replace('"', '\\"') if isinstance(title_val, str) else ''
             esc_desc2 = desc_val.replace('"', '\\"') if isinstance(desc_val, str) else ''
@@ -1181,4 +1181,3 @@ class ArticleGenerator:
                 self.logger.exception(f'❌ Unexpected error in continuous loop: {loop_err}')
                 self.logger.info('⏸️  Waiting 30 seconds before retry...')
                 time.sleep(30)
-

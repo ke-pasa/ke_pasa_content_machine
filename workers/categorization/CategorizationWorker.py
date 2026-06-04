@@ -27,19 +27,6 @@ def _get_openai_client(endpoint_suffix=''):
     return _go(endpoint_suffix)
 
 
-def _chat_completion(client, model, messages, max_tokens=600, reasoning_effort='low'):
-    """Wrapper that returns (text, usage_dict) tuple."""
-    try:
-        # Use chat_completion wrapper which handles Azure routing correctly
-        from workers.tools.openai_client import chat_completion as _cc
-        text = _cc(client, model, messages, max_tokens=max_tokens, reasoning_effort=reasoning_effort)
-        # Note: usage info not available through wrapper, but text is returned correctly
-        return (text, None)
-    except Exception as e:
-        logging.getLogger('workers.categorization').exception('Chat completion failed: %s', e)
-        return (None, None)
-
-
 def _parse_json_from_text(text: str):
     try:
         worker_mod = importlib.import_module('workers.categorization.worker')
@@ -51,6 +38,21 @@ def _parse_json_from_text(text: str):
 
 
 from .config import CategorizationConfig
+
+
+# Ordered model fallback chain for the scoring/categorization call. Tried left
+# to right; when a model hits its rate limit (HTTP 429) or is unavailable (404)
+# the worker benches it for the rest of the run and advances to the next.
+# Models named 'gemini*' route via GEMINI_API_KEY; everything else via
+# OPENAI_API_KEY (the last entry is the safety net). Topic embeddings always
+# use OpenAI to stay compatible with existing topic vectors in the database.
+CATEGORIZATION_MODEL_CHAIN = [
+    'gemini-2.5-flash',
+    'gemini-3.5-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-3-flash',
+    'gpt-5.4-mini',
+]
 
 
 class CategorizationWorker:
@@ -79,6 +81,75 @@ class CategorizationWorker:
         self.embedding_model =  'text-embedding-3-small'
         self.similarity_threshold = 0.65
 
+        # Ordered model fallback chain for the scoring call (hardcoded above).
+        self.categorization_chain = list(CATEGORIZATION_MODEL_CHAIN)
+        # Models benched for this run after a 429 / 404 so we don't re-hit them
+        # on every subsequent article. CPython set add/contains are GIL-atomic,
+        # which is sufficient for the worst case here (a few redundant 429s).
+        self._exhausted_models = set()
+        self.logger.info(f"Categorization model chain: {' -> '.join(self.categorization_chain)}")
+
+
+    def _client_for_model(self, model: str):
+        """Return the API client for a model id, or None if not configured.
+
+        'gemini*' models use the Gemini OpenAI-compatible client (GEMINI_API_KEY);
+        everything else uses the standard OpenAI client (OPENAI_API_KEY).
+        """
+        if str(model).lower().startswith('gemini'):
+            try:
+                from workers.tools.openai_client import get_gemini_client
+                return get_gemini_client()
+            except Exception:
+                return None
+        return _get_openai_client()
+
+    def _cascade_chat(self, messages, doc_id, max_tokens=1200):
+        """Run the scoring call through the model fallback chain.
+
+        Tries each model in turn. On rate limit (429) or unavailable model (404)
+        the model is benched for the rest of the run and we advance to the next.
+        Returns (text, model_used) or (None, None) if every model failed.
+        """
+        from workers.tools.openai_client import chat_completion, RateLimitError, LLMError
+
+        for model in self.categorization_chain:
+            if model in self._exhausted_models:
+                continue
+
+            client = self._client_for_model(model)
+            if client is None:
+                # Provider not configured (e.g. missing GEMINI_API_KEY).
+                self._exhausted_models.add(model)
+                self.logger.info(f"[cascade] {model}: client unavailable, skipping for this run")
+                continue
+
+            try:
+                # reasoning_effort='none' disables thinking on Gemini 2.5 models
+                # (cost saver); chat_completion omits it for models that don't
+                # support it, so it's safe to pass unconditionally.
+                text = chat_completion(
+                    client, model, messages,
+                    max_tokens=max_tokens, reasoning_effort='none', raise_errors=True,
+                )
+                if text:
+                    return text, model
+                self.logger.warning(f"[cascade] {model} returned empty for {doc_id}; trying next model")
+            except RateLimitError:
+                self._exhausted_models.add(model)
+                self.logger.warning(f"[cascade] {model} rate-limited (429); benching for this run, switching model")
+            except LLMError as e:
+                status = getattr(e, 'status', None)
+                if status == 404:
+                    self._exhausted_models.add(model)
+                    self.logger.warning(f"[cascade] {model} unavailable (404); benching for this run")
+                else:
+                    self.logger.warning(f"[cascade] {model} failed (status={status}) for {doc_id}; trying next model")
+            except Exception as e:
+                self.logger.warning(f"[cascade] {model} unexpected error for {doc_id}: {e}; trying next model")
+
+        self.logger.error(f"[cascade] all models exhausted/failed for {doc_id}")
+        return None, None
 
     def _deduplicate_by_topic(self, topic_id: int):
         """
@@ -389,33 +460,29 @@ class CategorizationWorker:
 
         return new_topic_id
 
-    def _call_llm_categorization(self, client, model: str, doc_id: str, title: str, description: str, tags: list, content: str, source: str, pub_date: str, feed_name: str, region_hint: str) -> dict:
-        """Call LLM for article categorization.
-        
+    def _call_llm_categorization(self, doc_id: str, title: str, description: str, tags: list, content: str, source: str, pub_date: str, feed_name: str, region_hint: str) -> dict:
+        """Call LLM for article categorization via the model fallback chain.
+
         Returns:
             dict: interest_result with LLM response or error info
         """
         system_prompt, user_prompt = get_news_filter_prompt(
-            title, description, tags, content, source, pub_date, 
+            title, description, tags, content, source, pub_date,
             feed_name=feed_name, region_hint=region_hint
         )
-
-        if not client:
-            self.logger.warning(f'No LLM client available for article {doc_id}')
-            return None
 
         try:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            result = _chat_completion(client, model, messages, max_tokens=1200)
+            # Scoring runs through the model fallback chain (Gemini -> ... -> OpenAI).
+            # Thinking is disabled (reasoning_effort='none') to cut output-token cost.
+            text, model = self._cascade_chat(messages, doc_id, max_tokens=1200)
+            usage = None
 
-            # Handle tuple return (text, usage) or just text
-            if isinstance(result, tuple):
-                text, usage = result
-            else:
-                text, usage = result, None
+            if text is None:
+                self.logger.warning(f'All categorization models failed for article {doc_id}')
 
             # Save raw model response for debugging (both text and structured if available)
             try:
@@ -428,7 +495,7 @@ class CategorizationWorker:
                     'messages': messages,
                     'raw_text': text,
                     '_usage': usage,
-                    'raw_result_repr': repr(result)
+                    'raw_result_repr': repr(text)
                 }
                 with raw_file.open('w', encoding='utf-8') as rf:
                     rf.write(json.dumps(raw_payload, ensure_ascii=False, indent=2))
@@ -541,7 +608,7 @@ class CategorizationWorker:
                 if not docs:
                     break
 
-                model = 'gpt-5.4-mini'
+                # OpenAI client for topic embeddings; scoring uses the model chain.
                 client = _get_openai_client()
 
                 chunk_results = {'processed': 0, 'errors': []}
@@ -563,9 +630,9 @@ class CategorizationWorker:
                         
                         record_start = time.perf_counter()
                         
-                        # Call LLM for categorization
+                        # Call LLM for categorization (model fallback chain)
                         interest_result = self._call_llm_categorization(
-                            client, model, doc_id, title, description, tags, 
+                            doc_id, title, description, tags,
                             content, source, pub_date, feed_name, region_hint
                         )
                         
@@ -887,12 +954,12 @@ class CategorizationWorker:
             feed_name = data.get('feed_name', '') or data.get('feed', '') or ''
             region_hint = data.get('region_hint', '') or ''
             
+            # OpenAI client for topic embeddings; scoring uses the model chain.
             client = _get_openai_client()
-            model = 'gpt-5.4-mini'
 
-            # Call LLM for categorization
+            # Call LLM for categorization (model fallback chain)
             interest_result = self._call_llm_categorization(
-                client, model, doc_id, title, description, tags, 
+                doc_id, title, description, tags,
                 content, source, pub_date, feed_name, region_hint
             )
 

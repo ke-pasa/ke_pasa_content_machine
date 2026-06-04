@@ -1,14 +1,16 @@
 import json
 import re
 import logging
+import html
+import os
+import unicodedata
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from .prompts import (
     stage1_messages,
     stage2_messages,
     stage3_messages,
-    stage4_messages,
-    stage5_messages,
     stage6_messages,
 )
 
@@ -16,7 +18,14 @@ _logger = logging.getLogger('workers.article_generator.translator')
 _logger.propagate = True
 
 # Constants
-STAGE_NAMES = ('stage1', 'stage2', 'stage3', 'stage4', 'stage5', 'stage6')
+STAGE_NAMES = ('stage1', 'stage2', 'stage3', 'stage5', 'stage6')
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _get_worker_module():
@@ -131,6 +140,111 @@ def _parse_stage_response(text: str, stage: str, doc_id: str) -> Optional[Dict]:
         return None
 
 
+def _yaml_quote(value: Any) -> str:
+    """Return a JSON-compatible quoted scalar, which is safe in YAML frontmatter."""
+    if value is None:
+        value = ''
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _slugify(value: str, fallback: str = 'article') -> str:
+    translit = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+    }
+    text = ''.join(translit.get(ch, ch) for ch in str(value or '').lower())
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    text = re.sub(r'[^a-z0-9]+', '-', text)
+    text = re.sub(r'-{2,}', '-', text).strip('-')
+    return text or fallback
+
+
+def _date_hint_to_frontmatter_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            return datetime.fromisoformat(text.replace('Z', '+00:00')).date().isoformat()
+        except Exception:
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', text):
+                return text
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _build_publish_markdown(stage4_result: Dict, metadata: Dict) -> Dict:
+    title = (stage4_result.get('title') or '').strip()
+    dek = (stage4_result.get('dek') or '').strip()
+    body = (stage4_result.get('body') or '').strip()
+    doc_id = str((metadata or {}).get('doc_id') or 'article')
+    slug = _slugify(title, fallback=doc_id)
+    source_url = (metadata or {}).get('url') or (metadata or {}).get('link') or ''
+    source_feed = (
+        (metadata or {}).get('source_name')
+        or (metadata or {}).get('source_feed')
+        or (metadata or {}).get('feed_name')
+        or (metadata or {}).get('source')
+        or 'источник'
+    )
+    image = (metadata or {}).get('image_url') or (metadata or {}).get('image') or ''
+    pub_date = _date_hint_to_frontmatter_date(
+        (metadata or {}).get('published_at')
+        or (metadata or {}).get('pub_date')
+        or stage4_result.get('pubDate')
+    )
+    category = (metadata or {}).get('category') or stage4_result.get('category') or ''
+    region = (metadata or {}).get('region') or stage4_result.get('region') or 'Spain'
+    try:
+        score = float((metadata or {}).get('total_score') or 0.0)
+    except Exception:
+        score = 0.0
+
+    entity_names = []
+    for entity in stage4_result.get('entities') or []:
+        if isinstance(entity, dict) and entity.get('name'):
+            entity_names.append(str(entity.get('name')))
+    keywords = list(dict.fromkeys(entity_names[:8]))
+
+    frontmatter = [
+        '---',
+        f'title: {_yaml_quote(title)}',
+        f'description: {_yaml_quote(dek)}',
+        f'pubDate: {_yaml_quote(pub_date)}',
+        'author: "Auto-Editorial"',
+        'tags: []',
+        f'category: {_yaml_quote(category)}',
+        f'slug: {_yaml_quote(slug)}',
+        f'image: {_yaml_quote(image)}',
+        f'region: {_yaml_quote(region)}',
+        'seo:',
+        f'  title: {_yaml_quote(title)}',
+        f'  description: {_yaml_quote(dek)}',
+        f'  keywords: {json.dumps(keywords, ensure_ascii=False)}',
+        f'score: {score:.2f}',
+        '---',
+        '',
+    ]
+
+    source_line = ''
+    if source_url:
+        safe_url = html.escape(str(source_url), quote=True)
+        safe_feed = html.escape(str(source_feed), quote=False)
+        source_line = f'\n\nОригинал: <a href="{safe_url}" target="_blank">{safe_feed}</a>'
+    else:
+        flags = list(stage4_result.get('flags') or [])
+        flags.append('Missing source URL for original link')
+        stage4_result['flags'] = list(dict.fromkeys(flags))
+
+    return {
+        'publish_md': '\n'.join(frontmatter) + body + source_line,
+        'slug': slug,
+        'flags': stage4_result.get('flags') or [],
+    }
+
+
 def _maybe_save_stage_record(doc_id: str, metadata: Dict, stages: Dict):
     """If metadata['save_stages'] is truthy, write a plain text file with
     parsed stage JSON and raw texts for inspection.
@@ -215,9 +329,9 @@ class ArticleTranslator:
         self,
         client=None,
         model: str = 'gpt-5.4-mini',
-        stage1_max_tokens: int = 1500,
-        stage2_max_tokens: int = 2000,
-        stage3_max_tokens: int = 1500,
+        stage1_max_tokens: int = 1800,
+        stage2_max_tokens: int = 2500,
+        stage3_max_tokens: int = 3500,
         stage4_max_tokens: int = 6000,
     ) -> None:
         self.client = client if client is not None else _get_openai_client()
@@ -225,9 +339,8 @@ class ArticleTranslator:
         self.stage1_max_tokens = stage1_max_tokens
         self.stage2_max_tokens = stage2_max_tokens
         self.stage3_max_tokens = stage3_max_tokens
+        # Kept for backward compatibility with callers that still pass this option.
         self.stage4_max_tokens = stage4_max_tokens
-        # Stage 5 generates full markdown with frontmatter - needs more tokens
-        self.stage5_max_tokens = 8000
         self.stage6_max_tokens = 2000
         # Token tracking
         self._total_prompt_tokens = 0
@@ -263,7 +376,16 @@ class ArticleTranslator:
         return '\n\n'.join(parts).strip()
 
     def _execute_translation_pipeline(self, title: str, description: str, content: str, metadata: Dict) -> tuple:
-        """Execute 6-stage translation pipeline. Returns (stage1, stage2, stage3, stage4, stage5, stage6)."""
+        """Execute compact translation pipeline.
+
+        LLM stages:
+        1) factual extraction
+        2) article draft
+        3) independent validation and final revision
+
+        Stage 5 is deterministic markdown assembly. Stage 6 remains an optional
+        LLM call for Telegram/video assets when the source article is publishable.
+        """
         import time
         doc_id = metadata.get('doc_id', 'unknown')
         _logger.info('[%s] Starting translation pipeline', doc_id)
@@ -286,7 +408,7 @@ class ArticleTranslator:
             _logger.warning('[%s] Stage 2 failed', doc_id)
             return (stage1, stage2, None, None, None, None, {'stage1': raw1, 'stage2': raw2})
 
-        _logger.info('[%s] Stage 3: Editorial evaluation...', doc_id)
+        _logger.info('[%s] Stage 3: Validate and revise...', doc_id)
         t0 = time.time()
         stage3, raw3 = self._stage3_edit_first(stage1, stage2, source_text, metadata)
         _logger.info('[%s] Stage 3 completed in %.1fs', doc_id, time.time() - t0)
@@ -294,15 +416,10 @@ class ArticleTranslator:
             _logger.warning('[%s] Stage 3 failed', doc_id)
             return (stage1, stage2, stage3, None, None, None, {'stage1': raw1, 'stage2': raw2, 'stage3': raw3})
 
-        _logger.info('[%s] Stage 4: Final edit...', doc_id)
-        t0 = time.time()
-        stage4, raw4 = self._stage4_edit_final(stage1, stage2, stage3, source_text, metadata)
-        _logger.info('[%s] Stage 4 completed in %.1fs', doc_id, time.time() - t0)
-        if not stage4 or not isinstance(stage4, dict):
-            _logger.warning('[%s] Stage 4 failed', doc_id)
-            return (stage1, stage2, stage3, stage4, None, None, {'stage1': raw1, 'stage2': raw2, 'stage3': raw3, 'stage4': raw4})
+        stage4 = stage3
+        raw4 = None
 
-        _logger.info('[%s] Stage 5: Publish markdown...', doc_id)
+        _logger.info('[%s] Stage 5: Build publish markdown...', doc_id)
         t0 = time.time()
         stage5, raw5 = self._stage5_publish_md(stage4, metadata)
         _logger.info('[%s] Stage 5 completed in %.1fs', doc_id, time.time() - t0)
@@ -329,8 +446,11 @@ class ArticleTranslator:
     def _build_base_result(self, stage1: Dict, stage2: Dict, stage3: Dict, stage4: Dict) -> Dict:
         """Build base result dictionary with core translation fields."""
         final = {}
-        # body text
-        final['body_ru'] = stage3.get('body')
+        # Stage 3 contains the approved final article body.
+        final_body = stage4.get('body') or stage2.get('body')
+        final['body_ru'] = final_body
+        if final_body:
+            final['translation_ru'] = final_body
         # pubDate (from stage1)
         final['pubDate'] = stage1.get('pubDate')
         # image (from stage1)
@@ -379,7 +499,7 @@ class ArticleTranslator:
             final['stage6_telegram'] = stage6
 
     def translate(self, title: str, description: str, content: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
-        """Execute 6-stage translation pipeline and merge results."""
+        """Execute compact translation pipeline and merge results."""
         if not self.client:
             _logger.error('OpenAI client is not initialized')
             return None
@@ -397,7 +517,7 @@ class ArticleTranslator:
             return stage1 if isinstance(stage1, dict) else None
         if not stage2 or not stage3 or not stage4:
             _logger.error(f'Translation pipeline failed for {doc_id}: stage2={bool(stage2)} stage3={bool(stage3)} stage4={bool(stage4)}')
-            return stage1
+            return None
 
         final = self._build_base_result(stage1, stage2, stage3, stage4)
         self._add_optional_fields(final, stage1, stage2, stage3, stage4)
@@ -432,7 +552,7 @@ class ArticleTranslator:
             _logger.exception('Error while trying to save stage record for %s', metadata.get('doc_id', 'unknown'))
         
         pipeline_duration = __import__('time').time() - pipeline_start
-        _logger.info(f'[{doc_id}] Translation completed in {pipeline_duration:.1f}s (6 stages)')
+        _logger.info(f'[{doc_id}] Translation completed in {pipeline_duration:.1f}s (3 LLM stages)')
 
         return final
 
@@ -486,7 +606,7 @@ class ArticleTranslator:
         return parsed, (text or None)
 
     def _stage3_edit_first(self, stage1_result: Dict, stage2_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
-        """Stage 3: Editorial evaluation based on source_text, stage1, and stage2."""
+        """Stage 3: Validate and finalize based on source_text, stage1, and stage2."""
         metadata = metadata or {}
         if not stage2_result:
             return None
@@ -514,92 +634,25 @@ class ArticleTranslator:
         self._save_stage_io('stage3', raw_output=text)
         return parsed, (text or None)
 
-    def _stage4_edit_final(self, stage1_result: Dict, stage2_result: Dict, stage3_result: Dict, source_text: str, metadata: Optional[Dict] = None) -> Optional[Dict]:
-        """Stage 4: Final article creation based on source_text, stage1, stage2, and stage3 evaluation."""
-        metadata = metadata or {}
-        if not stage3_result:
-            return None
-        stage1_json = json.dumps(stage1_result, ensure_ascii=False)
-        stage2_json = json.dumps(stage2_result, ensure_ascii=False)
-        stage3_json = json.dumps(stage3_result, ensure_ascii=False)
-
-        messages = stage4_messages(source_text, stage1_json, stage2_json, stage3_json)
-        self._save_stage_io('stage4',
-                           input_data={'source_text': source_text, 'stage1_json': stage1_json, 
-                                      'stage2_json': stage2_json, 'stage3_json': stage3_json},
-                           messages=messages)
-        _log_stage_debug('stage4', self.model, messages, len(stage3_json or ''))
-
-        try:
-            _logger.info(f'Stage4 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'messages={len(messages)}, max_tokens={self.stage4_max_tokens}')
-            text = _chat_completion(
-                client=_get_openai_client(),
-                model="gpt-5.4-mini",
-                messages=messages,
-                max_tokens=self.stage4_max_tokens,
-            )
-            if not text:
-                _logger.error(f'Stage4 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
-                return None, None
-            _logger.info(f'Stage4 success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
-        except Exception as e:
-            _logger.exception(f'Stage4 exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
-            return None, None
-
-        parsed = _parse_stage_response(text, 'stage4', metadata.get('doc_id', 'unknown'))
-        self._save_stage_io('stage4', raw_output=text)
-        return parsed, (text or None)
-
     def _stage5_publish_md(self, stage4_result: Dict, metadata: Dict) -> Optional[Dict]:
-        """Stage 5: Generate markdown article for website based on stage4."""
+        """Stage 5: Build markdown article for website based on final article JSON."""
         metadata = metadata or {}
         if not stage4_result:
             return None
 
-        tech_meta = {
-            'source_url': metadata.get('url') or metadata.get('link') or '',
-            'source_feed': metadata.get('source_name') or metadata.get('source_feed') or metadata.get('feed_name') or 'источник',
-            'image_hint': metadata.get('image_url') or metadata.get('image') or '',
-            'pub_date_hint': metadata.get('published_at') or metadata.get('pub_date') or None,
-            'category_hint': metadata.get('category') or '',
-            'region_hint': metadata.get('region') or 'unknown',
-        }
-
-        stage4_json = json.dumps(stage4_result, ensure_ascii=False)
-        tech_meta_json = json.dumps(tech_meta, ensure_ascii=False)
-
-        messages = stage5_messages(stage4_json, tech_meta_json)
-        self._save_stage_io('stage5', 
-                           input_data={'stage4_json': stage4_json, 'tech_meta_json': tech_meta_json},
-                           messages=messages)
-        _log_stage_debug('stage5', self.model, messages, len(stage4_json or ''))
-
         try:
-            _logger.info(f'Stage5 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'messages={len(messages)}, max_tokens={self.stage5_max_tokens}')
-            text = _chat_completion(
-                client=_get_openai_client(),
-                model="gpt-5.4-mini",
-                messages=messages,
-                max_tokens=self.stage5_max_tokens,
-                reasoning_effort='low',
-            )
-            if not text:
-                _logger.error(f'Stage5 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
-                return None, None
-            _logger.info(f'Stage5 success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
+            result = _build_publish_markdown(stage4_result, metadata)
         except Exception as e:
             _logger.exception(f'Stage5 exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
             return None, None
-            
-        result = {'publish_md': text.strip()}
-        self._save_stage_io('stage5', raw_output=text)
-        import re
-        if slug_match := re.search(r'^slug:\s*(.+?)\s*$', text, re.MULTILINE):
-            slug = slug_match.group(1).strip().strip('"').strip("'")
-            result['slug'] = slug
-        return result, (text or None)
+
+        self._save_stage_io(
+            'stage5',
+            input_data={'stage4_json': json.dumps(stage4_result, ensure_ascii=False), 'metadata': metadata},
+            raw_output=result.get('publish_md'),
+            messages=[],
+        )
+        return result, (result.get('publish_md') or None)
 
     def _stage6_telegram(self, stage4_result: Dict, metadata: Dict, slug: Optional[str] = None) -> Optional[Dict]:
         """Stage 6: Generate telegram text based on stage4."""
@@ -614,7 +667,31 @@ class ArticleTranslator:
 
         stage4_json = json.dumps(stage4_result, ensure_ascii=False)
 
-        messages = stage6_messages(stage4_json, url)
+        if _env_flag('ENABLE_VIDEO_GENERATION', default=False):
+            messages = stage6_messages(stage4_json, url)
+            max_tokens = self.stage6_max_tokens
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior SMM editor for a Russian-language news outlet in Spain. "
+                        "Write only a compact, factual Telegram news preview. Keep it neutral, "
+                        "active, concrete, and free of hype. Use exactly 3 blocks: bold headline, "
+                        "2-3 sentence core news paragraph, and 1 short practical consequence. "
+                        "Do not add URLs. Return STRICT JSON only: {\"tg_preview\":\"...\"}."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Write a compact Telegram news preview from this final article data.\n\n"
+                        f"{stage4_json}\n\nReturn STRICT JSON only: {{\"tg_preview\":\"...\"}}"
+                    ),
+                },
+            ]
+            max_tokens = 1000
+
         self._save_stage_io('stage6',
                            input_data={'stage4_json': stage4_json, 'url': url},
                            messages=messages)
@@ -622,12 +699,12 @@ class ArticleTranslator:
 
         try:
             _logger.info(f'Stage6 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'messages={len(messages)}, max_tokens=6000')
+                        f'messages={len(messages)}, max_tokens={max_tokens}')
             text = _chat_completion(
-                client=_get_openai_client(),
-                model="gpt-5.4-mini",
+                client=self.client,
+                model=self.model,
                 messages=messages,
-                max_tokens=6000,
+                max_tokens=max_tokens,
                 reasoning_effort='low',
             )
             if not text:

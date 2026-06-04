@@ -23,12 +23,65 @@ import logging
 import time
 
 _client = None
+_gemini_client = None
+
+
+class LLMError(Exception):
+    """Raised by chat_completion when raise_errors=True and the request fails.
+
+    Carries the HTTP status code (when available) so callers can implement
+    model-fallback logic (e.g. skip a model on 404, bench it on 429).
+    """
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
+
+class RateLimitError(LLMError):
+    """Raised on HTTP 429 (rate limit / quota exhausted) when raise_errors=True."""
+    pass
+
+# Gemini exposes an OpenAI-compatible endpoint, so we reuse the openai SDK
+# pointed at this base URL. See https://ai.google.dev/gemini-api/docs/openai
+GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 
 # Map legacy Azure deployment names to standard OpenAI model names
 _MODEL_ALIASES = {
     'gpt-5.2-chat': 'gpt-5.4',
     'gpt-4o-mini': 'gpt-5.4-mini',
 }
+
+
+def _is_gemini_model(model: str) -> bool:
+    """Return True if the model name targets Google Gemini."""
+    return bool(model) and str(model).lower().startswith('gemini')
+
+
+def get_gemini_client() -> Optional[object]:
+    """Get or create a Gemini client (via the OpenAI-compatible endpoint).
+
+    Uses the GEMINI_API_KEY env var (Google AI Studio key, free tier eligible).
+    Returns an OpenAI client instance configured for Gemini, or None if the key
+    is not configured.
+    """
+    global _gemini_client
+
+    if _gemini_client is not None:
+        return _gemini_client
+
+    try:
+        from openai import OpenAI
+        api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            logging.getLogger('workers.tools.openai_client').error('GEMINI_API_KEY not configured')
+            return None
+
+        _gemini_client = OpenAI(api_key=api_key, base_url=GEMINI_BASE_URL)
+        logging.getLogger('workers.tools.openai_client').info('Using Gemini API (GEMINI_API_KEY)')
+        return _gemini_client
+    except Exception as e:
+        logging.getLogger('workers.tools.openai_client').error(f"Gemini client init failed: {e}")
+        return None
 
 
 def get_openai_client(endpoint_suffix: str = '') -> Optional[object]:
@@ -63,6 +116,7 @@ def get_openai_client(endpoint_suffix: str = '') -> Optional[object]:
 def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     max_tokens: int = 6000,
                     reasoning_effort: Optional[str] = None,
+                    raise_errors: bool = False,
                     **_kwargs) -> Optional[str]:
     """Perform a chat completion and return the text content or None on error.
 
@@ -72,6 +126,10 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
         messages: List of message dicts with 'role' and 'content' keys.
         max_tokens: Maximum tokens to generate.
         reasoning_effort: Reasoning effort level (none/low/medium/high/xhigh). None = model default.
+        raise_errors: If True, raise RateLimitError on HTTP 429 and LLMError on
+            other terminal request failures instead of returning None. Lets
+            callers implement model-fallback chains. Default False preserves the
+            return-None-on-error behavior other callers rely on.
     """
     logger = logging.getLogger('workers.tools.openai_client')
 
@@ -168,15 +226,29 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
             pass
         return None
 
+    is_gemini = _is_gemini_model(resolved_model)
+
     for attempt in range(1, max_attempts + 1):
         try:
-            req_kwargs = {
-                'model': resolved_model,
-                'messages': messages,
-                'max_completion_tokens': max_tokens,
-            }
-            if reasoning_effort is not None:
-                req_kwargs['reasoning_effort'] = reasoning_effort
+            if is_gemini:
+                # Gemini's OpenAI-compatible endpoint expects `max_tokens`.
+                # `reasoning_effort` is only honored by 2.5 thinking models;
+                # sending it to others (e.g. 2.0-flash) causes a 400.
+                req_kwargs = {
+                    'model': resolved_model,
+                    'messages': messages,
+                    'max_tokens': max_tokens,
+                }
+                if reasoning_effort is not None and '2.5' in resolved_model:
+                    req_kwargs['reasoning_effort'] = reasoning_effort
+            else:
+                req_kwargs = {
+                    'model': resolved_model,
+                    'messages': messages,
+                    'max_completion_tokens': max_tokens,
+                }
+                if reasoning_effort is not None:
+                    req_kwargs['reasoning_effort'] = reasoning_effort
 
             resp = client.chat.completions.create(**req_kwargs)
 
@@ -203,6 +275,10 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 logger.warning('OpenAI request failed with client error status=%s', status)
                 if resp_text:
                     logger.warning('Response snippet: %s', resp_text[:500])
+                if raise_errors:
+                    if status == 429:
+                        raise RateLimitError('rate limit / quota exhausted (429)', status=429)
+                    raise LLMError(f'client error {status}', status=status)
                 return None
 
             if attempt < max_attempts:
@@ -213,6 +289,8 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 continue
 
             logger.exception('OpenAI request failed after %d attempts: %s', max_attempts, str(e))
+            if raise_errors:
+                raise LLMError(str(e), status=status)
             return None
 
     return None

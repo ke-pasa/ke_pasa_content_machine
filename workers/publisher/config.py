@@ -6,6 +6,13 @@ import os
 from dataclasses import dataclass
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 @dataclass
 class PublisherConfig:
     """Configuration for publisher worker"""
@@ -23,9 +30,11 @@ class PublisherConfig:
     max_retry_attempts: int = 3
     similarity_threshold: float = 0.8
     duplicate_check_days: int = 3
+    enable_video_generation: bool = False
 
     @classmethod
     def from_env(cls) -> 'PublisherConfig':
         """Creates configuration from environment variables"""
-        return cls()
-
+        return cls(
+            enable_video_generation=_env_flag('ENABLE_VIDEO_GENERATION', default=False),
+        )

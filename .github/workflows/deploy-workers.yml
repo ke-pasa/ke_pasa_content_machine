@@ -51,7 +51,8 @@ jobs:
           cat > .env << EOF
           POSTGRES_URL=${{ secrets.POSTGRES_URL }}
           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-          
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY || '' }}
+
           # Azure OpenAI / Cognitive Services
           AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT || '' }}
           AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY || '' }}

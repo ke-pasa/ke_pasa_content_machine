@@ -68,6 +68,10 @@ class PublisherWorker:
         logger.info(f"Starting worker id={self.instance_id}")
         logger.info(f"Max articles per run: {self.config.max_articles_per_run}")
         logger.info(f"Publication delay: {self.config.publication_delay}s")
+        logger.info(f"Video generation enabled: {self.config.enable_video_generation}")
+
+    def _video_generation_enabled(self) -> bool:
+        return bool(getattr(self.config, 'enable_video_generation', False))
 
     def _is_night_hours(self) -> bool:
         """Check if current time is in night hours (23:00 - 09:00 Madrid time)"""
@@ -687,6 +691,9 @@ class PublisherWorker:
         
         Returns: (success: bool, video_path: str, public_url: str, error_msg: str)
         """
+        if not self._video_generation_enabled():
+            return False, None, None, 'video_generation_disabled'
+
         try:
             video_generator = VideoGenerator()
             audio_generator = AudioGenerator()
@@ -761,7 +768,7 @@ class PublisherWorker:
             total_score = data.get('total_score', 0)
             script_text = data.get('script', '').strip()
             
-            if total_score > 95 and script_text:
+            if self._video_generation_enabled() and total_score > 95 and script_text:
                 logger.info(f"🎬 High-score article ({total_score}) - generating video for Instagram")
                 article_id = data.get('id')
                 title = data.get('title_ru', '')
@@ -937,7 +944,7 @@ class PublisherWorker:
             total_score = data.get('total_score', 0)
             script_text = data.get('script', '').strip()
             
-            if total_score > 95 and script_text:
+            if self._video_generation_enabled() and total_score > 95 and script_text:
                 logger.info(f"🎬 High-score article ({total_score}) - generating video for Facebook")
                 article_id = data.get('id')
                 title = data.get('title_ru', '')
@@ -1066,7 +1073,7 @@ class PublisherWorker:
         if max_to_publish is None:
             max_to_publish = self.config.max_articles_per_run
 
-        results = {'published': 0, 'checked': 0, 'errors': []}
+        results = {'published': 0, 'checked': 0, 'skipped': 0, 'errors': []}
 
         if not self.telegram_token:
             err = 'Telegram bot not configured (TELEGRAM_BOT_TOKEN missing)'
@@ -1174,7 +1181,9 @@ class PublisherWorker:
                 total_score = data.get('total_score', 0)
                 
                 # Check if video is needed: requires high score (>95) or video_only_mode
-                needs_video = script_text and script_text.strip() and image
+                needs_video = self._video_generation_enabled() and script_text and script_text.strip() and image
+                if script_text and script_text.strip() and image and not self._video_generation_enabled():
+                    logger.info(f"⏭️ Video generation disabled for article {article_id}")
                 if needs_video and not self.video_only_mode:
                     # Check score threshold
                     if total_score <= 95:
