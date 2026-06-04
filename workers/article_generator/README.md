@@ -51,6 +51,9 @@ GENERATOR_MIN_TEXT_LENGTH=50
 
 # Use AI for enhancement
 GENERATOR_USE_AI=true
+
+# Generate article images and AI image prompts
+ARTICLE_GENERATOR_ENABLE_IMAGES=false
 ```
 
 ## 🔒 Locking

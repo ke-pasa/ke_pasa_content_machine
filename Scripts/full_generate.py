@@ -67,12 +67,16 @@ def main(article_id: str):
     translator = ArticleTranslator()
     generator = ArticleGenerator(translator=translator)
     
-    # Initialize image generator
-    try:
-        image_gen = ImageGenerator(model="dall-e-3")
-        logger.info('Image generator initialized with dall-e-3')
-    except Exception as e:
-        logger.warning(f'Failed to initialize image generator: {e}')
+    image_generation_enabled = os.environ.get('ARTICLE_GENERATOR_ENABLE_IMAGES', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+    if image_generation_enabled:
+        try:
+            image_gen = ImageGenerator(model=os.environ.get('ARTICLE_GENERATOR_IMAGE_MODEL', 'gpt-image-1'))
+            logger.info('Image generator initialized')
+        except Exception as e:
+            logger.warning(f'Failed to initialize image generator: {e}')
+            image_gen = None
+    else:
+        logger.info('Article image generation disabled (ARTICLE_GENERATOR_ENABLE_IMAGES=false)')
         image_gen = None
 
     try:

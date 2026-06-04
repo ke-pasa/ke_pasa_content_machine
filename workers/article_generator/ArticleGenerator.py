@@ -22,6 +22,9 @@ from workers.tools.constants import MIN_ARTICLE_SCORE
 class ArticleGenerator:
 
     def __init__(self, translator: ArticleTranslator | None = None, batch_size: int | None = None):
+        self.logger = logging.getLogger('workers.article_generator')
+        self.logger.propagate = True
+
         try:
             self.batch_size = int(batch_size) if batch_size is not None else None
             if self.batch_size is not None and self.batch_size < 0:
@@ -40,23 +43,22 @@ class ArticleGenerator:
             stage3_max_tokens=3500
         )
         
-        # Initialize image generator (always enabled)
-        try:
-            self.image_generator = ImageGenerator(model="dall-e-2")
-            self.logger = logging.getLogger('workers.article_generator')
-            self.logger.info('Image generator initialized successfully with dall-e-2')
-        except Exception as e:
-            self.logger = logging.getLogger('workers.article_generator')
-            self.logger.warning(f'Failed to initialize image generator: {e}. Will skip image generation.')
+        image_generation_enabled = os.getenv('ARTICLE_GENERATOR_ENABLE_IMAGES', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
+        if image_generation_enabled:
+            try:
+                self.image_generator = ImageGenerator(model=os.getenv('ARTICLE_GENERATOR_IMAGE_MODEL', 'gpt-image-1'))
+                self.logger.info('Image generator initialized successfully')
+            except Exception as e:
+                self.logger.warning(f'Failed to initialize image generator: {e}. Will skip image generation.')
+                self.image_generator = None
+        else:
+            self.logger.info('Article image generation disabled (ARTICLE_GENERATOR_ENABLE_IMAGES=false)')
             self.image_generator = None
         
         # Whether to request stage saving from translator (passed via metadata)
         self.save_stages = False
         # Use root logger configuration from entrypoint; avoid adding handlers here.
-        if not hasattr(self, 'logger'):
-            self.logger = logging.getLogger('workers.article_generator')
         # Allow propagation to root logger so stdout captures these logs
-        self.logger.propagate = True
 
     def _get_total_score(self, data: dict) -> float:
         """Extract float total_score from article data."""
