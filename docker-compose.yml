@@ -25,6 +25,9 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OR_API_KEY=${OR_API_KEY}
+      - OPENROUTER_APP_URL=${OPENROUTER_APP_URL:-https://ke-pasa.es}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Ke Pasa Content Machine}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
       - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
@@ -53,6 +56,11 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OR_API_KEY=${OR_API_KEY}
+      - OPENROUTER_APP_URL=${OPENROUTER_APP_URL:-https://ke-pasa.es}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Ke Pasa Content Machine}
+      - CATEGORIZATION_MODEL_CHAIN=${CATEGORIZATION_MODEL_CHAIN:-openai/gpt-oss-20b:free,google/gemma-4-31b-it:free}
+      - CATEGORIZATION_EMBEDDING_MODEL=${CATEGORIZATION_EMBEDDING_MODEL:-nvidia/llama-nemotron-embed-vl-1b-v2:free}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
@@ -79,6 +87,9 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OR_API_KEY=${OR_API_KEY}
+      - OPENROUTER_APP_URL=${OPENROUTER_APP_URL:-https://ke-pasa.es}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Ke Pasa Content Machine}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
       - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
@@ -110,6 +121,9 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OR_API_KEY=${OR_API_KEY}
+      - OPENROUTER_APP_URL=${OPENROUTER_APP_URL:-https://ke-pasa.es}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Ke Pasa Content Machine}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
       - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
@@ -166,6 +180,9 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OR_API_KEY=${OR_API_KEY}
+      - OPENROUTER_APP_URL=${OPENROUTER_APP_URL:-https://ke-pasa.es}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Ke Pasa Content Machine}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
       - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
@@ -224,6 +241,9 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
+      - OR_API_KEY=${OR_API_KEY}
+      - OPENROUTER_APP_URL=${OPENROUTER_APP_URL:-https://ke-pasa.es}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-Ke Pasa Content Machine}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/events_importer:/var/log/supervisor

@@ -49,7 +49,8 @@ Add the following secrets in your GitHub repository (**Settings** → **Secrets 
 | `DEPLOY_SERVER_USER` | SSH username | `ubuntu` or `deploy` |
 | `DEPLOY_SSH_KEY` | Private SSH key for server access | Your SSH private key content |
 | `POSTGRES_URL` | PostgreSQL connection string | `postgresql://user:pass@host:5432/db` |
-| `OPENAI_API_KEY` | OpenAI API key | `sk-...` |
+| `OR_API_KEY` | OpenRouter API key (preferred) | `sk-or-...` |
+| `OPENAI_API_KEY` | OpenAI API key (fallback) | `sk-...` |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token | `123456789:ABC...` |
 | `TELEGRAM_CHAT_ID` | Telegram chat/channel ID | `-1001234567890` |
 
@@ -75,6 +76,10 @@ Add the following secrets in your GitHub repository (**Settings** → **Secrets 
 | `AZURE_OPENAI_KEY` | Azure OpenAI API key | - |
 | `AZURE_DALLE_ENDPOINT` | Azure DALL-E endpoint URL | - |
 | `AZURE_DALLE_KEY` | Azure DALL-E API key | - |
+| `OPENROUTER_APP_URL` | URL sent as `HTTP-Referer` to OpenRouter | `https://ke-pasa.es` |
+| `OPENROUTER_APP_TITLE` | App title sent as `X-Title` to OpenRouter | `Ke Pasa Content Machine` |
+| `CATEGORIZATION_MODEL_CHAIN` | Categorization fallback chain override | `openai/gpt-oss-20b:free,google/gemma-4-31b-it:free` |
+| `CATEGORIZATION_EMBEDDING_MODEL` | Categorization embedding model override | `nvidia/llama-nemotron-embed-vl-1b-v2:free` |
 | `PEXELS_API_KEY` | Pexels API key for images | - |
 
 **Note:** Threads requires Instagram Business/Creator account. `THREADS_USER_ID` is often different from `INSTAGRAM_USER_ID` even for the same account. Use `tools/get_threads_user_id.py` to discover your Threads User ID.

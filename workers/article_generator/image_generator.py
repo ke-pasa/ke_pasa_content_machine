@@ -1,3 +1,4 @@
+import base64
 import os
 import logging
 import requests
@@ -7,18 +8,25 @@ from pathlib import Path
 from typing import Optional
 from PIL import Image
 import json
-from workers.tools.openai_client import get_openai_client, chat_completion
+from workers.tools.openai_client import (
+    get_openai_client,
+    chat_completion,
+    get_openrouter_api_key,
+    is_openrouter_client,
+    resolve_model_name,
+    OPENROUTER_FREE_IMAGE_MODEL,
+)
 
 
 class ImageGenerator:
-    """Generates images for articles using OpenAI DALL-E when image_url is missing."""
+    """Generates images for articles when image_url is missing."""
 
     def __init__(self, model: str = "dall-e-3", images_dir: Optional[Path] = None):
         """
         Initialize image generator.
 
         Args:
-            model: Image model to use (dall-e-3, dall-e-2, or gpt-image-1)
+            model: Image model to use (legacy OpenAI names are auto-mapped)
             images_dir: Directory to save generated images (default: project_root/images)
         """
         self.model = model
@@ -27,7 +35,7 @@ class ImageGenerator:
 
         self.client = get_openai_client()
         if not self.client:
-            raise RuntimeError('OpenAI not configured. Please set OPENAI_API_KEY')
+            raise RuntimeError('No LLM image provider configured. Set OR_API_KEY or OPENAI_API_KEY')
         
         # Set up images directory
         if images_dir is None:
@@ -179,9 +187,81 @@ ARTICLE:
             self.logger.error(f'Failed to create AI prompt: {e}')
             return None
     
+    def _generate_image_via_openrouter(self, prompt: str) -> Optional[str]:
+        """Generate an image through OpenRouter's chat completions endpoint."""
+        model = resolve_model_name(self.model, provider='openrouter')
+        if not model or OPENROUTER_FREE_IMAGE_MODEL is None:
+            self.logger.warning('OpenRouter free-only mode has no image generation model available; skipping image generation')
+            return None
+        base_url = (os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')).rstrip('/')
+        api_key = get_openrouter_api_key()
+        if not api_key:
+            self.logger.error('OR_API_KEY not configured')
+            return None
+
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        }
+        referer = os.getenv('OPENROUTER_APP_URL') or os.getenv('OPENROUTER_HTTP_REFERER')
+        title = os.getenv('OPENROUTER_APP_TITLE') or os.getenv('OPENROUTER_X_TITLE')
+        if referer:
+            headers['HTTP-Referer'] = referer
+        if title:
+            headers['X-Title'] = title
+
+        payload = {
+            'model': model,
+            'messages': [
+                {'role': 'user', 'content': prompt},
+            ],
+            'modalities': ['image', 'text'],
+            'stream': False,
+            'image_config': {
+                'aspect_ratio': '16:9',
+            },
+        }
+
+        try:
+            self.logger.info(f'Calling OpenRouter image generation with model={model}')
+            response = requests.post(
+                f'{base_url}/chat/completions',
+                headers=headers,
+                json=payload,
+                timeout=180,
+            )
+            response.raise_for_status()
+            data = response.json()
+            choices = data.get('choices') or []
+            if not choices:
+                self.logger.warning('OpenRouter image generation returned no choices')
+                return None
+
+            message = (choices[0] or {}).get('message') or {}
+            images = message.get('images') or []
+            if not images:
+                self.logger.warning('OpenRouter image generation returned no images')
+                return None
+
+            image = images[0] or {}
+            image_url = (
+                ((image.get('image_url') or {}).get('url'))
+                or ((image.get('imageUrl') or {}).get('url'))
+                or image.get('url')
+            )
+            if image_url:
+                self.logger.info('Successfully generated image via OpenRouter')
+                return image_url
+
+            self.logger.warning('OpenRouter image generation returned an image without URL payload')
+            return None
+        except Exception as e:
+            self.logger.exception(f'OpenRouter image generation failed: {e}')
+            return None
+
     def _generate_image(self, prompt: str) -> Optional[str]:
         """
-        Generate image using OpenAI DALL-E SDK.
+        Generate image using the configured provider.
 
         Args:
             prompt: Image generation prompt
@@ -190,6 +270,9 @@ ARTICLE:
             Image URL or None if failed
         """
         try:
+            if is_openrouter_client(self.client):
+                return self._generate_image_via_openrouter(prompt)
+
             self.logger.info(f'Calling OpenAI image generation with model={self.model}')
             if self.model == "dall-e-3":
                 response = self.client.images.generate(
@@ -273,12 +356,16 @@ ARTICLE:
             Relative path to saved image (e.g., 'images/doc_id.jpg') or None if failed
         """
         try:
-            # Download image
-            response = requests.get(image_url, timeout=30)
-            response.raise_for_status()
-            
+            if image_url.startswith('data:'):
+                _, encoded = image_url.split(',', 1)
+                image_bytes = base64.b64decode(encoded)
+            else:
+                response = requests.get(image_url, timeout=30)
+                response.raise_for_status()
+                image_bytes = response.content
+
             # Convert to JPEG using PIL (handles PNG transparency)
-            img = Image.open(BytesIO(response.content))
+            img = Image.open(BytesIO(image_bytes))
             
             # Convert RGBA to RGB if necessary (JPEG doesn't support transparency)
             if img.mode in ('RGBA', 'LA', 'P'):

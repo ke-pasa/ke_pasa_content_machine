@@ -7,7 +7,7 @@
 Система состоит из 6 независимых workers, работающих в Docker контейнерах:
 
 - **RSS Worker** - парсинг RSS feeds из испанских источников (каждые 40 минут)
-- **Categorization Worker** - категоризация статей через OpenAI (каждые 40 минут)
+- **Categorization Worker** - категоризация статей через OpenRouter/OpenAI (каждые 40 минут)
 - **Article Generator Worker** - перевод и генерация статей (каждые 30 минут)
 - **Publisher Worker** - публикация в социальные сети (каждые 45 минут с 9:00 до 23:00 Madrid time)
 - **Digest Worker** - генерация еженедельных дайджестов (по расписанию)
@@ -124,7 +124,8 @@ Healthy Platforms: 6/6
    - `DEPLOY_SERVER_USER` - SSH пользователь
    - `DEPLOY_SSH_KEY` - SSH приватный ключ
    - `POSTGRES_URL` - PostgreSQL connection string
-   - `OPENAI_API_KEY` - OpenAI API key
+   - `OR_API_KEY` - OpenRouter API key (рекомендуется)
+   - `OPENAI_API_KEY` - OpenAI API key (fallback, если не используете OpenRouter)
    - `TELEGRAM_BOT_TOKEN` - Telegram bot token
    - `TELEGRAM_CHAT_ID` - Telegram chat ID
 
@@ -168,6 +169,26 @@ Healthy Platforms: 6/6
 3. **Задеплойте workers:**
    - Push на `main` - деплоит все workers
    - Или вручную: Actions → Deploy Workers → Run workflow → выберите workers для деплоя
+
+### LLM провайдер
+
+По умолчанию проект теперь умеет работать через `OpenRouter`, если задан `OR_API_KEY`.
+Если ключ OpenRouter не задан, используется прямой `OPENAI_API_KEY`.
+
+В free-only режиме проект сейчас жёстко использует:
+- text: `google/gemma-4-31b-it:free`
+- fast text: `openai/gpt-oss-20b:free`
+- embeddings: `nvidia/llama-nemotron-embed-vl-1b-v2:free`
+
+Image generation в free-only режиме отключена:
+- по состоянию на 2026-06-21 OpenRouter Models API возвращает `0` free image endpoints
+- поэтому `ImageGenerator` в режиме `OR_API_KEY` сейчас пропускает генерацию картинок
+
+Полезные дополнительные переменные:
+- `OPENROUTER_APP_URL` - URL вашего проекта для заголовка `HTTP-Referer`
+- `OPENROUTER_APP_TITLE` - название приложения для заголовка `X-Title`
+- `CATEGORIZATION_MODEL_CHAIN` - override для цепочки categorization моделей
+- `CATEGORIZATION_EMBEDDING_MODEL` - override для embedding-модели categorization worker
 
 ## Управление Контейнерами
 

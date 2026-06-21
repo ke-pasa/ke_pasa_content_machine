@@ -10,7 +10,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib
 
 from .news_filter_prompt import get_news_filter_prompt
-from workers.tools.openai_client import parse_json_from_text
+from workers.tools.openai_client import (
+    parse_json_from_text,
+    resolve_model_name,
+    create_embedding,
+    OPENROUTER_FREE_TEXT_MODEL,
+    OPENROUTER_FREE_TEXT_MODEL_MINI,
+    OPENROUTER_FREE_EMBEDDING_MODEL,
+)
 from workers.tools.constants import MIN_ARTICLE_SCORE, SHORT_NOTE_THRESHOLD, PUBLISH_THRESHOLD
 import os
 import json as _json
@@ -40,12 +47,17 @@ def _parse_json_from_text(text: str):
 from .config import CategorizationConfig
 
 
+DEFAULT_OPENROUTER_CATEGORIZATION_MODEL_CHAIN = [
+    OPENROUTER_FREE_TEXT_MODEL_MINI,
+    OPENROUTER_FREE_TEXT_MODEL,
+]
+
 # Ordered model fallback chain for the scoring/categorization call. Tried left
 # to right; when a model hits its rate limit (HTTP 429) or is unavailable (404)
 # the worker benches it for the rest of the run and advances to the next.
-# Models named 'gemini*' route via GEMINI_API_KEY; everything else via
-# OPENAI_API_KEY (the last entry is the safety net). Topic embeddings always
-# use OpenAI to stay compatible with existing topic vectors in the database.
+# Models named 'gemini*' route via GEMINI_API_KEY unless OpenRouter is enabled;
+# everything else uses the primary OpenAI-compatible client. Topic embeddings
+# keep the same model family to stay compatible with existing topic vectors.
 CATEGORIZATION_MODEL_CHAIN = [
     'gemini-2.5-flash',
     'gemini-3.5-flash',
@@ -78,11 +90,19 @@ class CategorizationWorker:
         from workers.tools.pg_client import get_pg_client
         self.pg = get_pg_client()
         self.instance_id = str(uuid.uuid4())[:8]
-        self.embedding_model =  'text-embedding-3-small'
+        self.embedding_model = os.getenv(
+            'CATEGORIZATION_EMBEDDING_MODEL',
+            OPENROUTER_FREE_EMBEDDING_MODEL if os.getenv('OR_API_KEY') else 'text-embedding-3-small'
+        )
         self.similarity_threshold = 0.65
 
-        # Ordered model fallback chain for the scoring call (hardcoded above).
-        self.categorization_chain = list(CATEGORIZATION_MODEL_CHAIN)
+        chain_env = os.getenv('CATEGORIZATION_MODEL_CHAIN')
+        if chain_env:
+            self.categorization_chain = [m.strip() for m in chain_env.split(',') if m.strip()]
+        elif os.getenv('OR_API_KEY'):
+            self.categorization_chain = list(DEFAULT_OPENROUTER_CATEGORIZATION_MODEL_CHAIN)
+        else:
+            self.categorization_chain = list(CATEGORIZATION_MODEL_CHAIN)
         # Models benched for this run after a 429 / 404 so we don't re-hit them
         # on every subsequent article. CPython set add/contains are GIL-atomic,
         # which is sufficient for the worst case here (a few redundant 429s).
@@ -211,7 +231,11 @@ class CategorizationWorker:
         max_attempts = 2
         for attempt in range(max_attempts):
             try:
-                resp = embedding_client.embeddings.create(model=self.embedding_model, input=[text])
+                resp = create_embedding(
+                    embedding_client,
+                    model=self.embedding_model,
+                    input_texts=[text],
+                )
                 self._log_embedding_usage(resp)
 
                 # Normalize data extraction for both dict-like and object-like responses

@@ -33,7 +33,7 @@ from workers.tools.pg_client import get_pg_client
 
 # Optional module-level helpers (moved from lazy/function-local imports)
 from workers.tools.url_utils import normalize_link as _norm_link
-from workers.tools.openai_client import get_openai_client, chat_completion as _chat
+from workers.tools.openai_client import get_openai_client, chat_completion as _chat, resolve_model_name
 
 try:
     # Prefer categorization wrapper if available
@@ -1484,16 +1484,20 @@ class RSSParser:
                             
                             # Call OpenAI with strict JSON response format
                             try:
-                                response = client.chat.completions.create(
-                                    model='gpt-5.4-mini',
-                                    messages=[
+                                req_kwargs = {
+                                    'model': resolve_model_name('gpt-5.4-mini', provider=getattr(client, '_ke_provider', None)),
+                                    'messages': [
                                         {"role": "system", "content": system},
                                         {"role": "user", "content": user}
                                     ],
-                                    max_completion_tokens=1200,
-                                    reasoning_effort='low',
-                                    response_format={"type": "json_object"}
-                                )
+                                    'response_format': {"type": "json_object"},
+                                }
+                                if getattr(client, '_ke_provider', None) == 'openrouter':
+                                    req_kwargs['max_tokens'] = 1200
+                                else:
+                                    req_kwargs['max_completion_tokens'] = 1200
+                                    req_kwargs['reasoning_effort'] = 'low'
+                                response = client.chat.completions.create(**req_kwargs)
                                 # Extract text from response
                                 resp_text = None
                                 if hasattr(response, 'choices') and len(response.choices) > 0:

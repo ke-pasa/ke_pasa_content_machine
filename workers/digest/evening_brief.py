@@ -134,23 +134,12 @@ The final prompt must describe:
                 "clean minimal comic-style illustration, Que Pasa brand vibe, Spanish news digest theme, colorful but professional"
             )
 
-        # Generate image
+        # Reuse the shared generator so OpenRouter/OpenAI differences stay in one place.
         logger.info(f"Generating evening brief cover image with prompt: {image_prompt[:100]}...")
-        if image_gen.use_azure:
-            image_url = image_gen._generate_with_azure_dalle(image_prompt)
-        else:
-            resp = image_gen.client.images.generate(
-                model="dall-e-3",
-                prompt=image_prompt,
-                size="1024x1024",
-                quality="standard",
-                n=1,
-            )
-            if resp.data and len(resp.data) > 0:
-                image_url = resp.data[0].url
-            else:
-                logger.warning("No image generated")
-                return None
+        image_url = image_gen._generate_image(image_prompt)
+        if not image_url:
+            logger.warning("No image generated")
+            return None
 
         if not image_url:
             return None
