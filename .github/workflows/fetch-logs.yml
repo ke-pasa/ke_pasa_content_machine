@@ -1,0 +1,110 @@
+name: Fetch Server Logs
+
+# Подключается к серверу по SSH и выгружает логи из всех (или одного) контейнеров.
+# Запуск: вкладка Actions -> Fetch Server Logs -> Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Контейнер (имя сервиса из docker-compose). Пусто = все'
+        required: false
+        default: ''
+        type: string
+      tail:
+        description: 'Сколько последних строк логов на контейнер'
+        required: false
+        default: '200'
+        type: string
+      since:
+        description: 'Логи за период (напр. 1h, 30m, 2025-06-22T10:00:00). Пусто = без ограничения'
+        required: false
+        default: ''
+        type: string
+      grep:
+        description: 'Фильтр по подстроке (напр. cascade / error). Пусто = без фильтра'
+        required: false
+        default: ''
+        type: string
+      check_env:
+        description: 'Проверить, видят ли контейнеры OR_API_KEY (значение маскируется)'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  fetch-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_HOST }} >> ~/.ssh/known_hosts
+          ssh-keygen -l -f ~/.ssh/deploy_key || (echo "Invalid SSH key format" && exit 1)
+
+      - name: Fetch logs from server
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+          SERVICE: ${{ github.event.inputs.service }}
+          TAIL: ${{ github.event.inputs.tail }}
+          SINCE: ${{ github.event.inputs.since }}
+          GREP: ${{ github.event.inputs.grep }}
+          CHECK_ENV: ${{ github.event.inputs.check_env }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} \
+            "SERVICE='${SERVICE}' TAIL='${TAIL}' SINCE='${SINCE}' GREP='${GREP}' CHECK_ENV='${CHECK_ENV}' bash -s" << 'ENDSSH'
+          set -uo pipefail
+          cd ~/ke-pasa-workers
+
+          echo "=================================================="
+          echo "CONTAINER STATUS"
+          echo "=================================================="
+          docker compose ps
+
+          # Собираем флаги для docker compose logs
+          LOG_ARGS="--no-color --tail=${TAIL:-200}"
+          if [ -n "${SINCE}" ]; then
+            LOG_ARGS="${LOG_ARGS} --since=${SINCE}"
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "LOGS  (tail=${TAIL:-200}${SINCE:+, since=${SINCE}}${SERVICE:+, service=${SERVICE}}${GREP:+, grep=${GREP}})"
+          echo "=================================================="
+
+          if [ -n "${GREP}" ]; then
+            docker compose logs ${LOG_ARGS} ${SERVICE} 2>&1 | grep -i -- "${GREP}" || echo "(нет строк по фильтру '${GREP}')"
+          else
+            docker compose logs ${LOG_ARGS} ${SERVICE} 2>&1
+          fi
+
+          if [ "${CHECK_ENV}" = "true" ]; then
+            echo ""
+            echo "=================================================="
+            echo "ENV CHECK: видит ли контейнер OR_API_KEY (значение маскируется)"
+            echo "=================================================="
+            # Сервисы, которым нужен OpenRouter
+            for SVC in categorization-worker article-generator-worker digest-worker; do
+              # пропускаем, если задан конкретный SERVICE и он не совпадает
+              if [ -n "${SERVICE}" ] && [ "${SERVICE}" != "${SVC}" ]; then
+                continue
+              fi
+              VAL=$(docker compose exec -T "${SVC}" printenv OR_API_KEY 2>/dev/null || true)
+              if [ -z "${VAL}" ]; then
+                echo "  ${SVC}: OR_API_KEY = <ПУСТО / не задан>  <-- вероятная причина простоя"
+              else
+                LEN=${#VAL}
+                echo "  ${SVC}: OR_API_KEY задан (длина ${LEN}, начинается с '${VAL:0:6}...')"
+              fi
+            done
+          fi
+          ENDSSH
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
