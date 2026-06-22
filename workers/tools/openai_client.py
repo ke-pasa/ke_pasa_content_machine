@@ -511,7 +511,9 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                         refresh=fallback_refresh_attempted,
                     )
                     if len(fallback_models) > 1:
-                        extra_body['models'] = fallback_models
+                        # OpenRouter rejects a fallback array with more than 3
+                        # models ("'models' array must have 3 items or fewer").
+                        extra_body['models'] = fallback_models[:3]
                         extra_body['route'] = 'fallback'
                 req_kwargs.update(_kwargs)
                 # Relocate any caller-supplied routing params (or a caller
@@ -523,6 +525,10 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 caller_extra = req_kwargs.pop('extra_body', None)
                 if isinstance(caller_extra, dict):
                     extra_body = {**caller_extra, **extra_body}
+                # Enforce OpenRouter's hard cap on the fallback array regardless
+                # of where 'models' came from (fallback chain or caller kwargs).
+                if isinstance(extra_body.get('models'), list) and len(extra_body['models']) > 3:
+                    extra_body['models'] = extra_body['models'][:3]
                 if extra_body:
                     req_kwargs['extra_body'] = extra_body
             elif is_gemini:
