@@ -498,6 +498,12 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     'messages': messages,
                     'max_tokens': max_tokens,
                 }
+                # OpenRouter routing params ('models', 'route') are NOT valid
+                # named arguments on the typed OpenAI SDK create() call — the SDK
+                # raises "unexpected keyword argument 'models'". They must be
+                # forwarded via extra_body so the SDK serializes them into the
+                # request body.
+                extra_body = {}
                 if 'models' not in _kwargs and 'route' not in _kwargs:
                     fallback_models = get_openrouter_text_fallback_models(
                         model=model,
@@ -505,9 +511,20 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                         refresh=fallback_refresh_attempted,
                     )
                     if len(fallback_models) > 1:
-                        req_kwargs['models'] = fallback_models
-                        req_kwargs['route'] = 'fallback'
+                        extra_body['models'] = fallback_models
+                        extra_body['route'] = 'fallback'
                 req_kwargs.update(_kwargs)
+                # Relocate any caller-supplied routing params (or a caller
+                # extra_body) into a single extra_body so they reach OpenRouter
+                # in the body instead of crashing as unknown kwargs.
+                for or_param in ('models', 'route'):
+                    if or_param in req_kwargs:
+                        extra_body[or_param] = req_kwargs.pop(or_param)
+                caller_extra = req_kwargs.pop('extra_body', None)
+                if isinstance(caller_extra, dict):
+                    extra_body = {**caller_extra, **extra_body}
+                if extra_body:
+                    req_kwargs['extra_body'] = extra_body
             elif is_gemini:
                 req_kwargs = {
                     'model': resolved_model,

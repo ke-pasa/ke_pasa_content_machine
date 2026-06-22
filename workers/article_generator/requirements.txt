@@ -1,7 +1,7 @@
 # Minimal requirements for workers/article_generator
 # Keep this file focused on packages used by the article_generator worker
 
-openai==2.8.1
+openai==2.38.0
 python-dotenv>=1.0.0,<2.0.0
 
 
