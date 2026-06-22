@@ -397,8 +397,6 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     'messages': messages,
                     'max_tokens': max_tokens,
                 }
-                if reasoning_effort is not None:
-                    req_kwargs['reasoning'] = {'effort': reasoning_effort}
             elif is_gemini:
                 req_kwargs = {
                     'model': resolved_model,

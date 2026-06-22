@@ -21,6 +21,7 @@ from workers.tools.openai_client import (
 from workers.tools.constants import MIN_ARTICLE_SCORE, SHORT_NOTE_THRESHOLD, PUBLISH_THRESHOLD
 import os
 import json as _json
+import re
 
 
 def _get_openai_client(endpoint_suffix=''):
@@ -309,6 +310,70 @@ class CategorizationWorker:
         except Exception:
             pass
 
+    def _ensure_topic_embedding_dimension(self, cur, embedding: list) -> tuple[bool, str | None]:
+        """Ensure public.topic.emb dimension matches the embedding length.
+
+        If the column exists with a different vector dimension but there are no
+        stored vectors yet, auto-migrate it to the new dimension.
+        """
+        try:
+            emb_len = len(embedding) if embedding is not None else 0
+        except Exception:
+            emb_len = 0
+
+        if emb_len <= 0:
+            return False, 'invalid embedding length'
+
+        try:
+            cur.execute(
+                """
+                SELECT format_type(a.atttypid, a.atttypmod) AS data_type
+                FROM pg_attribute a
+                JOIN pg_class c ON a.attrelid = c.oid
+                JOIN pg_namespace n ON c.relnamespace = n.oid
+                WHERE n.nspname = 'public'
+                  AND c.relname = 'topic'
+                  AND a.attname = 'emb'
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+                """
+            )
+            row = cur.fetchone()
+            data_type = row[0] if row and row[0] else None
+        except Exception as e:
+            return False, f'failed to inspect topic.emb type: {e}'
+
+        if not data_type:
+            return False, 'topic.emb column not found'
+
+        m = re.match(r'^vector\((\d+)\)$', str(data_type))
+        if not m:
+            return False, f'unsupported topic.emb type: {data_type}'
+
+        current_dim = int(m.group(1))
+        if current_dim == emb_len:
+            return True, None
+
+        try:
+            cur.execute("SELECT COUNT(*) FROM public.topic WHERE emb IS NOT NULL")
+            with_emb = int((cur.fetchone() or [0])[0] or 0)
+        except Exception as e:
+            return False, f'failed to count existing topic embeddings: {e}'
+
+        if with_emb > 0:
+            return False, f'topic.emb dimension is vector({current_dim}) but incoming embeddings have len={emb_len}'
+
+        try:
+            cur.execute(f"ALTER TABLE public.topic ALTER COLUMN emb TYPE vector({emb_len})")
+            self.logger.warning(
+                "Auto-migrated public.topic.emb from vector(%d) to vector(%d) because no stored topic embeddings existed",
+                current_dim,
+                emb_len,
+            )
+            return True, None
+        except Exception as e:
+            return False, f'failed to alter topic.emb to vector({emb_len}): {e}'
+
     def _find_similar_topic(self, embedding: list) -> tuple:
         """Find most similar topic using pgvector.
         
@@ -322,6 +387,9 @@ class CategorizationWorker:
             conn, pooled = self.pg._get_conn()
             cur = conn.cursor()
             try:
+                ok, err = self._ensure_topic_embedding_dimension(cur, embedding)
+                if not ok:
+                    return None, 0.0, err
                 emb_text = _json.dumps(embedding, ensure_ascii=False)
                 cur.execute(
                     """
@@ -371,8 +439,11 @@ class CategorizationWorker:
             conn, pooled = self.pg._get_conn()
             cur = conn.cursor()
             try:
+                ok, err = self._ensure_topic_embedding_dimension(cur, embedding)
+                if not ok:
+                    self.logger.warning(f"Cannot store embedding for topic {topic_id}: {err}")
+                    return False
                 emb_text = _json.dumps(embedding, ensure_ascii=False)
-                # Try vector type first
                 try:
                     cur.execute("UPDATE public.topic SET emb = %s::vector WHERE id = %s", (emb_text, topic_id))
                     conn.commit()
@@ -380,23 +451,9 @@ class CategorizationWorker:
                     self.logger.info(f"Stored topic embedding for topic {topic_id} as vector (preview={preview})")
                     return True
                 except Exception as ve:
-                    # Vector cast failed; log the reason and fallback to jsonb
-                    self.logger.debug(f"Vector update failed for topic {topic_id}: {ve}")
-                    try:
-                        cur.execute("ALTER TABLE public.topic ADD COLUMN IF NOT EXISTS emb jsonb")
-                    except Exception:
-                        pass
-                    try:
-                        cur.execute("UPDATE public.topic SET emb = %s::jsonb WHERE id = %s", (emb_text, topic_id))
-                        conn.commit()
-                        preview = (emb_text[:200] + '...') if len(emb_text) > 200 else emb_text
-                        self.logger.info(f"Stored topic embedding for topic {topic_id} as jsonb (preview={preview})")
-                        return True
-                    except Exception as je:
-                        # Fallback update failed too
-                        self.logger.warning(f"JSONB update failed for topic {topic_id}: {je}")
-                        conn.rollback()
-                        return False
+                    self.logger.warning(f"Vector update failed for topic {topic_id}: {ve}")
+                    conn.rollback()
+                    return False
             finally:
                 try:
                     cur.close()
