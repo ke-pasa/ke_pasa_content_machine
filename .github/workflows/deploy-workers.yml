@@ -53,6 +53,11 @@ jobs:
           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY || '' }}
 
+          # OpenRouter
+          OR_API_KEY=${{ secrets.OR_API_KEY }}
+          OPENROUTER_APP_URL=${{ secrets.OPENROUTER_APP_URL || 'https://ke-pasa.es' }}
+          OPENROUTER_APP_TITLE=${{ secrets.OPENROUTER_APP_TITLE || 'Ke Pasa Content Machine' }}
+
           # Azure OpenAI / Cognitive Services
           AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT || '' }}
           AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY || '' }}
