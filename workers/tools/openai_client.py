@@ -26,6 +26,7 @@ import time
 _client = None
 _gemini_client = None
 _openrouter_client = None
+_openrouter_free_text_models_cache = {'expires_at': 0.0, 'models': []}
 
 
 class LLMError(Exception):
@@ -52,6 +53,10 @@ GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
 OPENROUTER_FREE_TEXT_MODEL = 'google/gemma-4-31b-it:free'
 OPENROUTER_FREE_TEXT_MODEL_MINI = 'openai/gpt-oss-20b:free'
+OPENROUTER_FREE_TEXT_MODELS = [
+    OPENROUTER_FREE_TEXT_MODEL,
+    OPENROUTER_FREE_TEXT_MODEL_MINI,
+]
 OPENROUTER_FREE_EMBEDDING_MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free'
 OPENROUTER_FREE_IMAGE_MODEL = None
 
@@ -126,6 +131,101 @@ def get_openrouter_headers() -> Dict[str, str]:
     }
     headers.update(_build_openrouter_headers())
     return headers
+
+
+def get_openrouter_free_text_models(refresh: bool = False, ttl_seconds: int = 900) -> List[str]:
+    """Return currently available free text models from OpenRouter.
+
+    Falls back to the local preferred list if the catalog request fails or
+    returns nothing useful.
+    """
+    global _openrouter_free_text_models_cache
+
+    now = time.time()
+    cached_models = _openrouter_free_text_models_cache.get('models') or []
+    expires_at = float(_openrouter_free_text_models_cache.get('expires_at') or 0.0)
+    if not refresh and cached_models and now < expires_at:
+        return list(cached_models)
+
+    preferred = list(OPENROUTER_FREE_TEXT_MODELS)
+    try:
+        response = requests.get(
+            f"{OPENROUTER_BASE_URL.rstrip('/')}/models",
+            headers=get_openrouter_headers(),
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        data = payload.get('data') if isinstance(payload, dict) else None
+        discovered: List[str] = []
+        for item in data or []:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get('id')
+            if not isinstance(model_id, str) or ':free' not in model_id:
+                continue
+
+            pricing = item.get('pricing') or {}
+            prompt_price = str(pricing.get('prompt', ''))
+            completion_price = str(pricing.get('completion', ''))
+            if prompt_price != '0' or completion_price != '0':
+                continue
+
+            architecture = item.get('architecture') or {}
+            input_modalities = architecture.get('input_modalities') or []
+            output_modalities = architecture.get('output_modalities') or []
+            if 'text' not in input_modalities or 'text' not in output_modalities:
+                continue
+            if 'image' in output_modalities or 'audio' in output_modalities:
+                continue
+
+            discovered.append(model_id)
+
+        merged: List[str] = []
+        for model_id in preferred + discovered:
+            if model_id and model_id not in merged:
+                merged.append(model_id)
+
+        if merged:
+            _openrouter_free_text_models_cache = {
+                'expires_at': now + max(int(ttl_seconds), 60),
+                'models': merged,
+            }
+            return merged
+    except Exception:
+        logging.getLogger('workers.tools.openai_client').warning(
+            'Failed to refresh OpenRouter free text model catalog; using local fallback list'
+        )
+
+    return preferred
+
+
+def _is_openrouter_text_fallback_candidate(model: str, resolved_model: str) -> bool:
+    """Return True when this request should use free-text fallback routing."""
+    logical_model = _LOGICAL_MODEL_ALIASES.get(model, model)
+    if logical_model in {'gpt-5.4', 'gpt-5.4-mini'}:
+        return True
+    if resolved_model in OPENROUTER_FREE_TEXT_MODELS:
+        return True
+    if isinstance(resolved_model, str) and resolved_model.endswith(':free'):
+        if resolved_model == OPENROUTER_FREE_EMBEDDING_MODEL:
+            return False
+        if _is_gemini_model(resolved_model):
+            return False
+        return True
+    return False
+
+
+def get_openrouter_text_fallback_models(model: str, resolved_model: str, refresh: bool = False) -> List[str]:
+    """Build a fallback chain for free text generation on OpenRouter."""
+    candidates: List[str] = []
+    if resolved_model and _is_openrouter_text_fallback_candidate(model, resolved_model):
+        candidates.append(resolved_model)
+
+    for model_id in get_openrouter_free_text_models(refresh=refresh):
+        if model_id and model_id not in candidates:
+            candidates.append(model_id)
+    return candidates
 
 
 def resolve_model_name(model: str, provider: Optional[str] = None) -> str:
@@ -292,6 +392,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
     resolved_model = resolve_model_name(model, provider=provider)
     is_gemini = _is_gemini_model(resolved_model)
     is_openrouter = provider == 'openrouter'
+    fallback_refresh_attempted = False
 
     try:
         msg_count = len(messages) if messages is not None else 0
@@ -397,6 +498,16 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     'messages': messages,
                     'max_tokens': max_tokens,
                 }
+                if 'models' not in _kwargs and 'route' not in _kwargs:
+                    fallback_models = get_openrouter_text_fallback_models(
+                        model=model,
+                        resolved_model=resolved_model,
+                        refresh=fallback_refresh_attempted,
+                    )
+                    if len(fallback_models) > 1:
+                        req_kwargs['models'] = fallback_models
+                        req_kwargs['route'] = 'fallback'
+                req_kwargs.update(_kwargs)
             elif is_gemini:
                 req_kwargs = {
                     'model': resolved_model,
@@ -405,6 +516,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 }
                 if reasoning_effort is not None and '2.5' in resolved_model:
                     req_kwargs['reasoning_effort'] = reasoning_effort
+                req_kwargs.update(_kwargs)
             else:
                 req_kwargs = {
                     'model': resolved_model,
@@ -413,6 +525,7 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                 }
                 if reasoning_effort is not None:
                     req_kwargs['reasoning_effort'] = reasoning_effort
+                req_kwargs.update(_kwargs)
 
             resp = client.chat.completions.create(**req_kwargs)
 
@@ -431,12 +544,31 @@ def chat_completion(client: object, model: str, messages: List[Dict[str, str]],
                     except Exception:
                         pass
                     return content.strip()
+            if is_openrouter and not fallback_refresh_attempted and 'models' not in _kwargs and 'route' not in _kwargs:
+                fallback_refresh_attempted = True
+                logger.warning('%s returned empty content; refreshing OpenRouter free model catalog and retrying once', provider)
+                continue
             logger.warning('%s returned empty content (attempt %d/%d); not retrying', provider, attempt, max_attempts)
             return None
 
         except Exception as e:
             status = _extract_status(e)
             resp_text = _extract_response_text(e)
+
+            if (
+                is_openrouter
+                and not fallback_refresh_attempted
+                and 'models' not in _kwargs
+                and 'route' not in _kwargs
+                and status in {400, 404, 429}
+            ):
+                fallback_refresh_attempted = True
+                logger.warning(
+                    '%s request failed with status=%s; refreshing OpenRouter free model catalog and retrying once',
+                    provider,
+                    status,
+                )
+                continue
 
             if status is not None and 400 <= status < 500:
                 logger.warning('%s request failed with client error status=%s', provider, status)

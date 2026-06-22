@@ -51,6 +51,7 @@ def _chat_completion(
     messages: list,
     max_tokens: int = 6000,
     reasoning_effort: Optional[str] = None,
+    **kwargs,
 ) -> Optional[str]:
     if worker_mod := _get_worker_module():
         if hasattr(worker_mod, 'chat_completion'):
@@ -60,6 +61,7 @@ def _chat_completion(
                 messages,
                 max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,
+                **kwargs,
             )
     from workers.tools.openai_client import chat_completion as _cc
     return _cc(
@@ -68,6 +70,7 @@ def _chat_completion(
         messages,
         max_tokens=max_tokens,
         reasoning_effort=reasoning_effort,
+        **kwargs,
     )
 
 
@@ -697,9 +700,12 @@ class ArticleTranslator:
                            messages=messages)
         _log_stage_debug('stage6', self.model, messages, len(stage4_json or ''))
 
+        doc_id = metadata.get('doc_id', 'unknown')
         try:
-            _logger.info(f'Stage6 calling OpenAI for doc_id={metadata.get("doc_id", "unknown")}, '
-                        f'messages={len(messages)}, max_tokens={max_tokens}')
+            _logger.info(
+                'Stage6 calling chat_completion for doc_id=%s, model=%s, messages=%d, max_tokens=%d',
+                doc_id, self.model, len(messages), max_tokens
+            )
             text = _chat_completion(
                 client=self.client,
                 model=self.model,
@@ -707,33 +713,30 @@ class ArticleTranslator:
                 max_tokens=max_tokens,
                 reasoning_effort='low',
             )
-            if not text:
-                _logger.error(f'Stage6 returned empty/None for doc_id={metadata.get("doc_id", "unknown")}. text={repr(text)}')
-                return None, None
-            _logger.info(f'Stage6 success for doc_id={metadata.get("doc_id", "unknown")}, response_len={len(text)}')
         except Exception as e:
-            _logger.exception(f'Stage6 exception for doc_id={metadata.get("doc_id", "unknown")}: {e}')
+            _logger.warning('Stage6 exception for doc_id=%s: %s', doc_id, e)
             return None, None
 
-        parsed = _parse_stage_response(text, 'stage6', metadata.get('doc_id', 'unknown'))
+        if not text:
+            _logger.warning('Stage6 returned empty/None for doc_id=%s', doc_id)
+            return None, None
+
+        _logger.info('Stage6 got response for doc_id=%s, response_len=%d', doc_id, len(text))
+        parsed = _parse_stage_response(text, 'stage6', doc_id)
         self._save_stage_io('stage6', raw_output=text)
         if not parsed or not isinstance(parsed, dict):
             return parsed, (text or None)
 
-        # Clean up tg_preview formatting
         if tg := parsed.get('tg_preview'):
             if isinstance(tg, str):
                 tg = re.sub(r'<br\s*/?>', '\n', tg)
                 tg = re.sub(r'\n{3,}', '\n\n', tg)
                 parsed['tg_preview'] = tg
 
-        # Clean up video_script formatting
         if script := parsed.get('video_script'):
             if isinstance(script, str):
                 script = script.strip()
-                # Remove any HTML tags that might have slipped in
                 script = re.sub(r'<[^>]+>', '', script)
-                # Clean up extra whitespace
                 script = re.sub(r'\s+', ' ', script)
                 parsed['video_script'] = script
 

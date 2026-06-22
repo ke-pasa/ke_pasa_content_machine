@@ -82,7 +82,6 @@ def main(article_id: str):
     try:
         url = src.get('link') or src.get('url')
         # Propagate SAVE_TRANSLATIONS into translator as save_stages flag
-        import os
         save_stages_flag = os.environ.get('SAVE_TRANSLATIONS', 'false').lower() in ('1', 'true', 'yes')
         tr = translator.translate(
             title,

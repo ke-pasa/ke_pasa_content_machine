@@ -44,6 +44,15 @@ def _normalize_newlines(text: str) -> str:
     return text
 
 
+def _normalize_html_formatting(text: str) -> str:
+    """Convert common markdown emphasis into Telegram HTML formatting."""
+    if not text:
+        return text
+    text = re.sub(r'\*\*([^\n*][^*\n]*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'(?m)^#\s+(.+?)\s*$', r'<b>\1</b>', text)
+    return text
+
+
 def create_forum_topic(chat_id: str, name: str, token: Optional[str] = None, icon_color: Optional[int] = None) -> Dict[str, Any]:
     """Create a forum topic in a forum-enabled chat (supergroup with topics).
 
@@ -73,6 +82,8 @@ def send_message(chat_id: str, text: str, token: Optional[str] = None, parse_mod
     if text:
         text = text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
         text = _normalize_newlines(text)
+        if parse_mode == 'HTML':
+            text = _normalize_html_formatting(text)
 
     # Use HTTP API directly (python-telegram-bot v20+ is async-only, requires await)
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode}
@@ -92,6 +103,8 @@ def send_photo(chat_id: str, photo_url: str, caption: Optional[str] = None, toke
     if caption:
         caption = caption.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
         caption = _normalize_newlines(caption)
+        if parse_mode == 'HTML':
+            caption = _normalize_html_formatting(caption)
 
     try:
         from pathlib import Path
