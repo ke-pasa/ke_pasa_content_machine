@@ -238,3 +238,31 @@ def test_fetches_content(monkeypatch):
     # Verify that the translator was called with the fetched content
     args, kwargs = mock_translator.translate.call_args
     assert args[2] == "Longer Fetched Content"
+
+
+def test_continuous_mode_keeps_running_after_processing_error(monkeypatch):
+    class FakePG:
+        def fetch_top_categorized_article_24h(self):
+            return {'id': 'doc1', 'status': 'CATEGORIZED', 'total_score': 80}
+
+    monkeypatch.setattr('workers.article_generator.ArticleGenerator.get_pg_client', lambda: FakePG())
+
+    gen = ArticleGenerator(translator=MagicMock())
+
+    def fail_processing(article, chunk_results, lock):
+        chunk_results['processed'] = 1
+        chunk_results['errors'].append('translation failed')
+
+    slept = []
+
+    def stop_after_error_pause(seconds):
+        slept.append(seconds)
+        raise SystemExit()
+
+    monkeypatch.setattr(gen, '_process_single_document', fail_processing)
+    monkeypatch.setattr('workers.article_generator.ArticleGenerator.time.sleep', stop_after_error_pause)
+
+    with pytest.raises(SystemExit):
+        gen.process_continuous()
+
+    assert slept == [5]

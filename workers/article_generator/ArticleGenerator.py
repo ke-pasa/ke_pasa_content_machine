@@ -1139,21 +1139,22 @@ class ArticleGenerator:
                     elif chunk_results['skipped'] > 0:
                         self.logger.info(f'⏭️  Skipped article {article_id}')
                     elif chunk_results['errors']:
-                        # Translation or processing failed - stop continuous mode
                         self.logger.error(f'❌ Errors during processing: {chunk_results["errors"]}')
-                        self.logger.error(f'🛑 Stopping continuous mode due to processing errors')
-                        break
+                        self.logger.info(f'⏸️  Waiting {article_pause_seconds} seconds before next article...')
+                        time.sleep(article_pause_seconds)
+                        continue
                     else:
                         self.logger.warning(f'⚠️  Article {article_id} processed with no clear result')
-                        self.logger.warning(f'🛑 Stopping continuous mode due to unclear result')
-                        break
+                        self.logger.info(f'⏸️  Waiting {article_pause_seconds} seconds before next article...')
+                        time.sleep(article_pause_seconds)
+                        continue
                 
                 except Exception as proc_err:
                     self.logger.exception(f'❌ Failed to process article {article_id}: {proc_err}')
-                    self.logger.error(f'🛑 Stopping continuous mode due to processing exception')
-                    # Still mark as processed to avoid infinite retries
                     processed_in_session.add(article_id)
-                    break
+                    self.logger.info(f'⏸️  Waiting {article_pause_seconds} seconds before next article...')
+                    time.sleep(article_pause_seconds)
+                    continue
                 
                 # Wait before fetching next article
                 self.logger.info(f'⏸️  Waiting {article_pause_seconds} seconds before next article...')
