@@ -1,3 +1,12 @@
+# Cap container log files so they cannot fill the server's disk. Without this
+# the json-file driver grows without bound, which is what filled the deploy
+# server previously.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   # Test service for debugging fonts
   test-fonts:
@@ -6,6 +15,7 @@ services:
       dockerfile: docker/Dockerfile.base
     image: ke-pasa-workers-base:latest
     container_name: ke-pasa-test-fonts
+    logging: *default-logging
     command: python test_fonts.py
     environment:
       - PYTHONUNBUFFERED=1
@@ -22,6 +32,7 @@ services:
       dockerfile: docker/Dockerfile.rss
     image: ke-pasa-rss-worker:latest
     container_name: ke-pasa-rss-worker
+    logging: *default-logging
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -54,6 +65,7 @@ services:
       dockerfile: docker/Dockerfile.categorization
     image: ke-pasa-categorization-worker:latest
     container_name: ke-pasa-categorization-worker
+    logging: *default-logging
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -85,6 +97,7 @@ services:
       dockerfile: docker/Dockerfile.article_generator
     image: ke-pasa-article-generator-worker:latest
     container_name: ke-pasa-article-generator-worker
+    logging: *default-logging
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -120,6 +133,7 @@ services:
       dockerfile: docker/Dockerfile.publisher
     image: ke-pasa-publisher-worker:latest
     container_name: ke-pasa-publisher-worker
+    logging: *default-logging
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -180,6 +194,7 @@ services:
       dockerfile: docker/Dockerfile.digest
     image: ke-pasa-digest-worker:latest
     container_name: ke-pasa-digest-worker
+    logging: *default-logging
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -242,6 +257,7 @@ services:
       dockerfile: docker/Dockerfile.events_importer
     image: ke-pasa-events-importer-worker:latest
     container_name: ke-pasa-events-importer-worker
+    logging: *default-logging
     restart: unless-stopped
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
@@ -265,6 +281,7 @@ services:
       dockerfile: docker/Dockerfile.base
     image: ke-pasa-workers-base:latest
     container_name: ke-pasa-workers-base
+    logging: *default-logging
     command: /bin/true
     networks:
       - ke-pasa-network

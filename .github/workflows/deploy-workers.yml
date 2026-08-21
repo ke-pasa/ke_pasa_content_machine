@@ -127,6 +127,63 @@ jobs:
           # Verify key format
           ssh-keygen -l -f ~/.ssh/deploy_key || (echo "Invalid SSH key format" && exit 1)
 
+      - name: Free disk space on server
+        env:
+          DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
+          DEPLOY_SERVER_USER: ${{ secrets.DEPLOY_SERVER_USER }}
+        run: |
+          # This job builds 7 Docker images directly on the server, so the
+          # build cache and superseded image layers grow with every deploy.
+          # The cleanup at the end of the deploy is unreachable once the disk
+          # is already full (rsync itself fails with ENOSPC), so reclaim space
+          # up front, before anything needs to write.
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.DEPLOY_SERVER_PORT || '22' }} \
+            ${DEPLOY_SERVER_USER}@${DEPLOY_SERVER_HOST} << 'ENDSSH'
+
+          echo "=== Disk usage before cleanup ==="
+          df -h / || true
+          docker system df || true
+
+          # Build cache is usually the biggest consumer and is always safe to
+          # drop: it only costs rebuild time, never running containers.
+          echo "=== Pruning Docker build cache ==="
+          docker builder prune -af || true
+
+          # -a also removes unused tagged images (the previous :latest layers),
+          # not just dangling ones. Images backing a running container are kept.
+          echo "=== Pruning unused images ==="
+          docker image prune -af || true
+
+          echo "=== Pruning stopped containers and unused networks ==="
+          docker container prune -f || true
+          docker network prune -f || true
+
+          # Truncate oversized container logs; without a logging driver limit
+          # these grow without bound.
+          echo "=== Truncating container logs larger than 100M ==="
+          sudo find /var/lib/docker/containers -name '*-json.log' -size +100M \
+            -exec truncate -s 0 {} \; 2>/dev/null \
+            || find /var/lib/docker/containers -name '*-json.log' -size +100M \
+                 -exec truncate -s 0 {} \; 2>/dev/null \
+            || echo "Could not truncate container logs (insufficient permissions); skipping"
+
+          echo "=== Disk usage after cleanup ==="
+          df -h / || true
+          docker system df || true
+
+          # Fail early with a clear message rather than midway through rsync.
+          AVAIL_KB=$(df -Pk / | awk 'NR==2 {print $4}')
+          echo "Available on /: $((AVAIL_KB / 1024)) MB"
+          if [ "$AVAIL_KB" -lt 2097152 ]; then
+            echo "ERROR: less than 2 GB free after cleanup; the image builds will not fit."
+            echo "Investigate what is consuming the disk, e.g.:"
+            echo "  docker system df -v"
+            echo "  du -sh /var/lib/docker/* | sort -h | tail"
+            exit 1
+          fi
+
+          ENDSSH
+
       - name: Deploy code to server
         env:
           DEPLOY_SERVER_HOST: ${{ secrets.DEPLOY_SERVER_HOST }}
@@ -328,9 +385,12 @@ jobs:
             docker compose up -d events-importer-worker
           fi
           
-          # Clean up old images
-          echo "Cleaning up old images..."
+          # Clean up old images and the cache left behind by this build so the
+          # next deploy starts with headroom.
+          echo "Cleaning up old images and build cache..."
           docker image prune -f
+          docker builder prune -f --filter 'until=24h' || true
+          docker system df || true
           
           # Show status
           echo "Deployment complete! Container status:"
