@@ -1,5 +1,5 @@
 # RSS feeds - Automatically cleaned
-# Updated: 2025-12-24 09:17:38
+# Updated: 2026-08-21 23:58:23
 #
 
 https://www.20minutos.es/rss/
@@ -38,7 +38,6 @@ https://valenciaplaza.com/rss/
 https://e00-elmundo.uecdn.es/elmundo/rss/portada.xml
 https://www.europapress.es/rss/rss.aspx?ch=00066
 https://feeds.weblogssl.com/xataka2
-https://feeds.weblogssl.com/genbeta
 https://www.elespanol.com/rss/
 https://www.elcorreo.com/rss/2.0/portada/
 https://www.ft.com/europe?format=rss

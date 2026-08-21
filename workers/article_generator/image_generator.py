@@ -12,9 +12,12 @@ from workers.tools.openai_client import (
     get_openai_client,
     chat_completion,
     get_openrouter_api_key,
+    get_gemini_api_key,
+    is_gemini_enabled,
     is_openrouter_client,
     resolve_model_name,
     OPENROUTER_FREE_IMAGE_MODEL,
+    GEMINI_FREE_IMAGE_MODEL,
 )
 
 
@@ -35,7 +38,9 @@ class ImageGenerator:
 
         self.client = get_openai_client()
         if not self.client:
-            raise RuntimeError('No LLM image provider configured. Set OR_API_KEY or OPENAI_API_KEY')
+            raise RuntimeError(
+                'No LLM image provider configured. Set GEMINI_API_KEY, OR_API_KEY or OPENAI_API_KEY'
+            )
         
         # Set up images directory
         if images_dir is None:
@@ -259,6 +264,62 @@ ARTICLE:
             self.logger.exception(f'OpenRouter image generation failed: {e}')
             return None
 
+    def _generate_image_via_gemini(self, prompt: str) -> Optional[str]:
+        """Generate an image through Google AI Studio's generateContent endpoint.
+
+        Returns a data: URL, which _download_and_save_image already handles.
+        """
+        api_key = get_gemini_api_key()
+        if not api_key:
+            self.logger.error('GEMINI_API_KEY not configured')
+            return None
+
+        model = resolve_model_name(self.model, provider='gemini') or GEMINI_FREE_IMAGE_MODEL
+        if not model:
+            self.logger.warning('No Gemini image model available; skipping image generation')
+            return None
+
+        url = (
+            'https://generativelanguage.googleapis.com/v1beta/models/'
+            f'{model}:generateContent'
+        )
+        payload = {
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': {'responseModalities': ['IMAGE']},
+        }
+
+        try:
+            self.logger.info(f'Calling Gemini image generation with model={model}')
+            response = requests.post(
+                url,
+                headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+                json=payload,
+                timeout=180,
+            )
+            if response.status_code == 429:
+                self.logger.warning('Gemini image quota exhausted (429); skipping image generation')
+                return None
+            response.raise_for_status()
+            data = response.json()
+
+            for candidate in data.get('candidates') or []:
+                parts = ((candidate or {}).get('content') or {}).get('parts') or []
+                for part in parts:
+                    inline = part.get('inlineData') or part.get('inline_data')
+                    if not inline:
+                        continue
+                    b64 = inline.get('data')
+                    if b64:
+                        mime = inline.get('mimeType') or inline.get('mime_type') or 'image/png'
+                        self.logger.info('Successfully generated image via Gemini')
+                        return f'data:{mime};base64,{b64}'
+
+            self.logger.warning('Gemini image generation returned no inline image data')
+            return None
+        except Exception as e:
+            self.logger.exception(f'Gemini image generation failed: {e}')
+            return None
+
     def _generate_image(self, prompt: str) -> Optional[str]:
         """
         Generate image using the configured provider.
@@ -272,6 +333,9 @@ ARTICLE:
         try:
             if is_openrouter_client(self.client):
                 return self._generate_image_via_openrouter(prompt)
+
+            if is_gemini_enabled():
+                return self._generate_image_via_gemini(prompt)
 
             self.logger.info(f'Calling OpenAI image generation with model={self.model}')
             if self.model == "dall-e-3":

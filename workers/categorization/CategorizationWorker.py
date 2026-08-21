@@ -17,6 +17,9 @@ from workers.tools.openai_client import (
     OPENROUTER_FREE_TEXT_MODEL,
     OPENROUTER_FREE_TEXT_MODEL_MINI,
     OPENROUTER_FREE_EMBEDDING_MODEL,
+    GEMINI_FREE_EMBEDDING_MODEL,
+    is_gemini_enabled,
+    is_openrouter_enabled,
 )
 from workers.tools.constants import MIN_ARTICLE_SCORE, SHORT_NOTE_THRESHOLD, PUBLISH_THRESHOLD
 import os
@@ -60,11 +63,14 @@ DEFAULT_OPENROUTER_CATEGORIZATION_MODEL_CHAIN = [
 # everything else uses the primary OpenAI-compatible client. Topic embeddings
 # keep the same model family to stay compatible with existing topic vectors.
 CATEGORIZATION_MODEL_CHAIN = [
+    # *-flash-lite first: 30K requests / 30M tokens per day on the free tier and
+    # honest token accounting. The plain *-flash models share a smaller 20M pool
+    # and burn hidden reasoning tokens, so they sit behind the lites.
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-lite-latest',
     'gemini-2.5-flash',
     'gemini-3.5-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-3-flash',
-    'gpt-5.4-mini',
 ]
 
 
@@ -91,16 +97,20 @@ class CategorizationWorker:
         from workers.tools.pg_client import get_pg_client
         self.pg = get_pg_client()
         self.instance_id = str(uuid.uuid4())[:8]
-        self.embedding_model = os.getenv(
-            'CATEGORIZATION_EMBEDDING_MODEL',
-            OPENROUTER_FREE_EMBEDDING_MODEL if os.getenv('OR_API_KEY') else 'text-embedding-3-small'
-        )
+        # OpenRouter has no usable free embedding model, so embeddings default to
+        # Google AI Studio's gemini-embedding-001 whenever a Gemini key exists.
+        _default_embedding = 'text-embedding-3-small'
+        if is_gemini_enabled():
+            _default_embedding = GEMINI_FREE_EMBEDDING_MODEL
+        elif os.getenv('OR_API_KEY') and OPENROUTER_FREE_EMBEDDING_MODEL:
+            _default_embedding = OPENROUTER_FREE_EMBEDDING_MODEL
+        self.embedding_model = os.getenv('CATEGORIZATION_EMBEDDING_MODEL', _default_embedding)
         self.similarity_threshold = 0.65
 
         chain_env = os.getenv('CATEGORIZATION_MODEL_CHAIN')
         if chain_env:
             self.categorization_chain = [m.strip() for m in chain_env.split(',') if m.strip()]
-        elif os.getenv('OR_API_KEY'):
+        elif is_openrouter_enabled():
             self.categorization_chain = list(DEFAULT_OPENROUTER_CATEGORIZATION_MODEL_CHAIN)
         else:
             self.categorization_chain = list(CATEGORIZATION_MODEL_CHAIN)
